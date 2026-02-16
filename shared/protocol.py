@@ -216,6 +216,136 @@ class LogRealPayload:
 
 
 @dataclass(slots=True)
+class CmdDeployPayload:
+    """CMD_DEPLOY: [FileSize(4B)] [SHA256(32B)] [FileName(256B)] = 292B."""
+
+    file_size: int
+    sha256: str
+    filename: str
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!I32s256s")
+    _SIZE: ClassVar[int] = 292
+
+    def pack(self) -> bytes:
+        if not 0 <= self.file_size <= 0xFFFFFFFF:
+            raise ValueError("file_size must fit in 4 bytes")
+        if len(self.sha256) != 64:
+            raise ValueError("sha256 must be 64 hex characters")
+        try:
+            sha256_bytes = bytes.fromhex(self.sha256)
+        except ValueError as exc:
+            raise ValueError("sha256 must be a valid hex string") from exc
+        if len(sha256_bytes) != 32:
+            raise ValueError("sha256 must decode to exactly 32 bytes")
+        return self._STRUCT.pack(
+            self.file_size,
+            sha256_bytes,
+            _encode_fixed(self.filename, 256, "filename"),
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdDeployPayload:
+        if len(data) != cls._SIZE:
+            raise ValueError("cmd deploy payload must be exactly 292 bytes")
+        file_size, sha256_raw, filename_raw = cast(
+            tuple[int, bytes, bytes], cls._STRUCT.unpack(data)
+        )
+        return cls(
+            file_size=file_size,
+            sha256=sha256_raw.hex(),
+            filename=_decode_fixed(filename_raw),
+        )
+
+
+@dataclass(slots=True)
+class FileChunkPayload:
+    """FILE_CHUNK: [SeqNum(4B)] [ChunkSize(2B)] [Data(variable, max 4096B)]."""
+
+    seq_num: int
+    data: bytes
+
+    _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct("!IH")
+    _HEADER_SIZE: ClassVar[int] = 6
+
+    def pack(self) -> bytes:
+        data_len = len(self.data)
+        if data_len > CHUNK_SIZE:
+            raise ValueError(f"chunk data exceeds {CHUNK_SIZE} bytes")
+        return self._HEADER_STRUCT.pack(self.seq_num, data_len) + self.data
+
+    @classmethod
+    def unpack(cls, data: bytes) -> FileChunkPayload:
+        if len(data) < cls._HEADER_SIZE:
+            raise ValueError("file chunk payload is too short")
+        seq_num, chunk_size = cast(
+            tuple[int, int], cls._HEADER_STRUCT.unpack(data[: cls._HEADER_SIZE])
+        )
+        if chunk_size > CHUNK_SIZE:
+            raise ValueError(f"chunk size exceeds {CHUNK_SIZE} bytes")
+        chunk_data = data[cls._HEADER_SIZE : cls._HEADER_SIZE + chunk_size]
+        if len(chunk_data) != chunk_size:
+            raise ValueError("file chunk payload data size mismatch")
+        if len(data) != cls._HEADER_SIZE + chunk_size:
+            raise ValueError("file chunk payload length mismatch")
+        return cls(seq_num=seq_num, data=chunk_data)
+
+
+@dataclass(slots=True)
+class FileAckPayload:
+    """FILE_ACK: [SeqNum(4B)] [Status(1B)] = 5B."""
+
+    seq_num: int
+    status: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!IB")
+    _SIZE: ClassVar[int] = 5
+
+    def pack(self) -> bytes:
+        if not 0 <= self.status <= 0xFF:
+            raise ValueError("status must fit in 1 byte")
+        return self._STRUCT.pack(self.seq_num, self.status)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> FileAckPayload:
+        if len(data) != cls._SIZE:
+            raise ValueError("file ack payload must be exactly 5 bytes")
+        seq_num, status = cast(tuple[int, int], cls._STRUCT.unpack(data))
+        return cls(seq_num=seq_num, status=status)
+
+
+@dataclass(slots=True)
+class CmdCtrlAckPayload:
+    """CMD_CTRL_ACK: [Action(1B)] [PID(4B)] [Status(1B)] = 6B."""
+
+    action: CtrlAction
+    pid: int
+    status: CtrlAckStatus
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!BIB")
+    _SIZE: ClassVar[int] = 6
+
+    def pack(self) -> bytes:
+        return self._STRUCT.pack(
+            CtrlAction(self.action),
+            self.pid,
+            CtrlAckStatus(self.status),
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdCtrlAckPayload:
+        if len(data) != cls._SIZE:
+            raise ValueError("cmd ctrl ack payload must be exactly 6 bytes")
+        action_raw, pid, status_raw = cast(
+            tuple[int, int, int], cls._STRUCT.unpack(data)
+        )
+        return cls(
+            action=CtrlAction(action_raw),
+            pid=pid,
+            status=CtrlAckStatus(status_raw),
+        )
+
+
+@dataclass(slots=True)
 class HeartbeatPayload:
     timestamp: int
     cpu_percent: int

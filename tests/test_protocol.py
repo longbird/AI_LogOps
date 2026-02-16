@@ -13,10 +13,14 @@ from shared.protocol import (
     AuthAckPayload,
     AuthPayload,
     AuthStatus,
+    CmdCtrlAckPayload,
+    CmdDeployPayload,
     CtrlAckStatus,
     CtrlAction,
     DisconnectPayload,
     DisconnectReason,
+    FileAckPayload,
+    FileChunkPayload,
     HeartbeatPayload,
     LogHistPayload,
     LogRealPayload,
@@ -234,3 +238,56 @@ def test_log_real_unicode_line() -> None:
     unpacked = LogRealPayload.unpack(packed)
     assert unpacked.filename == "korean.log"
     assert unpacked.line == "로그 수집 시작"
+
+
+def test_cmd_deploy_payload_pack_unpack_roundtrip() -> None:
+    payload = CmdDeployPayload(
+        file_size=8192,
+        sha256="a" * 64,
+        filename="agent_update.bin",
+    )
+    packed = payload.pack()
+    unpacked = CmdDeployPayload.unpack(packed)
+    assert unpacked == payload
+    assert len(packed) == 292
+
+
+def test_file_chunk_payload_pack_unpack_roundtrip() -> None:
+    payload = FileChunkPayload(seq_num=2, data=b"abc123")
+    packed = payload.pack()
+    unpacked = FileChunkPayload.unpack(packed)
+    assert unpacked.seq_num == 2
+    assert unpacked.data == b"abc123"
+    assert len(packed) == 12
+
+
+def test_file_chunk_payload_variable_size() -> None:
+    payload = FileChunkPayload(seq_num=1, data=b"x" * CHUNK_SIZE)
+    packed = payload.pack()
+    unpacked = FileChunkPayload.unpack(packed)
+    assert unpacked.seq_num == 1
+    assert len(unpacked.data) == CHUNK_SIZE
+    assert unpacked.data == b"x" * CHUNK_SIZE
+
+
+def test_file_ack_payload_pack_unpack() -> None:
+    payload = FileAckPayload(seq_num=42, status=0)
+    packed = payload.pack()
+    unpacked = FileAckPayload.unpack(packed)
+    assert unpacked.seq_num == 42
+    assert unpacked.status == 0
+    assert len(packed) == 5
+
+
+def test_cmd_ctrl_ack_payload_pack_unpack() -> None:
+    payload = CmdCtrlAckPayload(
+        action=CtrlAction.RESTART,
+        pid=12345,
+        status=CtrlAckStatus.DEPLOY_VERIFIED,
+    )
+    packed = payload.pack()
+    unpacked = CmdCtrlAckPayload.unpack(packed)
+    assert unpacked.action == CtrlAction.RESTART
+    assert unpacked.pid == 12345
+    assert unpacked.status == CtrlAckStatus.DEPLOY_VERIFIED
+    assert len(packed) == 6
