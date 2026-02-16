@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+
 import pytest
 
 from shared.protocol import (
     HEADER_SIZE,
     MAX_PAYLOAD_SIZE,
+    AuthAckPayload,
+    AuthPayload,
     AuthStatus,
     CtrlAckStatus,
     CtrlAction,
+    DisconnectPayload,
     DisconnectReason,
+    HeartbeatPayload,
+    Packet,
     PacketHeader,
     PacketType,
 )
@@ -79,3 +86,71 @@ def test_packet_header_rejects_oversized_payload() -> None:
 def test_packet_header_rejects_negative_payload() -> None:
     with pytest.raises(ValueError):
         _ = PacketHeader.pack(packet_type=PacketType.AUTH, payload_length=-1)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        AuthPayload(agent_id="agent-01", version="1.0.0", token="t" * 64),
+        AuthPayload(agent_id="a", version="1", token="x" * 64),
+        AuthPayload(agent_id="a" * 32, version="v" * 8, token="z" * 64),
+        AuthPayload(agent_id="", version="", token="k" * 64),
+    ],
+)
+def test_auth_payload_pack_unpack_roundtrip(payload: AuthPayload) -> None:
+    packed = payload.pack()
+    unpacked = AuthPayload.unpack(packed)
+    assert asdict(unpacked) == asdict(payload)
+
+
+def test_auth_payload_packs_to_fixed_104_bytes() -> None:
+    payload = AuthPayload(agent_id="agent-01", version="1.0.0", token="t" * 64)
+    assert len(payload.pack()) == 104
+
+
+def test_auth_ack_payload_pack_unpack_success() -> None:
+    payload = AuthAckPayload(status=AuthStatus.SUCCESS, session_id="session-abc")
+    packed = payload.pack()
+    unpacked = AuthAckPayload.unpack(packed)
+    assert unpacked.status == AuthStatus.SUCCESS
+    assert unpacked.session_id == "session-abc"
+    assert len(packed) == 17
+
+
+def test_auth_ack_payload_pack_unpack_version_mismatch() -> None:
+    payload = AuthAckPayload(status=AuthStatus.VERSION_MISMATCH, session_id="sid")
+    packed = payload.pack()
+    unpacked = AuthAckPayload.unpack(packed)
+    assert unpacked.status == AuthStatus.VERSION_MISMATCH
+    assert unpacked.session_id == "sid"
+    assert len(packed) == 17
+
+
+def test_heartbeat_payload_pack_unpack_roundtrip() -> None:
+    payload = HeartbeatPayload(timestamp=1_700_000_000, cpu_percent=45, mem_percent=72)
+    packed = payload.pack()
+    unpacked = HeartbeatPayload.unpack(packed)
+    assert unpacked == payload
+    assert len(packed) == 10
+
+
+@pytest.mark.parametrize("reason", list(DisconnectReason))
+def test_disconnect_payload_pack_unpack_roundtrip(reason: DisconnectReason) -> None:
+    payload = DisconnectPayload(reason=reason)
+    packed = payload.pack()
+    unpacked = DisconnectPayload.unpack(packed)
+    assert unpacked.reason == reason
+    assert len(packed) == 1
+
+
+@pytest.mark.parametrize("packet_type", list(PacketType))
+def test_packet_build_and_parse_header_roundtrip(packet_type: PacketType) -> None:
+    payload = b"test-payload"
+    packet = Packet.build(packet_type=packet_type, payload_bytes=payload)
+    header = packet[:HEADER_SIZE]
+    body = packet[HEADER_SIZE:]
+
+    parsed_type, parsed_length = Packet.parse_header(header)
+    assert parsed_type == packet_type
+    assert parsed_length == len(payload)
+    assert body == payload
