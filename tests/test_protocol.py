@@ -13,6 +13,7 @@ from shared.protocol import (
     AuthAckPayload,
     AuthPayload,
     AuthStatus,
+    CmdCtrlPayload,
     CmdCtrlAckPayload,
     CmdDeployPayload,
     CtrlAckStatus,
@@ -291,3 +292,11 @@ def test_cmd_ctrl_ack_payload_pack_unpack() -> None:
     assert unpacked.pid == 12345
     assert unpacked.status == CtrlAckStatus.DEPLOY_VERIFIED
     assert len(packed) == 6
+
+
+def test_cmd_ctrl_payload_pack_unpack() -> None:
+    payload = CmdCtrlPayload(action=CtrlAction.RESTART)
+    packed = payload.pack()
+    unpacked = CmdCtrlPayload.unpack(packed)
+    assert unpacked.action == CtrlAction.RESTART
+    assert len(packed) == 1

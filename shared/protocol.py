@@ -314,6 +314,26 @@ class FileAckPayload:
 
 
 @dataclass(slots=True)
+class CmdCtrlPayload:
+    """CMD_CTRL: [Action(1B)] = 1B."""
+
+    action: CtrlAction
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!B")
+    _SIZE: ClassVar[int] = 1
+
+    def pack(self) -> bytes:
+        return self._STRUCT.pack(CtrlAction(self.action))
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdCtrlPayload:
+        if len(data) != cls._SIZE:
+            raise ValueError("cmd_ctrl payload must be exactly 1 byte")
+        (action_raw,) = cast(tuple[int], cls._STRUCT.unpack(data))
+        return cls(action=CtrlAction(action_raw))
+
+
+@dataclass(slots=True)
 class CmdCtrlAckPayload:
     """CMD_CTRL_ACK: [Action(1B)] [PID(4B)] [Status(1B)] = 6B."""
 
