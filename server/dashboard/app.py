@@ -31,6 +31,14 @@ def create_app(
         APIRouter,
         importlib.import_module("server.dashboard.routes.logs").router,
     )
+    reports_router = cast(
+        APIRouter,
+        importlib.import_module("server.dashboard.routes.reports").router,
+    )
+    deploys_router = cast(
+        APIRouter,
+        importlib.import_module("server.dashboard.routes.deploys").router,
+    )
 
     templates_dir = Path(__file__).parent / "templates"
     static_dir = Path(__file__).parent / "static"
@@ -105,5 +113,7 @@ def create_app(
 
     app.include_router(dashboard_router)
     app.include_router(logs_router)
+    app.include_router(reports_router)
+    app.include_router(deploys_router)
 
     return app

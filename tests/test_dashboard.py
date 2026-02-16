@@ -16,6 +16,7 @@ from server.dashboard.auth import (
     verify_token,
 )
 from server.core.session_mgr import SessionManager
+from server.storage.manager import StorageManager
 
 
 class _DummyWriter:
@@ -262,3 +263,119 @@ def test_websocket_logs_connects(app: FastAPI):
     client = TestClient(app)
     with client.websocket_connect("/ws/logs/PC-01"):
         pass
+
+
+@pytest.mark.asyncio
+async def test_reports_page_accessible(client):
+    token = create_access_token({"sub": "admin"})
+    response = await client.get("/reports", cookies={"access_token": token})
+
+    assert response.status_code == 200
+    assert "AI Reports" in response.text
+
+
+@pytest.mark.asyncio
+async def test_reports_page_with_files(tmp_path):
+    storage_mgr = StorageManager(str(tmp_path))
+    _ = storage_mgr.save_report("ai_pipeline", "Analysis_Report.md", "# Analysis")
+    _ = storage_mgr.save_report("ai_pipeline", "Validation_Report.json", '{"ok": true}')
+    app = create_app(storage_mgr=storage_mgr)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        follow_redirects=False,
+    ) as ac:
+        token = create_access_token({"sub": "admin"})
+        response = await ac.get("/reports", cookies={"access_token": token})
+
+    assert response.status_code == 200
+    assert "Analysis_Report.md" in response.text
+    assert "Validation_Report.json" in response.text
+    assert "ai_pipeline" in response.text
+
+
+@pytest.mark.asyncio
+async def test_api_report_returns_content(tmp_path):
+    storage_mgr = StorageManager(str(tmp_path))
+    _ = storage_mgr.save_report("agent-01", "report.md", "# Title\n\n- item")
+    app = create_app(storage_mgr=storage_mgr)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        follow_redirects=False,
+    ) as ac:
+        token = create_access_token({"sub": "admin"})
+        response = await ac.get(
+            "/api/reports/agent-01/report.md",
+            cookies={"access_token": token},
+        )
+
+    assert response.status_code == 200
+    assert "<h1" in response.text
+    assert "Title" in response.text
+
+
+@pytest.mark.asyncio
+async def test_api_report_not_found(tmp_path):
+    storage_mgr = StorageManager(str(tmp_path))
+    app = create_app(storage_mgr=storage_mgr)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        follow_redirects=False,
+    ) as ac:
+        token = create_access_token({"sub": "admin"})
+        response = await ac.get(
+            "/api/reports/agent-01/missing.md",
+            cookies={"access_token": token},
+        )
+
+    assert response.status_code == 404
+    assert "Report not found" in response.text
+
+
+@pytest.mark.asyncio
+async def test_deploys_page_accessible(client):
+    token = create_access_token({"sub": "admin"})
+    response = await client.get("/deploys", cookies={"access_token": token})
+
+    assert response.status_code == 200
+    assert "Deploy History" in response.text
+
+
+@pytest.mark.asyncio
+async def test_deploys_page_with_history():
+    session_mgr = SessionManager()
+    session = session_mgr.create_session("PC-01", "1.0.0", _DummyWriter())
+    assert session is not None
+    session.deploy_history.append(
+        {
+            "timestamp": 1736200000.0,
+            "filename": "agent.zip",
+            "sha256": "abc123",
+            "success": True,
+            "rollback": False,
+            "detail": "deployed",
+        }
+    )
+    app = create_app(session_mgr=session_mgr)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        follow_redirects=False,
+    ) as ac:
+        token = create_access_token({"sub": "admin"})
+        response = await ac.get("/deploys", cookies={"access_token": token})
+
+    assert response.status_code == 200
+    assert "PC-01" in response.text
+    assert "agent.zip" in response.text
+    assert "deployed" in response.text
