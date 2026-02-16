@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">Real-time Log Viewer</h1>
+
+<div class="mb-4 flex items-center space-x-4">
+    <label class="font-semibold">Agent:</label>
+    <select id="agent-select" class="border rounded p-2" onchange="switchAgent(this.value)">
+        <option value="">Select agent...</option>
+        {% for agent_id in agents %}
+        <option value="{{ agent_id }}">{{ agent_id }}</option>
+        {% endfor %}
+    </select>
+    <span id="ws-status" class="text-sm text-gray-400">Disconnected</span>
+</div>
+
+<div id="log-container" class="bg-gray-900 text-green-400 font-mono text-sm p-4 rounded-lg h-[600px] overflow-y-auto">
+    <p class="text-gray-500">Select an agent to view logs...</p>
+</div>
+
+<script>
+let ws = null;
+
+function switchAgent(agentId) {
+    if (ws) {
+        ws.close();
+        ws = null;
+    }
+    const container = document.getElementById('log-container');
+    const status = document.getElementById('ws-status');
+    container.innerHTML = '';
+
+    if (!agentId) {
+        container.innerHTML = '<p class="text-gray-500">Select an agent to view logs...</p>';
+        status.textContent = 'Disconnected';
+        status.className = 'text-sm text-gray-400';
+        return;
+    }
+
+    fetch('/api/logs/' + agentId)
+        .then((r) => r.text())
+        .then((html) => {
+            container.innerHTML = html;
+            scrollToBottom();
+        });
+
+    const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(wsProto + '//' + location.host + '/ws/logs/' + agentId);
+
+    ws.onopen = () => {
+        status.textContent = 'Connected';
+        status.className = 'text-sm text-green-500';
+    };
+    ws.onmessage = (e) => {
+        const div = document.createElement('div');
+        div.className = 'text-sm font-mono';
+        div.textContent = e.data;
+        container.appendChild(div);
+        scrollToBottom();
+    };
+    ws.onclose = () => {
+        status.textContent = 'Disconnected';
+        status.className = 'text-sm text-red-400';
+    };
+}
+
+function scrollToBottom() {
+    const c = document.getElementById('log-container');
+    c.scrollTop = c.scrollHeight;
+}
+</script>
+{% endblock %}

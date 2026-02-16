@@ -7,6 +7,7 @@ from datetime import timedelta
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from starlette.testclient import TestClient
 
 from server.dashboard.app import create_app
 from server.dashboard.auth import (
@@ -185,3 +186,79 @@ def test_verify_token_invalid():
 def test_authenticate_user():
     assert authenticate_user("admin", "admin123") is True
     assert authenticate_user("admin", "wrong") is False
+
+
+@pytest.mark.asyncio
+async def test_logs_page_accessible(client):
+    token = create_access_token({"sub": "admin"})
+    response = await client.get("/logs", cookies={"access_token": token})
+
+    assert response.status_code == 200
+    assert "Log Viewer" in response.text
+
+
+@pytest.mark.asyncio
+async def test_logs_page_lists_agents():
+    session_mgr = SessionManager()
+    _ = session_mgr.create_session("PC-01", "1.0.0", _DummyWriter())
+    _ = session_mgr.create_session("PC-02", "1.0.1", _DummyWriter())
+    app = create_app(session_mgr=session_mgr)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        follow_redirects=False,
+    ) as ac:
+        token = create_access_token({"sub": "admin"})
+        response = await ac.get("/logs", cookies={"access_token": token})
+
+    assert response.status_code == 200
+    assert "PC-01" in response.text
+    assert "PC-02" in response.text
+
+
+@pytest.mark.asyncio
+async def test_api_logs_returns_log_buffer():
+    session_mgr = SessionManager()
+    session = session_mgr.create_session("PC-01", "1.0.0", _DummyWriter())
+    assert session is not None
+    session.log_buffer.extend(["line 1", "line 2"])
+    app = create_app(session_mgr=session_mgr)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        follow_redirects=False,
+    ) as ac:
+        token = create_access_token({"sub": "admin"})
+        response = await ac.get("/api/logs/PC-01", cookies={"access_token": token})
+
+    assert response.status_code == 200
+    assert "line 1" in response.text
+    assert "line 2" in response.text
+
+
+@pytest.mark.asyncio
+async def test_api_logs_agent_not_found():
+    session_mgr = SessionManager()
+    app = create_app(session_mgr=session_mgr)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        follow_redirects=False,
+    ) as ac:
+        token = create_access_token({"sub": "admin"})
+        response = await ac.get("/api/logs/NONEXIST", cookies={"access_token": token})
+
+    assert response.status_code == 200
+    assert "not found" in response.text.lower()
+
+
+def test_websocket_logs_connects(app: FastAPI):
+    client = TestClient(app)
+    with client.websocket_connect("/ws/logs/PC-01"):
+        pass

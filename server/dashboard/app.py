@@ -27,6 +27,10 @@ def create_app(
         APIRouter,
         importlib.import_module("server.dashboard.routes.dashboard").router,
     )
+    logs_router = cast(
+        APIRouter,
+        importlib.import_module("server.dashboard.routes.logs").router,
+    )
 
     templates_dir = Path(__file__).parent / "templates"
     static_dir = Path(__file__).parent / "static"
@@ -100,5 +104,6 @@ def create_app(
         return RedirectResponse(url="/dashboard", status_code=303)
 
     app.include_router(dashboard_router)
+    app.include_router(logs_router)
 
     return app
