@@ -17,6 +17,8 @@ from shared.protocol import (
     DisconnectPayload,
     DisconnectReason,
     HeartbeatPayload,
+    LogHistPayload,
+    LogRealPayload,
     Packet,
     PacketHeader,
     PacketType,
@@ -153,6 +155,18 @@ class TCPClient:
 
         writer.write(Packet.build(packet_type, payload))
         await writer.drain()
+
+    async def send_log_history(self, filename: str, data: bytes) -> None:
+        """LOG_HIST 패킷으로 누적 로그 전송."""
+
+        payload = LogHistPayload(filename=filename, data=data)
+        await self.send_packet(PacketType.LOG_HIST, payload.pack())
+
+    async def send_log_line(self, filename: str, line: str) -> None:
+        """LOG_REAL 패킷으로 실시간 로그 라인 전송."""
+
+        payload = LogRealPayload(filename=filename, line=line)
+        await self.send_packet(PacketType.LOG_REAL, payload.pack())
 
     async def _recv_loop(self) -> None:
         """서버로부터 패킷 수신 루프 (asyncio.Task로 실행)."""
