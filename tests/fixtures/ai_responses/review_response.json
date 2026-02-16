@@ -1,0 +1,1 @@
+{"severity": "LOW", "issues": [{"line": 42, "type": "style", "message": "변수명 개선 권장"}], "confidence_score": 87, "deploy_recommendation": "APPROVE"}
