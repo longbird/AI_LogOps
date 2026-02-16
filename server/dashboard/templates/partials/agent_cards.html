@@ -1,0 +1,24 @@
+{% if agents %}
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    {% for agent in agents %}
+    <div class="bg-white rounded-lg shadow p-4 border-l-4 border-{{ agent.state_color }}-500">
+        <div class="flex justify-between items-start">
+            <h3 class="text-lg font-semibold">{{ agent.agent_id }}</h3>
+            <span class="px-2 py-1 text-xs rounded-full bg-{{ agent.state_color }}-100 text-{{ agent.state_color }}-800">
+                {{ agent.state }}
+            </span>
+        </div>
+        <div class="mt-2 text-sm text-gray-600 space-y-1">
+            <p>Version: {{ agent.version }}</p>
+            <p>Session: {{ agent.session_id[:8] }}...</p>
+            <p>Heartbeat: {{ agent.last_heartbeat_ago }}</p>
+            <p>Logs: {{ agent.log_count }} | Deploys: {{ agent.deploy_count }}</p>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
+    <p class="text-yellow-600">No agents connected.</p>
+</div>
+{% endif %}

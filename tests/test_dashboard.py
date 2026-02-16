@@ -14,6 +14,15 @@ from server.dashboard.auth import (
     create_access_token,
     verify_token,
 )
+from server.core.session_mgr import SessionManager
+
+
+class _DummyWriter:
+    def close(self) -> None:
+        return None
+
+    def is_closing(self) -> bool:
+        return False
 
 
 @pytest.fixture
@@ -77,7 +86,66 @@ async def test_authenticated_access(client):
     response = await client.get("/dashboard", cookies={"access_token": token})
 
     assert response.status_code == 200
-    assert "Dashboard placeholder" in response.text
+    assert "Agent Status" in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_page_shows_no_agents(client):
+    token = create_access_token({"sub": "admin"})
+    response = await client.get("/dashboard", cookies={"access_token": token})
+
+    assert response.status_code == 200
+    assert "No agents connected." in response.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_page_with_agents():
+    session_mgr = SessionManager()
+    _ = session_mgr.create_session("agent-001", "1.2.3", _DummyWriter())
+    app = create_app(session_mgr=session_mgr)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        follow_redirects=False,
+    ) as ac:
+        token = create_access_token({"sub": "admin"})
+        response = await ac.get("/dashboard", cookies={"access_token": token})
+
+    assert response.status_code == 200
+    assert "agent-001" in response.text
+    assert "1.2.3" in response.text
+    assert "CONNECTED" in response.text
+
+
+@pytest.mark.asyncio
+async def test_api_agents_partial():
+    session_mgr = SessionManager()
+    _ = session_mgr.create_session("agent-xyz", "2.0.0", _DummyWriter())
+    app = create_app(session_mgr=session_mgr)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        follow_redirects=False,
+    ) as ac:
+        token = create_access_token({"sub": "admin"})
+        response = await ac.get("/api/agents", cookies={"access_token": token})
+
+    assert response.status_code == 200
+    assert "agent-xyz" in response.text
+    assert "CONNECTED" in response.text
+    assert "grid grid-cols-1" in response.text
+
+
+@pytest.mark.asyncio
+async def test_api_agents_no_auth_redirects(client):
+    response = await client.get("/api/agents")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
 
 
 @pytest.mark.asyncio

@@ -1,11 +1,12 @@
 from __future__ import annotations
 # pyright: reportUnusedFunction=false
 
+import importlib
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
-from fastapi import FastAPI, Form, Request
+from fastapi import APIRouter, FastAPI, Form, Request
 from fastapi import Response as FastAPIResponse
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,6 +23,10 @@ def create_app(
     secret_key: str = "CHANGE_ME",
 ) -> FastAPI:
     app = FastAPI(title="AI-LogOps Dashboard")
+    dashboard_router = cast(
+        APIRouter,
+        importlib.import_module("server.dashboard.routes.dashboard").router,
+    )
 
     templates_dir = Path(__file__).parent / "templates"
     static_dir = Path(__file__).parent / "static"
@@ -94,18 +99,6 @@ def create_app(
     async def root():
         return RedirectResponse(url="/dashboard", status_code=303)
 
-    @app.get("/dashboard", response_class=HTMLResponse)
-    async def dashboard(request: Request):
-        logger.info(
-            "Dashboard requested by %s", getattr(request.state, "user", "unknown")
-        )
-        return templates.TemplateResponse(
-            "base.html",
-            {
-                "request": request,
-                "title": "Dashboard",
-                "content": "Dashboard placeholder - agent status cards coming in Task 25",
-            },
-        )
+    app.include_router(dashboard_router)
 
     return app

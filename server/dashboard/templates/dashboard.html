@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">Agent Status</h1>
+<div id="agent-cards" hx-get="/api/agents" hx-trigger="every 5s" hx-swap="innerHTML">
+    {% include "partials/agent_cards.html" %}
+</div>
+{% endblock %}
