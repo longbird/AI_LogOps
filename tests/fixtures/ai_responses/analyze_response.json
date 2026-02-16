@@ -1,0 +1,1 @@
+{"content": "# Analysis Report\n\n## Error Patterns\n- NullPointerException: 45 occurrences\n- ConnectionTimeout: 23 occurrences\n\n## Severity\n- Critical: 2\n- Warning: 5\n\n## Root Cause\nDatabase connection pool exhaustion under high load."}
