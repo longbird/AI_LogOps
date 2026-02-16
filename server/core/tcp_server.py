@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 from typing import Protocol, cast
 
 from server.core.session_mgr import SessionManager
@@ -13,8 +14,13 @@ from shared.protocol import (
     Packet,
     PacketHeader,
     PacketType,
+    LogHistPayload,
+    LogRealPayload,
 )
 from shared.utils import setup_logging
+
+if TYPE_CHECKING:
+    from server.storage.manager import StorageManager
 
 
 class TCPServer:
@@ -24,11 +30,13 @@ class TCPServer:
         port: int,
         session_mgr: SessionManager,
         auth_token: str,
+        storage_mgr: StorageManager | None = None,
     ):
         self.host: str = host
         self.port: int = port
         self.session_mgr: SessionManager = session_mgr
         self.auth_token: str = auth_token
+        self.storage_mgr: StorageManager | None = storage_mgr
         self._logger: logging.Logger = setup_logging(self.__class__.__name__)
         self._server: asyncio.base_events.Server | None = None
         self._is_running: bool = False
@@ -210,12 +218,15 @@ class TCPServer:
                 self._logger.info("disconnect received: agent_id=%s", agent_id)
                 break
 
-            if packet_type in {
-                PacketType.LOG_HIST,
-                PacketType.LOG_REAL,
-                PacketType.FILE_ACK,
-                PacketType.CMD_CTRL_ACK,
-            }:
+            if packet_type == PacketType.LOG_HIST:
+                self._handle_log_hist(agent_id, payload)
+                continue
+
+            if packet_type == PacketType.LOG_REAL:
+                self._handle_log_real(agent_id, payload)
+                continue
+
+            if packet_type in {PacketType.FILE_ACK, PacketType.CMD_CTRL_ACK}:
                 self._logger.info(
                     "stub packet received: agent_id=%s type=%s payload_len=%s",
                     agent_id,
@@ -230,6 +241,46 @@ class TCPServer:
                 int(packet_type),
                 payload_length,
             )
+
+    def _handle_log_hist(self, agent_id: str, payload: bytes) -> None:
+        if self.storage_mgr is None:
+            return
+
+        try:
+            message = LogHistPayload.unpack(payload)
+            saved_path = self.storage_mgr.save_log_history(
+                agent_id=agent_id,
+                filename=message.filename,
+                data=message.data,
+            )
+            self._logger.info(
+                "log history stored: agent_id=%s filename=%s path=%s size=%s",
+                agent_id,
+                message.filename,
+                saved_path,
+                len(message.data),
+            )
+        except ValueError:
+            self._logger.warning("invalid LOG_HIST payload: agent_id=%s", agent_id)
+
+    def _handle_log_real(self, agent_id: str, payload: bytes) -> None:
+        if self.storage_mgr is None:
+            return
+
+        try:
+            message = LogRealPayload.unpack(payload)
+            self.storage_mgr.append_realtime_log(
+                agent_id=agent_id,
+                filename=message.filename,
+                line=message.line,
+            )
+            self._logger.debug(
+                "realtime log appended: agent_id=%s filename=%s",
+                agent_id,
+                message.filename,
+            )
+        except ValueError:
+            self._logger.warning("invalid LOG_REAL payload: agent_id=%s", agent_id)
 
 
 class _WriterLike(Protocol):
