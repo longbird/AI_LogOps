@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
 
 
 class AgentState(str, Enum):
@@ -28,7 +27,7 @@ class AgentInfo:
 class AgentSession:
     agent_info: AgentInfo
     session_id: str
-    writer: Any = None
+    writer: object | None = None
     last_heartbeat: float = field(default_factory=time.time)
     log_buffer: list[str] = field(default_factory=list)
     deploy_history: list[dict[str, object]] = field(default_factory=list)
