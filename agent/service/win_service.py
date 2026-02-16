@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+# pyright: reportMissingImports=false, reportUnknownMemberType=false, reportPrivateUsage=false
+
 import asyncio
 import contextlib
+import logging
 import subprocess
 import sys
 import threading
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import ClassVar, cast
 
 from agent.core.deploy_handler import DeployHandler
 from agent.core.log_watcher import LogWatcher
@@ -25,16 +29,16 @@ except ImportError as exc:  # pragma: no cover - exercised via stubs in tests
 
 
 class AILogOpsAgentService(win32serviceutil.ServiceFramework):
-    _svc_name_ = "AILogOps-Agent"
-    _svc_display_name_ = "AI-LogOps Agent Service"
-    _svc_description_ = "AI-LogOps 원격 로그 분석 및 자동 배포 에이전트"
-    _svc_start_type_ = win32service.SERVICE_AUTO_START
+    _svc_name_: ClassVar[str] = "AILogOps-Agent"
+    _svc_display_name_: ClassVar[str] = "AI-LogOps Agent Service"
+    _svc_description_: ClassVar[str] = "AI-LogOps 원격 로그 분석 및 자동 배포 에이전트"
+    _svc_start_type_: ClassVar[int] = win32service.SERVICE_AUTO_START
 
     def __init__(self, args: list[str]):
         super().__init__(args)
-        self._logger = setup_logging(self.__class__.__name__)
-        self._stop_handle = win32event.CreateEvent(None, False, False, None)
-        self._stop_requested = threading.Event()
+        self._logger: logging.Logger = setup_logging(self.__class__.__name__)
+        self._stop_handle: int = win32event.CreateEvent(None, False, False, None)
+        self._stop_requested: threading.Event = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
 
     def SvcStop(self) -> None:
@@ -44,7 +48,7 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
 
         loop = self._loop
         if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(lambda: None)
+            _ = loop.call_soon_threadsafe(lambda: None)
 
     def SvcDoRun(self) -> None:
         servicemanager.LogMsg(
@@ -60,9 +64,9 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         finally:
             pending = asyncio.all_tasks(self._loop)
             for task in pending:
-                task.cancel()
+                _ = task.cancel()
             if pending:
-                self._loop.run_until_complete(
+                _ = self._loop.run_until_complete(
                     asyncio.gather(*pending, return_exceptions=True)
                 )
             self._loop.close()
@@ -85,37 +89,36 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         connection_cfg = _as_mapping(config.get("connection"))
 
         tcp_client = TCPClient(
-            agent_id=str(agent_cfg.get("id", "agent-unknown")),
-            version=str(agent_cfg.get("version", "0.0.0")),
-            token=str(connection_cfg.get("token", "")),
-            host=str(connection_cfg.get("host", "127.0.0.1")),
-            port=int(connection_cfg.get("port", 9500)),
-            heartbeat_interval=int(connection_cfg.get("heartbeat_interval", 30)),
-            reconnect_attempts=int(connection_cfg.get("reconnect_attempts", 5)),
-            reconnect_delay=int(connection_cfg.get("reconnect_delay", 10)),
+            agent_id=_to_str(agent_cfg.get("id"), "agent-unknown"),
+            version=_to_str(agent_cfg.get("version"), "0.0.0"),
+            token=_to_str(connection_cfg.get("token"), ""),
+            host=_to_str(connection_cfg.get("host"), "127.0.0.1"),
+            port=_to_int(connection_cfg.get("port"), 9500),
+            heartbeat_interval=_to_int(connection_cfg.get("heartbeat_interval"), 30),
+            reconnect_attempts=_to_int(connection_cfg.get("reconnect_attempts"), 5),
+            reconnect_delay=_to_int(connection_cfg.get("reconnect_delay"), 10),
         )
         process_mgr = ProcessManager(
-            process_name=str(process_cfg.get("name", "")),
-            process_path=str(process_cfg.get("path", "")),
-            backup_dir=str(process_cfg.get("backup_dir", "./backups")),
+            process_name=_to_str(process_cfg.get("name"), ""),
+            process_path=_to_str(process_cfg.get("path"), ""),
+            backup_dir=_to_str(process_cfg.get("backup_dir"), "./backups"),
         )
         deploy_handler = DeployHandler(
             tcp_client=tcp_client,
             process_mgr=process_mgr,
-            transfer_dir=str(
-                monitoring_cfg.get("transfer_dir", "agent/storage/transfers")
+            transfer_dir=_to_str(
+                monitoring_cfg.get("transfer_dir"),
+                "agent/storage/transfers",
             ),
         )
         watcher = LogWatcher(
-            watch_dirs=[str(x) for x in monitoring_cfg.get("log_folders", [])],
-            extensions=[
-                str(x) for x in monitoring_cfg.get("watch_extensions", [".log"])
-            ],
+            watch_dirs=_to_list_str(monitoring_cfg.get("log_folders"), []),
+            extensions=_to_list_str(monitoring_cfg.get("watch_extensions"), [".log"]),
             on_new_line=self._build_log_sender(tcp_client),
         )
         poller = AgentTelegramPoller(
-            bot_token=str(telegram_cfg.get("bot_token", "")),
-            admin_chat_id=int(telegram_cfg.get("admin_chat_id", 0)),
+            bot_token=_to_str(telegram_cfg.get("bot_token"), ""),
+            admin_chat_id=_to_int(telegram_cfg.get("admin_chat_id"), 0),
         )
 
         tcp_client.on_cmd_deploy = deploy_handler.handle_cmd_deploy
@@ -124,7 +127,7 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         poller.on_connect = self._build_connect_handler(
             tcp_client=tcp_client,
             watcher=watcher,
-            history_max_mb=int(monitoring_cfg.get("history_max_mb", 10)),
+            history_max_mb=_to_int(monitoring_cfg.get("history_max_mb"), 10),
         )
         poller.on_disconnect = self._build_disconnect_handler(tcp_client)
 
@@ -142,7 +145,10 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                 await tcp_client.disconnect()
             logger.info("agent service loop ended")
 
-    def _build_log_sender(self, tcp_client: TCPClient):
+    def _build_log_sender(
+        self,
+        tcp_client: TCPClient,
+    ) -> Callable[[str, str], Awaitable[None]]:
         async def _send_log(filename: str, line: str) -> None:
             if not tcp_client.is_connected:
                 return
@@ -156,7 +162,7 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         tcp_client: TCPClient,
         watcher: LogWatcher,
         history_max_mb: int,
-    ):
+    ) -> Callable[[str, int], Awaitable[None]]:
         async def _connect(ip: str, port: int) -> None:
             tcp_client.host = ip
             tcp_client.port = port
@@ -173,7 +179,10 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
 
         return _connect
 
-    def _build_disconnect_handler(self, tcp_client: TCPClient):
+    def _build_disconnect_handler(
+        self,
+        tcp_client: TCPClient,
+    ) -> Callable[[], Awaitable[None]]:
         async def _disconnect() -> None:
             await tcp_client.disconnect()
 
@@ -203,15 +212,49 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                     await tcp_client.send_heartbeat()
 
 
-def _as_mapping(value: object) -> dict[str, Any]:
+def _as_mapping(value: object) -> dict[str, object]:
     if isinstance(value, dict):
-        return value
+        mapping = cast(dict[object, object], value)
+        result: dict[str, object] = {}
+        for key, item in mapping.items():
+            result[str(key)] = item
+        return result
     return {}
 
 
-def _load_agent_config() -> dict[str, Any]:
+def _load_agent_config() -> dict[str, object]:
     config_path = Path(__file__).resolve().parents[1] / "config.yaml"
-    return load_yaml_config(str(config_path))
+    return cast(dict[str, object], load_yaml_config(str(config_path)))
+
+
+def _to_str(value: object, default: str) -> str:
+    if isinstance(value, str):
+        return value
+    return default
+
+
+def _to_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        with contextlib.suppress(ValueError):
+            return int(value)
+    return default
+
+
+def _to_list_str(value: object, default: list[str]) -> list[str]:
+    if not isinstance(value, list):
+        return default
+
+    items = cast(list[object], value)
+    result: list[str] = []
+    for item in items:
+        text = item if isinstance(item, str) else str(item)
+        if text:
+            result.append(text)
+    return result
 
 
 def configure_failure_actions(service_name: str) -> None:

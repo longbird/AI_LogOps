@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# pyright: reportMissingImports=false, reportUnknownMemberType=false, reportUnknownVariableType=false
+# pyright: basic, reportMissingImports=false, reportAttributeAccessIssue=false
 
 import importlib
 import sys
