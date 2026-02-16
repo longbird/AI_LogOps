@@ -98,8 +98,6 @@ class AuthPayload:
     _SIZE: ClassVar[int] = 104
 
     def pack(self) -> bytes:
-        if len(self.token.encode("utf-8")) != 64:
-            raise ValueError("token must be exactly 64 bytes")
         return self._STRUCT.pack(
             _encode_fixed(self.agent_id, 32, "agent_id"),
             _encode_fixed(self.version, 8, "version"),

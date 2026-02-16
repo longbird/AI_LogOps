@@ -5,6 +5,7 @@ from dataclasses import asdict
 import pytest
 
 from shared.protocol import (
+    CHUNK_SIZE,
     HEADER_SIZE,
     MAX_PAYLOAD_SIZE,
     AuthAckPayload,
@@ -23,6 +24,11 @@ from shared.protocol import (
 
 def test_header_size_constant() -> None:
     assert HEADER_SIZE == 5
+
+
+def test_protocol_size_constants() -> None:
+    assert CHUNK_SIZE == 4096
+    assert MAX_PAYLOAD_SIZE == 10 * 1024 * 1024
 
 
 def test_packet_type_values_match_spec() -> None:
@@ -88,6 +94,18 @@ def test_packet_header_rejects_negative_payload() -> None:
         _ = PacketHeader.pack(packet_type=PacketType.AUTH, payload_length=-1)
 
 
+@pytest.mark.parametrize("size", [0, 1, 2, 3, 4])
+def test_packet_header_unpack_rejects_wrong_header_size(size: int) -> None:
+    with pytest.raises(ValueError):
+        _ = PacketHeader.unpack(b"\x00" * size)
+
+
+def test_packet_header_unpack_rejects_unknown_packet_type() -> None:
+    invalid_header = b"\x05" + (0).to_bytes(4, byteorder="big")
+    with pytest.raises(ValueError):
+        _ = PacketHeader.unpack(invalid_header)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -106,6 +124,14 @@ def test_auth_payload_pack_unpack_roundtrip(payload: AuthPayload) -> None:
 def test_auth_payload_packs_to_fixed_104_bytes() -> None:
     payload = AuthPayload(agent_id="agent-01", version="1.0.0", token="t" * 64)
     assert len(payload.pack()) == 104
+
+
+def test_auth_payload_accepts_short_token_and_pads() -> None:
+    payload = AuthPayload(agent_id="agent-01", version="1.0.0", token="shorttoken")
+    packed = payload.pack()
+    unpacked = AuthPayload.unpack(packed)
+    assert len(packed) == 104
+    assert unpacked.token == "shorttoken"
 
 
 def test_auth_ack_payload_pack_unpack_success() -> None:
@@ -132,6 +158,22 @@ def test_heartbeat_payload_pack_unpack_roundtrip() -> None:
     unpacked = HeartbeatPayload.unpack(packed)
     assert unpacked == payload
     assert len(packed) == 10
+
+
+@pytest.mark.parametrize(
+    ("cpu_percent", "mem_percent"),
+    [(150, 10), (10, 150), (101, 100), (100, 101)],
+)
+def test_heartbeat_payload_rejects_out_of_range_values(
+    cpu_percent: int, mem_percent: int
+) -> None:
+    payload = HeartbeatPayload(
+        timestamp=1_700_000_000,
+        cpu_percent=cpu_percent,
+        mem_percent=mem_percent,
+    )
+    with pytest.raises(ValueError):
+        _ = payload.pack()
 
 
 @pytest.mark.parametrize("reason", list(DisconnectReason))
