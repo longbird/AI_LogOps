@@ -51,6 +51,7 @@ class TCPClient:
 
         self.session_id: str = ""
         self.on_cmd_deploy: PacketCallback | None = None
+        self.on_file_chunk: PacketCallback | None = None
         self.on_cmd_ctrl: PacketCallback | None = None
         self.on_agent_update: PacketCallback | None = None
 
@@ -188,6 +189,8 @@ class TCPClient:
                         await self.on_cmd_deploy(payload)
                     continue
                 if packet_type == PacketType.FILE_CHUNK:
+                    if self.on_file_chunk is not None:
+                        await self.on_file_chunk(payload)
                     continue
                 if packet_type == PacketType.CMD_CTRL:
                     if self.on_cmd_ctrl is not None:

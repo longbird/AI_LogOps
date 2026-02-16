@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Protocol, cast
 
@@ -14,10 +15,16 @@ from shared.protocol import (
     Packet,
     PacketHeader,
     PacketType,
+    CHUNK_SIZE,
+    CmdCtrlAckPayload,
+    CmdDeployPayload,
+    CtrlAckStatus,
+    FileAckPayload,
+    FileChunkPayload,
     LogHistPayload,
     LogRealPayload,
 )
-from shared.utils import setup_logging
+from shared.utils import compute_sha256, setup_logging
 
 if TYPE_CHECKING:
     from server.storage.manager import StorageManager
@@ -40,6 +47,7 @@ class TCPServer:
         self._logger: logging.Logger = setup_logging(self.__class__.__name__)
         self._server: asyncio.base_events.Server | None = None
         self._is_running: bool = False
+        self._deploy_results: dict[str, asyncio.Future[CmdCtrlAckPayload]] = {}
 
     @property
     def is_running(self) -> bool:
@@ -227,12 +235,10 @@ class TCPServer:
                 continue
 
             if packet_type in {PacketType.FILE_ACK, PacketType.CMD_CTRL_ACK}:
-                self._logger.info(
-                    "stub packet received: agent_id=%s type=%s payload_len=%s",
-                    agent_id,
-                    packet_type.name,
-                    payload_length,
-                )
+                if packet_type == PacketType.FILE_ACK:
+                    self._handle_file_ack(agent_id, payload)
+                else:
+                    self._handle_cmd_ctrl_ack(agent_id, payload)
                 continue
 
             self._logger.warning(
@@ -281,6 +287,82 @@ class TCPServer:
             )
         except ValueError:
             self._logger.warning("invalid LOG_REAL payload: agent_id=%s", agent_id)
+
+    def _handle_file_ack(self, agent_id: str, payload: bytes) -> None:
+        try:
+            ack = FileAckPayload.unpack(payload)
+        except ValueError:
+            self._logger.warning("invalid FILE_ACK payload: agent_id=%s", agent_id)
+            return
+
+        self._logger.info(
+            "file ack received: agent_id=%s seq=%s status=%s",
+            agent_id,
+            ack.seq_num,
+            ack.status,
+        )
+
+    def _handle_cmd_ctrl_ack(self, agent_id: str, payload: bytes) -> None:
+        try:
+            ack = CmdCtrlAckPayload.unpack(payload)
+        except ValueError:
+            self._logger.warning("invalid CMD_CTRL_ACK payload: agent_id=%s", agent_id)
+            return
+
+        self._logger.info(
+            "cmd ctrl ack received: agent_id=%s action=%s pid=%s status=%s",
+            agent_id,
+            ack.action.name,
+            ack.pid,
+            ack.status.name,
+        )
+
+        future = self._deploy_results.get(agent_id)
+        if future is not None and not future.done():
+            future.set_result(ack)
+
+        if ack.status == CtrlAckStatus.DEPLOY_VERIFIED:
+            self._logger.info("deploy verified: agent_id=%s pid=%s", agent_id, ack.pid)
+        elif ack.status == CtrlAckStatus.DEPLOY_ROLLBACK:
+            self._logger.warning("deploy rolled back: agent_id=%s", agent_id)
+
+    async def send_deploy(self, agent_id: str, file_path: str) -> bool:
+        """에이전트에 파일 배포. CMD_DEPLOY + FILE_CHUNKs 전송."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return False
+        writer = cast(_WriterLike, session.writer)
+
+        path = Path(file_path)
+        if not path.exists():
+            return False
+
+        data = path.read_bytes()
+        sha256_hash = compute_sha256(file_path)
+
+        loop = asyncio.get_running_loop()
+        self._deploy_results[agent_id] = loop.create_future()
+
+        cmd = CmdDeployPayload(
+            file_size=len(data), sha256=sha256_hash, filename=path.name
+        )
+        writer.write(Packet.build(PacketType.CMD_DEPLOY, cmd.pack()))
+        await writer.drain()
+
+        seq = 0
+        for offset in range(0, len(data), CHUNK_SIZE):
+            chunk_data = data[offset : offset + CHUNK_SIZE]
+            chunk = FileChunkPayload(seq_num=seq, data=chunk_data)
+            writer.write(Packet.build(PacketType.FILE_CHUNK, chunk.pack()))
+            await writer.drain()
+            seq += 1
+
+        return True
+
+    def get_deploy_result_future(
+        self, agent_id: str
+    ) -> asyncio.Future[CmdCtrlAckPayload] | None:
+        return self._deploy_results.get(agent_id)
 
 
 class _WriterLike(Protocol):
