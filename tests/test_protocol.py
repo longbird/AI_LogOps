@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# pyright: reportAttributeAccessIssue=false, reportMissingImports=false
+
 from dataclasses import asdict
 
 import pytest
@@ -16,6 +18,8 @@ from shared.protocol import (
     DisconnectPayload,
     DisconnectReason,
     HeartbeatPayload,
+    LogHistPayload,
+    LogRealPayload,
     Packet,
     PacketHeader,
     PacketType,
@@ -196,3 +200,37 @@ def test_packet_build_and_parse_header_roundtrip(packet_type: PacketType) -> Non
     assert parsed_type == packet_type
     assert parsed_length == len(payload)
     assert body == payload
+
+
+def test_log_hist_payload_roundtrip() -> None:
+    payload = LogHistPayload(filename="app.log", data=b"line1\nline2\n")
+    packed = payload.pack()
+    unpacked = LogHistPayload.unpack(packed)
+    assert unpacked.filename == "app.log"
+    assert unpacked.data == b"line1\nline2\n"
+
+
+def test_log_real_payload_roundtrip() -> None:
+    payload = LogRealPayload(filename="app.log", line="service started")
+    packed = payload.pack()
+    unpacked = LogRealPayload.unpack(packed)
+    assert unpacked.filename == "app.log"
+    assert unpacked.line == "service started"
+
+
+def test_log_hist_large_data() -> None:
+    data_size = MAX_PAYLOAD_SIZE - 260
+    payload = LogHistPayload(filename="large.log", data=b"x" * data_size)
+    packed = payload.pack()
+    unpacked = LogHistPayload.unpack(packed)
+    assert len(packed) == MAX_PAYLOAD_SIZE
+    assert unpacked.filename == "large.log"
+    assert unpacked.data == b"x" * data_size
+
+
+def test_log_real_unicode_line() -> None:
+    payload = LogRealPayload(filename="korean.log", line="로그 수집 시작")
+    packed = payload.pack()
+    unpacked = LogRealPayload.unpack(packed)
+    assert unpacked.filename == "korean.log"
+    assert unpacked.line == "로그 수집 시작"

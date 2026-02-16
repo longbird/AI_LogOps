@@ -141,6 +141,81 @@ class AuthAckPayload:
 
 
 @dataclass(slots=True)
+class LogHistPayload:
+    """LOG_HIST: [FileName(256B)] [FileSize(4B)] [Data(variable)]."""
+
+    filename: str
+    data: bytes
+
+    _NAME_SIZE: ClassVar[int] = 256
+    _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct("!256sI")
+    _HEADER_SIZE: ClassVar[int] = 260
+
+    def pack(self) -> bytes:
+        data_len = len(self.data)
+        if data_len > 0xFFFFFFFF:
+            raise ValueError("data exceeds 4-byte filesize field")
+        return (
+            self._HEADER_STRUCT.pack(
+                _encode_fixed(self.filename, self._NAME_SIZE, "filename"),
+                data_len,
+            )
+            + self.data
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> LogHistPayload:
+        if len(data) < cls._HEADER_SIZE:
+            raise ValueError("log history payload is too short")
+        filename_raw, file_size = cast(
+            tuple[bytes, int], cls._HEADER_STRUCT.unpack(data[: cls._HEADER_SIZE])
+        )
+        body = data[cls._HEADER_SIZE :]
+        if len(body) != file_size:
+            raise ValueError("log history payload data size mismatch")
+        return cls(filename=_decode_fixed(filename_raw), data=body)
+
+
+@dataclass(slots=True)
+class LogRealPayload:
+    """LOG_REAL: [FileName(256B)] [LineLen(2B)] [Line(variable)]."""
+
+    filename: str
+    line: str
+
+    _NAME_SIZE: ClassVar[int] = 256
+    _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct("!256sH")
+    _HEADER_SIZE: ClassVar[int] = 258
+
+    def pack(self) -> bytes:
+        line_bytes = self.line.encode("utf-8")
+        line_len = len(line_bytes)
+        if line_len > 0xFFFF:
+            raise ValueError("line exceeds 2-byte length field")
+        return (
+            self._HEADER_STRUCT.pack(
+                _encode_fixed(self.filename, self._NAME_SIZE, "filename"),
+                line_len,
+            )
+            + line_bytes
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> LogRealPayload:
+        if len(data) < cls._HEADER_SIZE:
+            raise ValueError("log real payload is too short")
+        filename_raw, line_len = cast(
+            tuple[bytes, int], cls._HEADER_STRUCT.unpack(data[: cls._HEADER_SIZE])
+        )
+        line_bytes = data[cls._HEADER_SIZE :]
+        if len(line_bytes) != line_len:
+            raise ValueError("log real payload line size mismatch")
+        return cls(
+            filename=_decode_fixed(filename_raw), line=line_bytes.decode("utf-8")
+        )
+
+
+@dataclass(slots=True)
 class HeartbeatPayload:
     timestamp: int
     cpu_percent: int
