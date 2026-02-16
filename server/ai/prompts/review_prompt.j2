@@ -1,0 +1,7 @@
+Role: 시니어 코드 리뷰어
+Input: {{ original_code }} + {{ fixed_code }} + {{ improvement_plan }}
+Task:
+  1) 변경사항이 계획과 일치하는지 검증
+  2) 버그, 보안 취약점, 논리 오류 탐지
+  3) 신뢰도 점수 산출 (0~100)
+Output: JSON { severity, issues[], confidence_score, deploy_recommendation }
