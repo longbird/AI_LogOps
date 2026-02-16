@@ -1,0 +1,24 @@
+agent:
+  id: "PC-FACTORY-01"
+  version: "1.0.0"
+
+telegram:
+  bot_token: "YOUR_BOT_TOKEN"
+  admin_chat_id: 123456789
+
+monitoring:
+  log_folders:
+    - "C:/Apps/TargetApp/logs"
+    - "C:/Apps/TargetApp/error_logs"
+  history_max_mb: 10
+  watch_extensions: [".log", ".txt"]
+
+target_process:
+  name: "TargetApp.exe"
+  path: "C:/Apps/TargetApp/TargetApp.exe"
+  backup_dir: "C:/Apps/TargetApp/backups"
+
+connection:
+  heartbeat_interval: 30
+  reconnect_attempts: 5
+  reconnect_delay: 10

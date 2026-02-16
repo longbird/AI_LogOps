@@ -1,0 +1,34 @@
+server:
+  tcp_host: "0.0.0.0"
+  tcp_port: 9500
+  max_agents: 10
+
+ai:
+  default_provider: "openai"
+  openai:
+    api_key: "sk-..."
+    model: "gpt-4o"
+  claude:
+    api_key: "sk-ant-..."
+    model: "claude-sonnet-4-20250514"
+
+telegram:
+  bot_token: "YOUR_BOT_TOKEN"
+  admin_chat_ids: [123456789]
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8080
+  secret_key: "CHANGE_ME"
+
+storage:
+  base_dir: "./storage"
+  max_log_retention_days: 30
+  max_backups_per_agent: 5
+
+health:
+  check_interval: 300
+  cpu_threshold: 90
+  memory_threshold: 85
+  disk_threshold: 90
+  alert_cooldown: 1800
