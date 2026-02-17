@@ -144,6 +144,7 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         )
         log_cmd_handler_ref[0] = log_cmd_handler
         tcp_client.on_cmd_log = log_cmd_handler.handle_cmd_log
+        tcp_client.on_log_file_select = log_cmd_handler.handle_file_select
 
         tcp_client.on_cmd_deploy = deploy_handler.handle_cmd_deploy
         tcp_client.on_file_chunk = deploy_handler.handle_file_chunk
