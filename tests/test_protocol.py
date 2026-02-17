@@ -16,6 +16,8 @@ from shared.protocol import (
     CmdCtrlPayload,
     CmdCtrlAckPayload,
     CmdDeployPayload,
+    CmdLogAckPayload,
+    CmdLogPayload,
     CtrlAckStatus,
     CtrlAction,
     DisconnectPayload,
@@ -24,6 +26,8 @@ from shared.protocol import (
     FileChunkPayload,
     HeartbeatPayload,
     LogHistPayload,
+    LogAckStatus,
+    LogAction,
     LogRealPayload,
     Packet,
     PacketHeader,
@@ -300,3 +304,42 @@ def test_cmd_ctrl_payload_pack_unpack() -> None:
     unpacked = CmdCtrlPayload.unpack(packed)
     assert unpacked.action == CtrlAction.RESTART
     assert len(packed) == 1
+
+
+def test_cmdlog_payload_pack_unpack_round_trip() -> None:
+    payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217")
+    packed = payload.pack()
+    unpacked = CmdLogPayload.unpack(packed)
+    assert unpacked == payload
+    assert len(packed) == 9
+
+
+def test_cmdlog_payload_empty_date() -> None:
+    payload = CmdLogPayload(action=LogAction.REAL_START, date="")
+    packed = payload.pack()
+    unpacked = CmdLogPayload.unpack(packed)
+    assert unpacked.action == LogAction.REAL_START
+    assert unpacked.date == ""
+    assert len(packed) == 9
+
+
+def test_cmdlog_payload_invalid_size() -> None:
+    with pytest.raises(ValueError, match="cmd log payload must be exactly 9 bytes"):
+        _ = CmdLogPayload.unpack(b"\x00" * 8)
+
+
+def test_cmdlogack_payload_pack_unpack_round_trip() -> None:
+    payload = CmdLogAckPayload(
+        action=LogAction.HIST_REQUEST,
+        status=LogAckStatus.SUCCESS,
+        file_count=3,
+    )
+    packed = payload.pack()
+    unpacked = CmdLogAckPayload.unpack(packed)
+    assert unpacked == payload
+    assert len(packed) == 4
+
+
+def test_cmdlogack_payload_invalid_size() -> None:
+    with pytest.raises(ValueError, match="cmd log ack payload must be exactly 4 bytes"):
+        _ = CmdLogAckPayload.unpack(b"\x00" * 3)

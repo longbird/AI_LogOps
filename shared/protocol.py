@@ -20,6 +20,8 @@ class PacketType(IntEnum):
     FILE_ACK = 0x12
     CMD_CTRL = 0x13
     CMD_CTRL_ACK = 0x14
+    CMD_LOG = 0x15
+    CMD_LOG_ACK = 0x16
     AGENT_UPDATE = 0x20
     HEARTBEAT = 0xFE
     DISCONNECT = 0xFF
@@ -42,6 +44,17 @@ class CtrlAckStatus(IntEnum):
     FAILED = 0x01
     DEPLOY_VERIFIED = 0x10
     DEPLOY_ROLLBACK = 0x11
+
+
+class LogAction(IntEnum):
+    HIST_REQUEST = 0x01
+    REAL_START = 0x02
+    REAL_STOP = 0x03
+
+
+class LogAckStatus(IntEnum):
+    SUCCESS = 0x00
+    FAILED = 0x01
 
 
 class DisconnectReason(IntEnum):
@@ -362,6 +375,62 @@ class CmdCtrlAckPayload:
             action=CtrlAction(action_raw),
             pid=pid,
             status=CtrlAckStatus(status_raw),
+        )
+
+
+@dataclass(slots=True)
+class CmdLogPayload:
+    """CMD_LOG: [Action(1B)][Date(8B, null-padded UTF-8 "YYYYMMDD")] = 9B."""
+
+    action: LogAction
+    date: str
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!B8s")
+    _SIZE: ClassVar[int] = 9
+
+    def pack(self) -> bytes:
+        return self._STRUCT.pack(
+            LogAction(self.action),
+            _encode_fixed(self.date, 8, "date"),
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdLogPayload:
+        if len(data) != cls._SIZE:
+            raise ValueError("cmd log payload must be exactly 9 bytes")
+        action_raw, date_raw = cast(tuple[int, bytes], cls._STRUCT.unpack(data))
+        return cls(action=LogAction(action_raw), date=_decode_fixed(date_raw))
+
+
+@dataclass(slots=True)
+class CmdLogAckPayload:
+    """CMD_LOG_ACK: [Action(1B)][Status(1B)][FileCount(2B)] = 4B."""
+
+    action: LogAction
+    status: LogAckStatus
+    file_count: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!BBH")
+    _SIZE: ClassVar[int] = 4
+
+    def pack(self) -> bytes:
+        return self._STRUCT.pack(
+            LogAction(self.action),
+            LogAckStatus(self.status),
+            self.file_count,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdLogAckPayload:
+        if len(data) != cls._SIZE:
+            raise ValueError("cmd log ack payload must be exactly 4 bytes")
+        action_raw, status_raw, file_count = cast(
+            tuple[int, int, int], cls._STRUCT.unpack(data)
+        )
+        return cls(
+            action=LogAction(action_raw),
+            status=LogAckStatus(status_raw),
+            file_count=file_count,
         )
 
 
