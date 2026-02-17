@@ -181,3 +181,15 @@ def test_main_routes_to_handle_command_line_and_recovery(
 
     assert state["handle_cls"] is module.AILogOpsAgentService
     assert recovery_calls == ["AILogOps-Agent"]
+
+
+def test_to_bool_helper(win_service_module: tuple[ModuleType, dict[str, Any]]) -> None:
+    module, _ = win_service_module
+
+    assert module._to_bool(True, False) is True
+    assert module._to_bool(False, True) is False
+    assert module._to_bool("true", False) is True
+    assert module._to_bool("yes", False) is True
+    assert module._to_bool("false", True) is False
+    assert module._to_bool(None, True) is True
+    assert module._to_bool(42, False) is False

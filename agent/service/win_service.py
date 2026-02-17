@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# pyright: reportMissingImports=false, reportUnknownMemberType=false, reportPrivateUsage=false
+# pyright: reportMissingImports=false, reportUnknownMemberType=false, reportPrivateUsage=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportUnknownArgumentType=false
 
 import asyncio
 import contextlib
@@ -13,8 +13,12 @@ from pathlib import Path
 from typing import ClassVar, cast
 
 from agent.core.deploy_handler import DeployHandler
+from agent.core.log_cmd_handler import LogCmdHandler
 from agent.core.log_watcher import LogWatcher
+from agent.core.process_monitor import ProcessMonitorLoop
 from agent.core.process_mgr import ProcessManager
+from agent.core.scheduler import ProcessScheduler
+from agent.core.system_monitor import SystemMonitor
 from agent.core.tcp_client import TCPClient
 from agent.telegram.poller import AgentTelegramPoller
 from shared.utils import load_yaml_config, setup_logging
@@ -86,7 +90,13 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         telegram_cfg = _as_mapping(config.get("telegram"))
         monitoring_cfg = _as_mapping(config.get("monitoring"))
         process_cfg = _as_mapping(config.get("target_process"))
+        schedule_cfg = _as_mapping(config.get("schedule"))
         connection_cfg = _as_mapping(config.get("connection"))
+
+        process_args = _to_list_str(process_cfg.get("args"), [])
+        auto_restart = _to_bool(process_cfg.get("auto_restart"), False)
+        check_interval = _to_int(process_cfg.get("check_interval"), 30)
+        restart_times = _to_list_str(schedule_cfg.get("restart_times"), [])
 
         tcp_client = TCPClient(
             agent_id=_to_str(agent_cfg.get("id"), "agent-unknown"),
@@ -111,15 +121,29 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                 "agent/storage/transfers",
             ),
         )
+        log_cmd_handler_ref: list[LogCmdHandler | None] = [None]
         watcher = LogWatcher(
             watch_dirs=_to_list_str(monitoring_cfg.get("log_folders"), []),
             extensions=_to_list_str(monitoring_cfg.get("watch_extensions"), [".log"]),
-            on_new_line=self._build_log_sender(tcp_client),
+            on_new_line=self._build_log_sender(tcp_client, log_cmd_handler_ref),
         )
         poller = AgentTelegramPoller(
             bot_token=_to_str(telegram_cfg.get("bot_token"), ""),
             admin_chat_id=_to_int(telegram_cfg.get("admin_chat_id"), 0),
         )
+
+        system_monitor = SystemMonitor(
+            target_process_name=_to_str(process_cfg.get("name"), ""),
+        )
+        poller.system_monitor = system_monitor
+
+        log_cmd_handler = LogCmdHandler(
+            log_watcher=watcher,
+            tcp_client=tcp_client,
+            history_max_mb=_to_int(monitoring_cfg.get("history_max_mb"), 10),
+        )
+        log_cmd_handler_ref[0] = log_cmd_handler
+        tcp_client.on_cmd_log = log_cmd_handler.handle_cmd_log
 
         tcp_client.on_cmd_deploy = deploy_handler.handle_cmd_deploy
         tcp_client.on_file_chunk = deploy_handler.handle_file_chunk
@@ -131,12 +155,54 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         )
         poller.on_disconnect = self._build_disconnect_handler(tcp_client)
 
+        monitor_loop: ProcessMonitorLoop | None = None
+        monitor_task: asyncio.Task[None] | None = None
+        scheduler: ProcessScheduler | None = None
+        scheduler_task: asyncio.Task[None] | None = None
+
         await watcher.start()
         await poller.start()
+
+        async def _notify(message: str) -> None:
+            with contextlib.suppress(Exception):
+                await poller.send_message(message)
+
+        if auto_restart:
+            current_monitor_loop = ProcessMonitorLoop(
+                process_mgr=process_mgr,
+                check_interval=float(check_interval),
+                process_args=process_args or None,
+                on_notify=_notify,
+                enabled=True,
+            )
+            monitor_loop = current_monitor_loop
+            monitor_task = asyncio.create_task(current_monitor_loop.run())
+
+        if restart_times:
+            current_scheduler = ProcessScheduler(
+                process_mgr=process_mgr,
+                restart_times=restart_times,
+                process_args=process_args or None,
+                on_notify=_notify,
+            )
+            scheduler = current_scheduler
+            scheduler_task = asyncio.create_task(current_scheduler.run())
 
         try:
             await self._heartbeat_loop(tcp_client)
         finally:
+            if monitor_loop is not None:
+                monitor_loop.stop()
+            if scheduler is not None:
+                scheduler.stop()
+            if monitor_task is not None:
+                _ = monitor_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await monitor_task
+            if scheduler_task is not None:
+                _ = scheduler_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await scheduler_task
             with contextlib.suppress(Exception):
                 await poller.stop()
             with contextlib.suppress(Exception):
@@ -148,9 +214,13 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
     def _build_log_sender(
         self,
         tcp_client: TCPClient,
+        log_cmd_handler_ref: list[LogCmdHandler | None],
     ) -> Callable[[str, str], Awaitable[None]]:
         async def _send_log(filename: str, line: str) -> None:
             if not tcp_client.is_connected:
+                return
+            log_cmd_handler = log_cmd_handler_ref[0]
+            if log_cmd_handler is not None and not log_cmd_handler.is_realtime_active:
                 return
             with contextlib.suppress(ConnectionError, OSError):
                 await tcp_client.send_log_line(filename, line)
@@ -262,6 +332,14 @@ def _to_list_str(value: object, default: list[str]) -> list[str]:
         if text:
             result.append(text)
     return result
+
+
+def _to_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ("true", "1", "yes")
+    return default
 
 
 def configure_failure_actions(service_name: str) -> None:
