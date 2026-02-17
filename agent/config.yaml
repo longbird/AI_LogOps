@@ -17,6 +17,12 @@ target_process:
   name: "TargetApp.exe"
   path: "C:/Apps/TargetApp/TargetApp.exe"
   backup_dir: "C:/Apps/TargetApp/backups"
+  args: []                    # 프로세스 시작 인수 (예: ["--port", "8080"])
+  auto_restart: false         # 프로세스 종료 시 자동 재시작
+  check_interval: 30          # 자동 재시작 체크 간격 (초)
+
+schedule:
+  restart_times: []           # HH:MM 형식 (예: ["06:00", "18:00"])
 
 connection:
   heartbeat_interval: 30
