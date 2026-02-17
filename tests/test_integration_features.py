@@ -51,7 +51,20 @@ class TestFeatureA_LogTransmission:
 
         # Send HIST_REQUEST for 20260217
         payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
-        await handler.handle_cmd_log(payload)
+        task = asyncio.create_task(handler.handle_cmd_log(payload))
+        await asyncio.sleep(0.05)
+
+        # Verify: LOG_FILE_LIST sent
+        mock_client.send_log_file_list.assert_called_once()
+
+        # Send file selection
+        from shared.protocol import LogFileSelectPayload
+
+        select = LogFileSelectPayload(
+            filenames=["20260217_app.txt", "20260217_error.txt"]
+        ).pack()
+        await handler.handle_file_select(select)
+        await asyncio.wait_for(task, timeout=2.0)
 
         # Verify: ACK sent with file_count=2
         ack_call = mock_client.send_packet.call_args_list[0]
@@ -64,7 +77,7 @@ class TestFeatureA_LogTransmission:
         assert mock_client.send_log_history.call_count == 2
 
     async def test_hist_request_no_matching_date(self, tmp_path: Path) -> None:
-        """HIST_REQUEST for non-existent date returns ACK with file_count=0."""
+        """HIST_REQUEST for non-existent date returns empty file list."""
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         (log_dir / "20260217_app.txt").write_text("data\n")
@@ -81,10 +94,9 @@ class TestFeatureA_LogTransmission:
         payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20250101").pack()
         await handler.handle_cmd_log(payload)
 
-        ack_call = mock_client.send_packet.call_args_list[0]
-        ack = CmdLogAckPayload.unpack(ack_call[0][1])
-        assert ack.file_count == 0
-        assert ack.status == LogAckStatus.SUCCESS
+        # Empty file list sent, no ACK via send_packet
+        mock_client.send_log_file_list.assert_called_once_with([])
+        mock_client.send_packet.assert_not_called()
         mock_client.send_log_history.assert_not_called()
 
     async def test_realtime_toggle(self) -> None:
@@ -432,7 +444,15 @@ class TestFeaturesCombined:
 
         # HIST_REQUEST
         payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
-        await handler.handle_cmd_log(payload)
+        task = asyncio.create_task(handler.handle_cmd_log(payload))
+        await asyncio.sleep(0.05)
+
+        # Send file selection
+        from shared.protocol import LogFileSelectPayload
+
+        select = LogFileSelectPayload(filenames=["20260217_system.txt"]).pack()
+        await handler.handle_file_select(select)
+        await asyncio.wait_for(task, timeout=2.0)
 
         # Verify file was found and sent
         assert mock_client.send_log_history.call_count == 1
@@ -551,7 +571,17 @@ class TestFeaturesCombined:
         handler = LogCmdHandler(log_watcher=watcher, tcp_client=mock_client)
 
         payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
-        await handler.handle_cmd_log(payload)
+        task = asyncio.create_task(handler.handle_cmd_log(payload))
+        await asyncio.sleep(0.05)
+
+        # Send file selection for both matching files
+        from shared.protocol import LogFileSelectPayload
+
+        select = LogFileSelectPayload(
+            filenames=["20260217_app.txt", "20260217_app.log"]
+        ).pack()
+        await handler.handle_file_select(select)
+        await asyncio.wait_for(task, timeout=2.0)
 
         # ACK should have file_count=2 (.txt and .log, not .csv)
         ack = CmdLogAckPayload.unpack(mock_client.send_packet.call_args_list[0][0][1])

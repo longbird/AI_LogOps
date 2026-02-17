@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -13,18 +14,55 @@ from shared.protocol import (
     CmdLogAckPayload,
     LogAction,
     LogAckStatus,
+    LogFileEntry,
+    LogFileListPayload,
+    LogFileSelectPayload,
     PacketType,
 )
 
 
 class TestLogCmdHandlerHistRequest:
-    async def test_hist_request_sends_matching_files(self):
+    """2-phase selective transfer tests."""
+
+    async def test_hist_request_sends_file_list(self):
+        """Phase 1: HIST_REQUEST -> agent sends LOG_FILE_LIST."""
         mock_watcher = MagicMock()
+        entries = [
+            LogFileEntry(filename="20260217_app.txt", file_size=1024, md5=b"\xaa" * 16),
+            LogFileEntry(
+                filename="20260217_error.txt", file_size=512, md5=b"\xbb" * 16
+            ),
+        ]
+        mock_watcher.get_files_metadata.return_value = entries
         mock_watcher.find_files_by_date.return_value = [
             "/logs/20260217_app.txt",
             "/logs/20260217_error.txt",
         ]
-        mock_watcher.read_history.side_effect = [b"log data 1", b"log data 2"]
+        mock_watcher.read_history.side_effect = [b"data1", b"data2"]
+
+        mock_client = AsyncMock()
+        handler = LogCmdHandler(log_watcher=mock_watcher, tcp_client=mock_client)
+
+        payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
+        task = asyncio.create_task(handler.handle_cmd_log(payload))
+        await asyncio.sleep(0.05)
+
+        # File list sent
+        mock_client.send_log_file_list.assert_called_once_with(entries)
+        assert not task.done()
+
+        # Phase 2: select 1 file
+        select = LogFileSelectPayload(filenames=["20260217_app.txt"]).pack()
+        await handler.handle_file_select(select)
+        await asyncio.wait_for(task, timeout=2.0)
+
+        assert mock_client.send_log_history.call_count == 1
+        assert mock_client.send_log_history.call_args[0][0] == "20260217_app.txt"
+
+    async def test_hist_request_no_files_sends_empty_list(self):
+        """No files -> send empty list, no wait."""
+        mock_watcher = MagicMock()
+        mock_watcher.get_files_metadata.return_value = []
 
         mock_client = AsyncMock()
         handler = LogCmdHandler(log_watcher=mock_watcher, tcp_client=mock_client)
@@ -32,49 +70,96 @@ class TestLogCmdHandlerHistRequest:
         payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
         await handler.handle_cmd_log(payload)
 
-        # ACK with file_count=2 sent via send_packet
-        assert mock_client.send_packet.call_count >= 1
-        # Verify ACK payload
-        ack_call = mock_client.send_packet.call_args_list[0]
-        assert ack_call[0][0] == PacketType.CMD_LOG_ACK
-        ack_data = CmdLogAckPayload.unpack(ack_call[0][1])
-        assert ack_data.action == LogAction.HIST_REQUEST
-        assert ack_data.status == LogAckStatus.SUCCESS
-        assert ack_data.file_count == 2
-        # 2 LOG_HIST packets sent
+        mock_client.send_log_file_list.assert_called_once_with([])
+        mock_client.send_log_history.assert_not_called()
+
+    async def test_hist_request_all_files_selected(self):
+        """Server selects all -> agent sends all."""
+        mock_watcher = MagicMock()
+        entries = [
+            LogFileEntry(filename="f1.txt", file_size=100, md5=b"\xaa" * 16),
+            LogFileEntry(filename="f2.txt", file_size=200, md5=b"\xbb" * 16),
+        ]
+        mock_watcher.get_files_metadata.return_value = entries
+        mock_watcher.find_files_by_date.return_value = ["/logs/f1.txt", "/logs/f2.txt"]
+        mock_watcher.read_history.side_effect = [b"data1", b"data2"]
+
+        mock_client = AsyncMock()
+        handler = LogCmdHandler(log_watcher=mock_watcher, tcp_client=mock_client)
+
+        payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
+        task = asyncio.create_task(handler.handle_cmd_log(payload))
+        await asyncio.sleep(0.05)
+
+        select = LogFileSelectPayload(filenames=["f1.txt", "f2.txt"]).pack()
+        await handler.handle_file_select(select)
+        await asyncio.wait_for(task, timeout=2.0)
+
         assert mock_client.send_log_history.call_count == 2
 
-    async def test_hist_request_no_files_found(self):
+    async def test_hist_request_empty_selection(self):
+        """Server selects nothing -> no LOG_HIST sent."""
         mock_watcher = MagicMock()
-        mock_watcher.find_files_by_date.return_value = []
+        entries = [
+            LogFileEntry(filename="f1.txt", file_size=100, md5=b"\xaa" * 16),
+        ]
+        mock_watcher.get_files_metadata.return_value = entries
+        mock_watcher.find_files_by_date.return_value = ["/logs/f1.txt"]
 
         mock_client = AsyncMock()
         handler = LogCmdHandler(log_watcher=mock_watcher, tcp_client=mock_client)
 
         payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
+        task = asyncio.create_task(handler.handle_cmd_log(payload))
+        await asyncio.sleep(0.05)
+
+        select = LogFileSelectPayload(filenames=[]).pack()
+        await handler.handle_file_select(select)
+        await asyncio.wait_for(task, timeout=2.0)
+
+        mock_client.send_log_history.assert_not_called()
+
+    async def test_hist_request_timeout(self):
+        """No FILE_SELECT response -> timeout, no files sent."""
+        mock_watcher = MagicMock()
+        entries = [
+            LogFileEntry(filename="f1.txt", file_size=100, md5=b"\xaa" * 16),
+        ]
+        mock_watcher.get_files_metadata.return_value = entries
+        mock_watcher.find_files_by_date.return_value = ["/logs/f1.txt"]
+
+        mock_client = AsyncMock()
+        handler = LogCmdHandler(
+            log_watcher=mock_watcher, tcp_client=mock_client, file_select_timeout=0.1
+        )
+
+        payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
         await handler.handle_cmd_log(payload)
 
-        # ACK with file_count=0
-        mock_client.send_packet.assert_called_once()
-        ack_data = CmdLogAckPayload.unpack(mock_client.send_packet.call_args[0][1])
-        assert ack_data.file_count == 0
         mock_client.send_log_history.assert_not_called()
 
     async def test_hist_request_file_read_error_continues(self):
+        """One file read fails -> continue sending others."""
         mock_watcher = MagicMock()
-        mock_watcher.find_files_by_date.return_value = [
-            "/logs/file1.txt",
-            "/logs/file2.txt",
+        entries = [
+            LogFileEntry(filename="f1.txt", file_size=100, md5=b"\xaa" * 16),
+            LogFileEntry(filename="f2.txt", file_size=200, md5=b"\xbb" * 16),
         ]
+        mock_watcher.get_files_metadata.return_value = entries
+        mock_watcher.find_files_by_date.return_value = ["/logs/f1.txt", "/logs/f2.txt"]
         mock_watcher.read_history.side_effect = [OSError("read failed"), b"data2"]
 
         mock_client = AsyncMock()
         handler = LogCmdHandler(log_watcher=mock_watcher, tcp_client=mock_client)
 
         payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
-        await handler.handle_cmd_log(payload)
+        task = asyncio.create_task(handler.handle_cmd_log(payload))
+        await asyncio.sleep(0.05)
 
-        # Should still send the second file
+        select = LogFileSelectPayload(filenames=["f1.txt", "f2.txt"]).pack()
+        await handler.handle_file_select(select)
+        await asyncio.wait_for(task, timeout=2.0)
+
         assert mock_client.send_log_history.call_count == 1
 
 
@@ -89,7 +174,6 @@ class TestLogCmdHandlerRealtime:
         await handler.handle_cmd_log(payload)
         assert handler.is_realtime_active
 
-        # ACK sent
         mock_client.send_packet.assert_called_once()
         ack_data = CmdLogAckPayload.unpack(mock_client.send_packet.call_args[0][1])
         assert ack_data.action == LogAction.REAL_START
@@ -100,12 +184,10 @@ class TestLogCmdHandlerRealtime:
         mock_client = AsyncMock()
         handler = LogCmdHandler(log_watcher=mock_watcher, tcp_client=mock_client)
 
-        # Start first
         start_payload = CmdLogPayload(action=LogAction.REAL_START, date="").pack()
         await handler.handle_cmd_log(start_payload)
         assert handler.is_realtime_active
 
-        # Stop
         stop_payload = CmdLogPayload(action=LogAction.REAL_STOP, date="").pack()
         await handler.handle_cmd_log(stop_payload)
         assert not handler.is_realtime_active
@@ -114,7 +196,5 @@ class TestLogCmdHandlerRealtime:
         mock_watcher = MagicMock()
         mock_client = AsyncMock()
         handler = LogCmdHandler(log_watcher=mock_watcher, tcp_client=mock_client)
-        # Invalid payload (too short)
         await handler.handle_cmd_log(b"\x00")
-        # Should not raise, no calls made
         mock_client.send_packet.assert_not_called()
