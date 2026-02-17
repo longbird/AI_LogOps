@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from pathlib import Path
@@ -85,3 +86,37 @@ def test_cleanup_preserves_recent(tmp_path: Path) -> None:
 
     assert removed == 0
     assert recent_path.exists()
+
+
+def test_get_stored_file_metadata(tmp_path: Path) -> None:
+    manager = StorageManager(base_dir=str(tmp_path))
+    manager.save_log_history("agent-a", "20260217_app.txt", b"hello world")
+    manager.save_log_history("agent-a", "20260217_error.txt", b"error data")
+
+    metadata = manager.get_stored_file_metadata("agent-a")
+
+    assert "20260217_app.txt" in metadata
+    size, md5 = metadata["20260217_app.txt"]
+    assert size == 11
+    assert md5 == hashlib.md5(b"hello world").digest()
+
+    assert "20260217_error.txt" in metadata
+    size2, md52 = metadata["20260217_error.txt"]
+    assert size2 == 10
+    assert md52 == hashlib.md5(b"error data").digest()
+
+
+def test_get_stored_file_metadata_empty(tmp_path: Path) -> None:
+    manager = StorageManager(base_dir=str(tmp_path))
+    metadata = manager.get_stored_file_metadata("agent-nonexistent")
+    assert metadata == {}
+
+
+def test_get_stored_file_metadata_excludes_realtime(tmp_path: Path) -> None:
+    manager = StorageManager(base_dir=str(tmp_path))
+    manager.save_log_history("agent-a", "app.txt", b"data")
+    manager.append_realtime_log("agent-a", "realtime.log", "line")
+
+    metadata = manager.get_stored_file_metadata("agent-a")
+    assert "app.txt" in metadata
+    assert "realtime.log" not in metadata

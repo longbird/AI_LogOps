@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from pathlib import Path
 
@@ -53,6 +54,23 @@ class StorageManager:
 
         target = self.base_dir / "logs" / agent_id / filename
         return target.read_text(encoding="utf-8")
+
+    def get_stored_file_metadata(self, agent_id: str) -> dict[str, tuple[int, bytes]]:
+        """에이전트 로그 디렉토리의 파일별 (size, md5) 반환. realtime/ 제외.
+
+        Returns: {filename: (file_size, md5_digest)}
+        """
+        root = self.base_dir / "logs" / agent_id
+        if not root.exists():
+            return {}
+
+        result: dict[str, tuple[int, bytes]] = {}
+        for path in root.iterdir():
+            if not path.is_file():
+                continue
+            data = path.read_bytes()
+            result[path.name] = (len(data), hashlib.md5(data).digest())
+        return result
 
     def save_report(self, agent_id: str, report_name: str, content: str) -> str:
         """AI 리포트 저장. 경로: {base_dir}/reports/{agent_id}/{report_name}"""
