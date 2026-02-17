@@ -17,6 +17,9 @@ from shared.protocol import (
     DisconnectPayload,
     DisconnectReason,
     HeartbeatPayload,
+    LogFileEntry,
+    LogFileListPayload,
+    LogFileSelectPayload,
     LogHistPayload,
     LogRealPayload,
     Packet,
@@ -55,6 +58,7 @@ class TCPClient:
         self.on_cmd_ctrl: PacketCallback | None = None
         self.on_agent_update: PacketCallback | None = None
         self.on_cmd_log: PacketCallback | None = None
+        self.on_log_file_select: PacketCallback | None = None
 
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -170,6 +174,12 @@ class TCPClient:
         payload = LogRealPayload(filename=filename, line=line)
         await self.send_packet(PacketType.LOG_REAL, payload.pack())
 
+    async def send_log_file_list(self, entries: list[LogFileEntry]) -> None:
+        """LOG_FILE_LIST 패킷으로 파일 메타데이터 목록 전송."""
+
+        payload = LogFileListPayload(entries=entries)
+        await self.send_packet(PacketType.LOG_FILE_LIST, payload.pack())
+
     async def _recv_loop(self) -> None:
         """서버로부터 패킷 수신 루프 (asyncio.Task로 실행)."""
 
@@ -204,6 +214,10 @@ class TCPClient:
                 if packet_type == PacketType.CMD_LOG:
                     if self.on_cmd_log is not None:
                         await self.on_cmd_log(payload)
+                    continue
+                if packet_type == PacketType.LOG_FILE_SELECT:
+                    if self.on_log_file_select is not None:
+                        await self.on_log_file_select(payload)
                     continue
                 if packet_type == PacketType.DISCONNECT:
                     break

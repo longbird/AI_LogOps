@@ -8,7 +8,17 @@ import pytest
 from agent.core.tcp_client import TCPClient
 from server.core.session_mgr import SessionManager
 from server.core.tcp_server import TCPServer
-from shared.protocol import CmdLogPayload, LogAction, Packet, PacketType
+from shared.protocol import (
+    CmdLogPayload,
+    LogAction,
+    LogFileEntry,
+    LogFileListPayload,
+    LogFileSelectPayload,
+    Packet,
+    PacketHeader,
+    PacketType,
+    HEADER_SIZE,
+)
 
 TOKEN = "testtoken" + "x" * 55
 
@@ -163,3 +173,57 @@ class TestTCPClientCmdLog:
         assert parsed.action == LogAction.HIST_REQUEST
         assert parsed.date == "20260217"
         await client.disconnect()
+
+
+class TestTCPClientLogFileList:
+    @pytest.mark.asyncio
+    async def test_send_log_file_list_builds_correct_packet(self) -> None:
+        """send_log_file_list builds and sends LOG_FILE_LIST packet."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        client = TCPClient(agent_id="test", version="1.0.0", token="tok")
+        client._connected = True
+        mock_writer = MagicMock()
+        mock_writer.is_closing = MagicMock(return_value=False)
+        mock_writer.write = MagicMock()
+        mock_writer.drain = AsyncMock()
+        client._writer = mock_writer
+
+        entries = [
+            LogFileEntry(filename="20260217_app.txt", file_size=1024, md5=b"\xaa" * 16),
+        ]
+        await client.send_log_file_list(entries)
+
+        mock_writer.write.assert_called_once()
+        mock_writer.drain.assert_called_once()
+        written_data = mock_writer.write.call_args[0][0]
+        ptype, plen = PacketHeader.unpack(written_data[:HEADER_SIZE])
+        assert ptype == PacketType.LOG_FILE_LIST
+
+    @pytest.mark.asyncio
+    async def test_on_log_file_select_callback_invoked(self) -> None:
+        """on_log_file_select callback is invoked when LOG_FILE_SELECT packet received."""
+        from unittest.mock import AsyncMock
+
+        client = TCPClient(agent_id="test", version="1.0.0", token="tok")
+        callback = AsyncMock()
+        client.on_log_file_select = callback
+
+        select_payload = LogFileSelectPayload(filenames=["20260217_app.txt"])
+        packet = Packet.build(PacketType.LOG_FILE_SELECT, select_payload.pack())
+
+        reader = AsyncMock()
+        reader.readexactly = AsyncMock(
+            side_effect=[
+                packet[:HEADER_SIZE],
+                packet[HEADER_SIZE:],
+                asyncio.IncompleteReadError(b"", 5),
+            ]
+        )
+        client._reader = reader
+        client._connected = True
+        client._writer = AsyncMock()
+
+        await client._recv_loop()
+
+        callback.assert_called_once()
