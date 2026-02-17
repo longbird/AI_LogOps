@@ -25,6 +25,9 @@ from shared.protocol import (
     FileAckPayload,
     FileChunkPayload,
     HeartbeatPayload,
+    LogFileEntry,
+    LogFileListPayload,
+    LogFileSelectPayload,
     LogHistPayload,
     LogAckStatus,
     LogAction,
@@ -343,3 +346,66 @@ def test_cmdlogack_payload_pack_unpack_round_trip() -> None:
 def test_cmdlogack_payload_invalid_size() -> None:
     with pytest.raises(ValueError, match="cmd log ack payload must be exactly 4 bytes"):
         _ = CmdLogAckPayload.unpack(b"\x00" * 3)
+
+
+def test_log_file_entry_roundtrip() -> None:
+    entry = LogFileEntry(filename="20260217_app.txt", file_size=1024, md5=b"\xab" * 16)
+    packed = entry.pack()
+    assert len(packed) == 276  # 256 + 4 + 16
+    unpacked = LogFileEntry.unpack(packed)
+    assert unpacked.filename == "20260217_app.txt"
+    assert unpacked.file_size == 1024
+    assert unpacked.md5 == b"\xab" * 16
+
+
+def test_log_file_entry_empty_filename() -> None:
+    entry = LogFileEntry(filename="", file_size=0, md5=b"\x00" * 16)
+    packed = entry.pack()
+    unpacked = LogFileEntry.unpack(packed)
+    assert unpacked.filename == ""
+    assert unpacked.file_size == 0
+
+
+def test_log_file_entry_invalid_md5_length() -> None:
+    with pytest.raises(ValueError, match="md5 must be exactly 16 bytes"):
+        LogFileEntry(filename="test.txt", file_size=100, md5=b"\xab" * 10).pack()
+
+
+def test_log_file_list_payload_roundtrip() -> None:
+    entries = [
+        LogFileEntry(filename="20260217_app.txt", file_size=1024, md5=b"\xaa" * 16),
+        LogFileEntry(filename="20260217_error.txt", file_size=512, md5=b"\xbb" * 16),
+    ]
+    payload = LogFileListPayload(entries=entries)
+    packed = payload.pack()
+    unpacked = LogFileListPayload.unpack(packed)
+    assert len(unpacked.entries) == 2
+    assert unpacked.entries[0].filename == "20260217_app.txt"
+    assert unpacked.entries[0].file_size == 1024
+    assert unpacked.entries[0].md5 == b"\xaa" * 16
+    assert unpacked.entries[1].filename == "20260217_error.txt"
+    assert unpacked.entries[1].file_size == 512
+
+
+def test_log_file_list_payload_empty() -> None:
+    payload = LogFileListPayload(entries=[])
+    packed = payload.pack()
+    assert len(packed) == 2  # just FileCount(2B)
+    unpacked = LogFileListPayload.unpack(packed)
+    assert len(unpacked.entries) == 0
+
+
+def test_log_file_select_payload_roundtrip() -> None:
+    filenames = ["20260217_app.txt", "20260217_error.txt"]
+    payload = LogFileSelectPayload(filenames=filenames)
+    packed = payload.pack()
+    unpacked = LogFileSelectPayload.unpack(packed)
+    assert unpacked.filenames == filenames
+
+
+def test_log_file_select_payload_empty() -> None:
+    payload = LogFileSelectPayload(filenames=[])
+    packed = payload.pack()
+    assert len(packed) == 2
+    unpacked = LogFileSelectPayload.unpack(packed)
+    assert len(unpacked.filenames) == 0

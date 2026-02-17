@@ -22,6 +22,8 @@ class PacketType(IntEnum):
     CMD_CTRL_ACK = 0x14
     CMD_LOG = 0x15
     CMD_LOG_ACK = 0x16
+    LOG_FILE_LIST = 0x17
+    LOG_FILE_SELECT = 0x18
     AGENT_UPDATE = 0x20
     HEARTBEAT = 0xFE
     DISCONNECT = 0xFF
@@ -432,6 +434,101 @@ class CmdLogAckPayload:
             status=LogAckStatus(status_raw),
             file_count=file_count,
         )
+
+
+@dataclass(slots=True)
+class LogFileEntry:
+    """File metadata entry: [Filename(256B)][FileSize(4B)][MD5(16B)] = 276B."""
+
+    filename: str
+    file_size: int
+    md5: bytes
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!256sI16s")
+    _SIZE: ClassVar[int] = 276
+
+    def pack(self) -> bytes:
+        if len(self.md5) != 16:
+            raise ValueError("md5 must be exactly 16 bytes")
+        return self._STRUCT.pack(
+            _encode_fixed(self.filename, 256, "filename"),
+            self.file_size,
+            self.md5,
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> LogFileEntry:
+        if len(data) != cls._SIZE:
+            raise ValueError(f"log file entry must be exactly {cls._SIZE} bytes")
+        filename_raw, file_size, md5 = cast(
+            tuple[bytes, int, bytes], cls._STRUCT.unpack(data)
+        )
+        return cls(filename=_decode_fixed(filename_raw), file_size=file_size, md5=md5)
+
+
+@dataclass(slots=True)
+class LogFileListPayload:
+    """LOG_FILE_LIST: [FileCount(2B)] + N x LogFileEntry(276B)."""
+
+    entries: list[LogFileEntry]
+
+    _COUNT_STRUCT: ClassVar[struct.Struct] = struct.Struct("!H")
+    _COUNT_SIZE: ClassVar[int] = 2
+
+    def pack(self) -> bytes:
+        parts = [self._COUNT_STRUCT.pack(len(self.entries))]
+        for entry in self.entries:
+            parts.append(entry.pack())
+        return b"".join(parts)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> LogFileListPayload:
+        if len(data) < cls._COUNT_SIZE:
+            raise ValueError("log file list payload is too short")
+        (count,) = cast(tuple[int], cls._COUNT_STRUCT.unpack(data[: cls._COUNT_SIZE]))
+        expected = cls._COUNT_SIZE + count * LogFileEntry._SIZE
+        if len(data) != expected:
+            raise ValueError("log file list payload size mismatch")
+        entries: list[LogFileEntry] = []
+        offset = cls._COUNT_SIZE
+        for _ in range(count):
+            entry = LogFileEntry.unpack(data[offset : offset + LogFileEntry._SIZE])
+            entries.append(entry)
+            offset += LogFileEntry._SIZE
+        return cls(entries=entries)
+
+
+@dataclass(slots=True)
+class LogFileSelectPayload:
+    """LOG_FILE_SELECT: [FileCount(2B)] + N x [Filename(256B)]."""
+
+    filenames: list[str]
+
+    _COUNT_STRUCT: ClassVar[struct.Struct] = struct.Struct("!H")
+    _COUNT_SIZE: ClassVar[int] = 2
+    _NAME_SIZE: ClassVar[int] = 256
+
+    def pack(self) -> bytes:
+        parts = [self._COUNT_STRUCT.pack(len(self.filenames))]
+        for name in self.filenames:
+            parts.append(_encode_fixed(name, self._NAME_SIZE, "filename"))
+        return b"".join(parts)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> LogFileSelectPayload:
+        if len(data) < cls._COUNT_SIZE:
+            raise ValueError("log file select payload is too short")
+        (count,) = cast(tuple[int], cls._COUNT_STRUCT.unpack(data[: cls._COUNT_SIZE]))
+        expected = cls._COUNT_SIZE + count * cls._NAME_SIZE
+        if len(data) != expected:
+            raise ValueError("log file select payload size mismatch")
+        filenames: list[str] = []
+        offset = cls._COUNT_SIZE
+        for _ in range(count):
+            name = _decode_fixed(data[offset : offset + cls._NAME_SIZE])
+            filenames.append(name)
+            offset += cls._NAME_SIZE
+        return cls(filenames=filenames)
 
 
 @dataclass(slots=True)
