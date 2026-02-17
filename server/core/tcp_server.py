@@ -15,6 +15,8 @@ from shared.protocol import (
     CmdLogPayload,
     CmdLogAckPayload,
     LogAction,
+    LogFileListPayload,
+    LogFileSelectPayload,
     Packet,
     PacketHeader,
     PacketType,
@@ -244,6 +246,10 @@ class TCPServer:
                     self._handle_cmd_ctrl_ack(agent_id, payload)
                 continue
 
+            if packet_type == PacketType.LOG_FILE_LIST:
+                await self._handle_log_file_list(agent_id, payload, writer)
+                continue
+
             if packet_type == PacketType.CMD_LOG_ACK:
                 self._handle_cmd_log_ack(agent_id, payload)
                 continue
@@ -359,6 +365,42 @@ class TCPServer:
             ack.status.name,
             ack.file_count,
         )
+
+    async def _handle_log_file_list(
+        self, agent_id: str, payload: bytes, writer: _WriterLike
+    ) -> None:
+        """LOG_FILE_LIST 수신: 서버 저장소와 비교 후 LOG_FILE_SELECT 전송."""
+        if self.storage_mgr is None:
+            return
+
+        try:
+            file_list = LogFileListPayload.unpack(payload)
+        except ValueError:
+            self._logger.warning("invalid LOG_FILE_LIST payload: agent_id=%s", agent_id)
+            return
+
+        stored = self.storage_mgr.get_stored_file_metadata(agent_id)
+        selected: list[str] = []
+
+        for entry in file_list.entries:
+            local = stored.get(entry.filename)
+            if local is None:
+                selected.append(entry.filename)
+            else:
+                local_size, local_md5 = local
+                if local_size != entry.file_size or local_md5 != entry.md5:
+                    selected.append(entry.filename)
+
+        self._logger.info(
+            "file list comparison: agent_id=%s total=%d selected=%d",
+            agent_id,
+            len(file_list.entries),
+            len(selected),
+        )
+
+        select = LogFileSelectPayload(filenames=selected)
+        writer.write(Packet.build(PacketType.LOG_FILE_SELECT, select.pack()))
+        await writer.drain()
 
     async def send_deploy(self, agent_id: str, file_path: str) -> bool:
         """에이전트에 파일 배포. CMD_DEPLOY + FILE_CHUNKs 전송."""

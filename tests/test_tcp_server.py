@@ -19,6 +19,9 @@ from shared.protocol import (
     DisconnectReason,
     HeartbeatPayload,
     LogAction,
+    LogFileEntry,
+    LogFileListPayload,
+    LogFileSelectPayload,
     Packet,
     PacketHeader,
     PacketType,
@@ -305,3 +308,187 @@ class TestTCPServerLogCommand:
             "NONEXISTENT", LogAction.HIST_REQUEST, "20260217"
         )
         assert result is False
+
+
+class TestTCPServerFileListHandling:
+    """Tests for LOG_FILE_LIST handler and file comparison logic."""
+
+    @pytest.mark.asyncio
+    async def test_handle_log_file_list_selects_new_files(self) -> None:
+        """Server has f1 (same), f2 is new -> selects f2 only."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_storage = MagicMock()
+        mock_storage.get_stored_file_metadata.return_value = {
+            "f1.txt": (100, b"\xaa" * 16),
+        }
+
+        mock_session_mgr = MagicMock()
+        mock_writer = AsyncMock()
+        mock_writer.is_closing.return_value = False
+
+        server = TCPServer(
+            host="0.0.0.0",
+            port=0,
+            session_mgr=mock_session_mgr,
+            auth_token="tok",
+            storage_mgr=mock_storage,
+        )
+
+        entries = [
+            LogFileEntry(filename="f1.txt", file_size=100, md5=b"\xaa" * 16),
+            LogFileEntry(filename="f2.txt", file_size=200, md5=b"\xbb" * 16),
+        ]
+        payload = LogFileListPayload(entries=entries).pack()
+        await server._handle_log_file_list("agent-a", payload, mock_writer)
+
+        mock_writer.write.assert_called_once()
+        written = mock_writer.write.call_args[0][0]
+        ptype, plen = PacketHeader.unpack(written[:HEADER_SIZE])
+        assert ptype == PacketType.LOG_FILE_SELECT
+        select = LogFileSelectPayload.unpack(written[HEADER_SIZE:])
+        assert select.filenames == ["f2.txt"]
+
+    @pytest.mark.asyncio
+    async def test_handle_log_file_list_all_new(self) -> None:
+        """No stored files -> selects all."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_storage = MagicMock()
+        mock_storage.get_stored_file_metadata.return_value = {}
+        mock_writer = AsyncMock()
+        mock_session_mgr = MagicMock()
+
+        server = TCPServer(
+            host="0.0.0.0",
+            port=0,
+            session_mgr=mock_session_mgr,
+            auth_token="tok",
+            storage_mgr=mock_storage,
+        )
+
+        entries = [
+            LogFileEntry(filename="f1.txt", file_size=100, md5=b"\xaa" * 16),
+            LogFileEntry(filename="f2.txt", file_size=200, md5=b"\xbb" * 16),
+        ]
+        payload = LogFileListPayload(entries=entries).pack()
+        await server._handle_log_file_list("agent-a", payload, mock_writer)
+
+        written = mock_writer.write.call_args[0][0]
+        select = LogFileSelectPayload.unpack(written[HEADER_SIZE:])
+        assert set(select.filenames) == {"f1.txt", "f2.txt"}
+
+    @pytest.mark.asyncio
+    async def test_handle_log_file_list_all_existing(self) -> None:
+        """All match -> empty selection."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_storage = MagicMock()
+        mock_storage.get_stored_file_metadata.return_value = {
+            "f1.txt": (100, b"\xaa" * 16),
+        }
+        mock_writer = AsyncMock()
+        mock_session_mgr = MagicMock()
+
+        server = TCPServer(
+            host="0.0.0.0",
+            port=0,
+            session_mgr=mock_session_mgr,
+            auth_token="tok",
+            storage_mgr=mock_storage,
+        )
+
+        entries = [
+            LogFileEntry(filename="f1.txt", file_size=100, md5=b"\xaa" * 16),
+        ]
+        payload = LogFileListPayload(entries=entries).pack()
+        await server._handle_log_file_list("agent-a", payload, mock_writer)
+
+        written = mock_writer.write.call_args[0][0]
+        select = LogFileSelectPayload.unpack(written[HEADER_SIZE:])
+        assert select.filenames == []
+
+    @pytest.mark.asyncio
+    async def test_handle_log_file_list_size_mismatch(self) -> None:
+        """Same name but different size -> selects."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_storage = MagicMock()
+        mock_storage.get_stored_file_metadata.return_value = {
+            "f1.txt": (50, b"\xcc" * 16),
+        }
+        mock_writer = AsyncMock()
+        mock_session_mgr = MagicMock()
+
+        server = TCPServer(
+            host="0.0.0.0",
+            port=0,
+            session_mgr=mock_session_mgr,
+            auth_token="tok",
+            storage_mgr=mock_storage,
+        )
+
+        entries = [
+            LogFileEntry(filename="f1.txt", file_size=100, md5=b"\xaa" * 16),
+        ]
+        payload = LogFileListPayload(entries=entries).pack()
+        await server._handle_log_file_list("agent-a", payload, mock_writer)
+
+        written = mock_writer.write.call_args[0][0]
+        select = LogFileSelectPayload.unpack(written[HEADER_SIZE:])
+        assert select.filenames == ["f1.txt"]
+
+    @pytest.mark.asyncio
+    async def test_handle_log_file_list_md5_mismatch(self) -> None:
+        """Same name and size but different MD5 -> selects."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_storage = MagicMock()
+        mock_storage.get_stored_file_metadata.return_value = {
+            "f1.txt": (100, b"\xcc" * 16),  # different MD5
+        }
+        mock_writer = AsyncMock()
+        mock_session_mgr = MagicMock()
+
+        server = TCPServer(
+            host="0.0.0.0",
+            port=0,
+            session_mgr=mock_session_mgr,
+            auth_token="tok",
+            storage_mgr=mock_storage,
+        )
+
+        entries = [
+            LogFileEntry(filename="f1.txt", file_size=100, md5=b"\xaa" * 16),
+        ]
+        payload = LogFileListPayload(entries=entries).pack()
+        await server._handle_log_file_list("agent-a", payload, mock_writer)
+
+        written = mock_writer.write.call_args[0][0]
+        select = LogFileSelectPayload.unpack(written[HEADER_SIZE:])
+        assert select.filenames == ["f1.txt"]
+
+    @pytest.mark.asyncio
+    async def test_handle_log_file_list_empty(self) -> None:
+        """Empty file list -> empty selection."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_storage = MagicMock()
+        mock_storage.get_stored_file_metadata.return_value = {}
+        mock_writer = AsyncMock()
+        mock_session_mgr = MagicMock()
+
+        server = TCPServer(
+            host="0.0.0.0",
+            port=0,
+            session_mgr=mock_session_mgr,
+            auth_token="tok",
+            storage_mgr=mock_storage,
+        )
+
+        payload = LogFileListPayload(entries=[]).pack()
+        await server._handle_log_file_list("agent-a", payload, mock_writer)
+
+        written = mock_writer.write.call_args[0][0]
+        select = LogFileSelectPayload.unpack(written[HEADER_SIZE:])
+        assert select.filenames == []
