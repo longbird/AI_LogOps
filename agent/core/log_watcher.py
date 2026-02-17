@@ -3,12 +3,15 @@ from __future__ import annotations
 # pyright: reportMissingImports=false
 
 import asyncio
+import hashlib
 from collections.abc import Awaitable, Callable
 from os import fsdecode
 from pathlib import Path
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+
+from shared.protocol import LogFileEntry
 
 LineCallback = Callable[[str, str], Awaitable[None]]
 
@@ -120,6 +123,22 @@ class LogWatcher:
                 if file_path.is_file() and self._is_watchable(str(file_path)):
                     files.append(str(file_path.resolve()))
         return sorted(files)
+
+    def get_files_metadata(self, date_str: str) -> list[LogFileEntry]:
+        """감시 폴더에서 YYYYMMDD_* 파일의 메타데이터(filename, size, MD5) 수집."""
+
+        files = self.find_files_by_date(date_str)
+        entries: list[LogFileEntry] = []
+        for filepath in files:
+            path = Path(filepath)
+            data = path.read_bytes()
+            entry = LogFileEntry(
+                filename=path.name,
+                file_size=len(data),
+                md5=hashlib.md5(data).digest(),
+            )
+            entries.append(entry)
+        return entries
 
     def get_latest_file(self) -> str | None:
         """감시 폴더의 최신 파일 경로 반환 (이름 기준 정렬 마지막)."""

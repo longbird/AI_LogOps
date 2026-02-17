@@ -3,11 +3,14 @@ from __future__ import annotations
 # pyright: reportMissingImports=false
 
 import asyncio
+import hashlib
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from agent.core.log_watcher import LogWatcher
+from shared.protocol import LogFileEntry
 
 
 @pytest.mark.asyncio
@@ -203,3 +206,60 @@ async def test_ignores_non_matching_extensions(tmp_path: Path) -> None:
 
 async def _noop_callback(_filename: str, _line: str) -> None:
     return None
+
+
+def test_get_files_metadata_returns_entries(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    f1 = log_dir / "20260217_app.txt"
+    f1.write_bytes(b"hello world")
+    f2 = log_dir / "20260217_error.txt"
+    f2.write_bytes(b"error data here")
+
+    watcher = LogWatcher(
+        watch_dirs=[str(log_dir)],
+        extensions=[".txt"],
+        on_new_line=AsyncMock(),
+    )
+
+    entries = watcher.get_files_metadata("20260217")
+
+    assert len(entries) == 2
+    assert entries[0].filename == "20260217_app.txt"
+    assert entries[0].file_size == 11
+    assert entries[0].md5 == hashlib.md5(b"hello world").digest()
+    assert entries[1].filename == "20260217_error.txt"
+    assert entries[1].file_size == 15
+    assert entries[1].md5 == hashlib.md5(b"error data here").digest()
+
+
+def test_get_files_metadata_empty_date(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "20260217_app.txt").write_bytes(b"data")
+
+    watcher = LogWatcher(
+        watch_dirs=[str(log_dir)],
+        extensions=[".txt"],
+        on_new_line=AsyncMock(),
+    )
+
+    entries = watcher.get_files_metadata("20250101")
+    assert entries == []
+
+
+def test_get_files_metadata_filters_extensions(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "20260217_app.txt").write_bytes(b"data")
+    (log_dir / "20260217_app.csv").write_bytes(b"csv data")
+
+    watcher = LogWatcher(
+        watch_dirs=[str(log_dir)],
+        extensions=[".txt"],
+        on_new_line=AsyncMock(),
+    )
+
+    entries = watcher.get_files_metadata("20260217")
+    assert len(entries) == 1
+    assert entries[0].filename == "20260217_app.txt"
