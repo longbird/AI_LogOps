@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from telegram.ext import Application, CommandHandler
 
 from shared.utils import setup_logging
+
+if TYPE_CHECKING:
+    from agent.core.system_monitor import SystemMonitor
 
 
 class _MessageLike(Protocol):
@@ -65,6 +68,7 @@ class AgentTelegramPoller:
         self.on_disconnect: Callable[[], Awaitable[None]] | None = None
         self._state: str = "STANDBY"
         self._logger: logging.Logger = setup_logging(self.__class__.__name__)
+        self.system_monitor: SystemMonitor | None = None
 
     async def start(self) -> None:
         """python-telegram-bot Application 초기화 + polling 시작."""
@@ -112,9 +116,16 @@ class AgentTelegramPoller:
         del context
         if not self._is_admin(update):
             return
+        if update.effective_message is None:
+            return
 
-        if update.effective_message is not None:
-            _ = await update.effective_message.reply_text(f"Agent: {self._state}")
+        if self.system_monitor is not None:
+            report = self.system_monitor.format_status_report()
+            status_text = f"Agent: {self._state}\n\n{report}"
+        else:
+            status_text = f"Agent: {self._state}"
+
+        _ = await update.effective_message.reply_text(status_text)
 
     async def _cmd_connect(self, update: _UpdateLike, context: _ContextLike) -> None:
         if not self._is_admin(update):
