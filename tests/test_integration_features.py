@@ -20,6 +20,7 @@ from shared.protocol import (
     CmdLogAckPayload,
     LogAction,
     LogAckStatus,
+    LogFileSelectPayload,
     PacketType,
 )
 
@@ -587,3 +588,143 @@ class TestFeaturesCombined:
         ack = CmdLogAckPayload.unpack(mock_client.send_packet.call_args_list[0][0][1])
         assert ack.file_count == 2
         assert mock_client.send_log_history.call_count == 2
+
+
+class TestFeatureA_SelectiveLogTransfer:
+    """Feature A v2: Selective 3-step log transfer."""
+
+    async def test_selective_transfer_full_flow(self, tmp_path: Path) -> None:
+        """Full flow: HIST_REQUEST → FILE_LIST → FILE_SELECT → LOG_HIST (selected only)."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "20260217_app.txt").write_bytes(b"app log data")
+        (log_dir / "20260217_error.txt").write_bytes(b"error log data")
+        (log_dir / "20260217_debug.txt").write_bytes(b"debug log data")
+
+        watcher = LogWatcher(
+            watch_dirs=[str(log_dir)],
+            extensions=[".txt"],
+            on_new_line=AsyncMock(),
+        )
+
+        mock_client = AsyncMock()
+        handler = LogCmdHandler(
+            log_watcher=watcher,
+            tcp_client=mock_client,
+            history_max_mb=10,
+        )
+
+        # Phase 1: Send HIST_REQUEST
+        payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
+        task = asyncio.create_task(handler.handle_cmd_log(payload))
+        await asyncio.sleep(0.05)
+
+        # Verify: LOG_FILE_LIST sent with 3 entries (metadata)
+        mock_client.send_log_file_list.assert_called_once()
+        entries = mock_client.send_log_file_list.call_args[0][0]
+        assert len(entries) == 3
+        # Verify entries have correct metadata
+        filenames = {e.filename for e in entries}
+        assert filenames == {
+            "20260217_app.txt",
+            "20260217_error.txt",
+            "20260217_debug.txt",
+        }
+        for entry in entries:
+            assert entry.file_size > 0
+            assert len(entry.md5) == 16
+
+        # Phase 2: Server selects only 2 files (simulating comparison result)
+        select = LogFileSelectPayload(
+            filenames=["20260217_app.txt", "20260217_debug.txt"]
+        ).pack()
+        await handler.handle_file_select(select)
+        await asyncio.wait_for(task, timeout=2.0)
+
+        # Verify: Only 2 files sent via LOG_HIST (not 3)
+        assert mock_client.send_log_history.call_count == 2
+        sent_filenames = {
+            call.args[0] for call in mock_client.send_log_history.call_args_list
+        }
+        assert sent_filenames == {"20260217_app.txt", "20260217_debug.txt"}
+
+        # ACK sent with correct count
+        ack_calls = [
+            c
+            for c in mock_client.send_packet.call_args_list
+            if c[0][0] == PacketType.CMD_LOG_ACK
+        ]
+        assert len(ack_calls) == 1
+        ack = CmdLogAckPayload.unpack(ack_calls[0][0][1])
+        assert ack.file_count == 2
+        assert ack.status == LogAckStatus.SUCCESS
+
+    async def test_selective_transfer_server_selects_none(self, tmp_path: Path) -> None:
+        """Server selects 0 files (all already stored) → no LOG_HIST sent."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "20260217_app.txt").write_bytes(b"data")
+
+        watcher = LogWatcher(
+            watch_dirs=[str(log_dir)],
+            extensions=[".txt"],
+            on_new_line=AsyncMock(),
+        )
+
+        mock_client = AsyncMock()
+        handler = LogCmdHandler(log_watcher=watcher, tcp_client=mock_client)
+
+        payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
+        task = asyncio.create_task(handler.handle_cmd_log(payload))
+        await asyncio.sleep(0.05)
+
+        # Server says: I have everything already
+        select = LogFileSelectPayload(filenames=[]).pack()
+        await handler.handle_file_select(select)
+        await asyncio.wait_for(task, timeout=2.0)
+
+        mock_client.send_log_history.assert_not_called()
+        # ACK still sent with 0 files
+        ack_calls = [
+            c
+            for c in mock_client.send_packet.call_args_list
+            if c[0][0] == PacketType.CMD_LOG_ACK
+        ]
+        assert len(ack_calls) == 1
+        ack = CmdLogAckPayload.unpack(ack_calls[0][0][1])
+        assert ack.file_count == 0
+
+    async def test_selective_transfer_with_metadata_verification(
+        self, tmp_path: Path
+    ) -> None:
+        """Verify file metadata (size, MD5) is computed correctly."""
+        import hashlib
+
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        content = b"known content for hash verification"
+        (log_dir / "20260217_test.txt").write_bytes(content)
+
+        watcher = LogWatcher(
+            watch_dirs=[str(log_dir)],
+            extensions=[".txt"],
+            on_new_line=AsyncMock(),
+        )
+
+        mock_client = AsyncMock()
+        handler = LogCmdHandler(log_watcher=watcher, tcp_client=mock_client)
+
+        payload = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217").pack()
+        task = asyncio.create_task(handler.handle_cmd_log(payload))
+        await asyncio.sleep(0.05)
+
+        entries = mock_client.send_log_file_list.call_args[0][0]
+        assert len(entries) == 1
+        assert entries[0].filename == "20260217_test.txt"
+        assert entries[0].file_size == len(content)
+        assert entries[0].md5 == hashlib.md5(content).digest()
+
+        # Complete the flow
+        select = LogFileSelectPayload(filenames=["20260217_test.txt"]).pack()
+        await handler.handle_file_select(select)
+        await asyncio.wait_for(task, timeout=2.0)

@@ -45,7 +45,11 @@ class LogCommandHandler:
             agent_id, LogAction.HIST_REQUEST, date_str
         )
         if success:
-            return f"Log history request sent to {agent_id} for {date_str}."
+            return (
+                f"Log history request sent to {agent_id} for {date_str}. "
+                f"Server will request file list, compare with stored files, "
+                f"and transfer only new/changed files."
+            )
         return f"Failed to send log command to {agent_id}."
 
     async def cmd_log_real(self, cmd: ParsedCommand) -> str:
