@@ -91,6 +91,88 @@ def test_get_watchable_files(tmp_path: Path) -> None:
     assert watcher.get_watchable_files() == sorted([str(log_file), str(txt_file)])
 
 
+def test_find_files_by_date_returns_matching_files(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "20260217_error.txt").write_text("error1", encoding="utf-8")
+    (log_dir / "20260217_info.txt").write_text("info1", encoding="utf-8")
+    (log_dir / "20260216_old.txt").write_text("old", encoding="utf-8")
+    (log_dir / "20260217_data.csv").write_text("csv", encoding="utf-8")
+
+    watcher = LogWatcher(
+        watch_dirs=[str(log_dir)],
+        extensions=[".txt"],
+        on_new_line=_noop_callback,
+    )
+    result = watcher.find_files_by_date("20260217")
+
+    assert len(result) == 2
+    assert all("20260217" in Path(file_path).name for file_path in result)
+    assert not any("csv" in file_path for file_path in result)
+
+
+def test_find_files_by_date_no_matches(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "20260216_old.txt").write_text("old", encoding="utf-8")
+
+    watcher = LogWatcher(
+        watch_dirs=[str(log_dir)],
+        extensions=[".txt"],
+        on_new_line=_noop_callback,
+    )
+    result = watcher.find_files_by_date("20260217")
+
+    assert result == []
+
+
+def test_find_files_by_date_multiple_extensions(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "20260217_app.txt").write_text("t", encoding="utf-8")
+    (log_dir / "20260217_app.log").write_text("l", encoding="utf-8")
+
+    watcher = LogWatcher(
+        watch_dirs=[str(log_dir)],
+        extensions=[".txt", ".log"],
+        on_new_line=_noop_callback,
+    )
+    result = watcher.find_files_by_date("20260217")
+
+    assert len(result) == 2
+
+
+def test_get_latest_file_returns_newest(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "20260215_a.txt").write_text("a", encoding="utf-8")
+    (log_dir / "20260217_b.txt").write_text("b", encoding="utf-8")
+    (log_dir / "20260216_c.txt").write_text("c", encoding="utf-8")
+
+    watcher = LogWatcher(
+        watch_dirs=[str(log_dir)],
+        extensions=[".txt"],
+        on_new_line=_noop_callback,
+    )
+    latest = watcher.get_latest_file()
+
+    assert latest is not None
+    assert "20260217" in Path(latest).name
+
+
+def test_get_latest_file_empty_dir(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+
+    watcher = LogWatcher(
+        watch_dirs=[str(log_dir)],
+        extensions=[".txt"],
+        on_new_line=_noop_callback,
+    )
+
+    assert watcher.get_latest_file() is None
+
+
 @pytest.mark.asyncio
 async def test_ignores_non_matching_extensions(tmp_path: Path) -> None:
     dat_file = tmp_path / "ignored.dat"

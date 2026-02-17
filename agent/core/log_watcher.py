@@ -108,6 +108,27 @@ class LogWatcher:
                     files.append(str(file_path))
         return sorted(files)
 
+    def find_files_by_date(self, date_str: str) -> list[str]:
+        """감시 폴더에서 YYYYMMDD_* 패턴 + extensions 매칭 파일 검색."""
+
+        files: list[str] = []
+        pattern = f"{date_str}_*"
+        for watch_dir in self._watch_dirs:
+            if not watch_dir.exists() or not watch_dir.is_dir():
+                continue
+            for file_path in watch_dir.glob(pattern):
+                if file_path.is_file() and self._is_watchable(str(file_path)):
+                    files.append(str(file_path.resolve()))
+        return sorted(files)
+
+    def get_latest_file(self) -> str | None:
+        """감시 폴더의 최신 파일 경로 반환 (이름 기준 정렬 마지막)."""
+
+        files = self.get_watchable_files()
+        if not files:
+            return None
+        return files[-1]
+
     def enqueue_file(self, filepath: str) -> None:
         if self._loop is None:
             return
