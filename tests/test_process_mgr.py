@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock, patch
 
 import psutil
 import pytest
@@ -172,3 +172,54 @@ def test_cleanup_old_backups(tmp_path: Path) -> None:
 
     assert removed == 2
     assert mgr.get_backup_count() == 5
+
+
+def test_start_with_args(tmp_path: Path) -> None:
+    """Test start() with args parameter."""
+    exe = tmp_path / "fake.exe"
+    exe.write_text("fake")
+    mgr = ProcessManager(
+        process_name="fake.exe",
+        process_path=str(exe),
+        backup_dir=str(tmp_path / "backups"),
+    )
+    with patch("subprocess.Popen") as mock_popen:
+        mock_popen.return_value = MagicMock(pid=1234)
+        pid = mgr.start(args=["--port", "8080"])
+        assert pid == 1234
+        call_args = mock_popen.call_args[0][0]
+        assert call_args == [str(exe), "--port", "8080"]
+
+
+def test_start_without_args(tmp_path: Path) -> None:
+    """Test start() without args parameter."""
+    exe = tmp_path / "fake.exe"
+    exe.write_text("fake")
+    mgr = ProcessManager(
+        process_name="fake.exe",
+        process_path=str(exe),
+        backup_dir=str(tmp_path / "backups"),
+    )
+    with patch("subprocess.Popen") as mock_popen:
+        mock_popen.return_value = MagicMock(pid=5678)
+        pid = mgr.start()
+        assert pid == 5678
+        call_args = mock_popen.call_args[0][0]
+        assert call_args == [str(exe)]
+
+
+def test_start_with_empty_args(tmp_path: Path) -> None:
+    """Test start() with empty args list."""
+    exe = tmp_path / "fake.exe"
+    exe.write_text("fake")
+    mgr = ProcessManager(
+        process_name="fake.exe",
+        process_path=str(exe),
+        backup_dir=str(tmp_path / "backups"),
+    )
+    with patch("subprocess.Popen") as mock_popen:
+        mock_popen.return_value = MagicMock(pid=3456)
+        pid = mgr.start(args=[])
+        assert pid == 3456
+        call_args = mock_popen.call_args[0][0]
+        assert call_args == [str(exe)]

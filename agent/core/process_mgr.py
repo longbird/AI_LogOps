@@ -57,12 +57,16 @@ class ProcessManager:
             except psutil.NoSuchProcess:
                 return True
 
-    def start(self) -> int:
-        """프로세스 시작. PID 반환."""
+    def start(self, args: list[str] | None = None) -> int:
+        """프로세스 시작. PID 반환. args: 추가 실행 인수."""
         import subprocess
 
+        cmd = [str(self.process_path)]
+        if args:
+            cmd.extend(args)
+
         proc = subprocess.Popen(
-            [str(self.process_path)],
+            cmd,
             creationflags=subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0,
         )
         return proc.pid
