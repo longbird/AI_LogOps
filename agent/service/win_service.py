@@ -222,8 +222,15 @@ def _as_mapping(value: object) -> dict[str, object]:
     return {}
 
 
+def _get_base_dir() -> Path:
+    """Get base directory for development and frozen execution."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
 def _load_agent_config() -> dict[str, object]:
-    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+    config_path = _get_base_dir() / "config.yaml"
     return cast(dict[str, object], load_yaml_config(str(config_path)))
 
 

@@ -21,7 +21,13 @@ class SelfUpdater:
         self.current_exe_path: Path = self.work_dir / "agent.exe"
         self.updater_bat_path: Path = self.work_dir / "updater.bat"
         self.version_file_path: Path = self.work_dir / ".version"
-        self.template_path: Path = Path(__file__).with_name("updater_template.bat")
+        self.template_path: Path
+        if getattr(sys, "frozen", False):
+            self.template_path = (
+                Path(sys.executable).resolve().parent / "updater_template.bat"
+            )
+        else:
+            self.template_path = Path(__file__).with_name("updater_template.bat")
 
         self._logger: Logger = setup_logging("self_update")
 
