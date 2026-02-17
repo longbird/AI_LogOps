@@ -14,9 +14,11 @@ from shared.protocol import (
     AuthAckPayload,
     AuthPayload,
     AuthStatus,
+    CmdLogPayload,
     DisconnectPayload,
     DisconnectReason,
     HeartbeatPayload,
+    LogAction,
     Packet,
     PacketHeader,
     PacketType,
@@ -257,3 +259,49 @@ async def test_connection_lost_removes_session(
         await asyncio.sleep(0.01)
 
     assert mgr.get_session("agent-lost") is None
+
+
+TOKEN = "testtoken" + "x" * 55
+
+
+class TestTCPServerLogCommand:
+    @pytest.mark.asyncio
+    async def test_send_log_command_to_connected_agent(
+        self,
+        server_and_port: tuple[TCPServer, int, SessionManager],
+    ) -> None:
+        """send_log_command sends CMD_LOG packet to agent."""
+        srv, port, _ = server_and_port
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+
+        # AUTH handshake
+        ack = await _auth_client(reader, writer, "PC-CMD-01", "1.0.0", TOKEN)
+        assert ack.status == AuthStatus.SUCCESS
+
+        # Server sends log command
+        result = await srv.send_log_command(
+            "PC-CMD-01", LogAction.HIST_REQUEST, "20260217"
+        )
+        assert result is True
+
+        # Client receives CMD_LOG
+        ptype, payload = await _read_packet(reader)
+        assert ptype == PacketType.CMD_LOG
+        cmd = CmdLogPayload.unpack(payload)
+        assert cmd.action == LogAction.HIST_REQUEST
+        assert cmd.date == "20260217"
+
+        writer.close()
+        await writer.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_send_log_command_agent_not_found(
+        self,
+        server_and_port: tuple[TCPServer, int, SessionManager],
+    ) -> None:
+        """send_log_command returns False for unknown agent."""
+        srv, _, _ = server_and_port
+        result = await srv.send_log_command(
+            "NONEXISTENT", LogAction.HIST_REQUEST, "20260217"
+        )
+        assert result is False

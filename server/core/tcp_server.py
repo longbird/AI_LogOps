@@ -12,6 +12,9 @@ from shared.protocol import (
     AuthAckPayload,
     AuthPayload,
     AuthStatus,
+    CmdLogPayload,
+    CmdLogAckPayload,
+    LogAction,
     Packet,
     PacketHeader,
     PacketType,
@@ -241,6 +244,10 @@ class TCPServer:
                     self._handle_cmd_ctrl_ack(agent_id, payload)
                 continue
 
+            if packet_type == PacketType.CMD_LOG_ACK:
+                self._handle_cmd_log_ack(agent_id, payload)
+                continue
+
             self._logger.warning(
                 "unexpected packet type: agent_id=%s type=%s payload_len=%s",
                 agent_id,
@@ -325,6 +332,33 @@ class TCPServer:
             self._logger.info("deploy verified: agent_id=%s pid=%s", agent_id, ack.pid)
         elif ack.status == CtrlAckStatus.DEPLOY_ROLLBACK:
             self._logger.warning("deploy rolled back: agent_id=%s", agent_id)
+
+    async def send_log_command(
+        self, agent_id: str, action: LogAction, date: str = ""
+    ) -> bool:
+        """CMD_LOG 패킷을 에이전트에 전송."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return False
+        writer = cast(_WriterLike, session.writer)
+        cmd = CmdLogPayload(action=action, date=date)
+        writer.write(Packet.build(PacketType.CMD_LOG, cmd.pack()))
+        await writer.drain()
+        return True
+
+    def _handle_cmd_log_ack(self, agent_id: str, payload: bytes) -> None:
+        try:
+            ack = CmdLogAckPayload.unpack(payload)
+        except ValueError:
+            self._logger.warning("invalid CMD_LOG_ACK payload: agent_id=%s", agent_id)
+            return
+        self._logger.info(
+            "cmd log ack: agent_id=%s action=%s status=%s file_count=%s",
+            agent_id,
+            ack.action.name,
+            ack.status.name,
+            ack.file_count,
+        )
 
     async def send_deploy(self, agent_id: str, file_path: str) -> bool:
         """에이전트에 파일 배포. CMD_DEPLOY + FILE_CHUNKs 전송."""

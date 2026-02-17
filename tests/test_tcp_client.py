@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 from agent.core.tcp_client import TCPClient
 from server.core.session_mgr import SessionManager
 from server.core.tcp_server import TCPServer
-from shared.protocol import PacketType
+from shared.protocol import CmdLogPayload, LogAction, Packet, PacketType
 
 TOKEN = "testtoken" + "x" * 55
 
@@ -122,3 +123,43 @@ async def test_connection_refused() -> None:
 
     assert connected is False
     assert client.is_connected is False
+
+
+class TestTCPClientCmdLog:
+    @pytest.mark.asyncio
+    async def test_on_cmd_log_callback_receives_payload(
+        self,
+        running_server: tuple[TCPServer, int, SessionManager],
+    ) -> None:
+        """CMD_LOG packet from server triggers on_cmd_log callback on client."""
+        srv, port, mgr = running_server
+        client = TCPClient(
+            agent_id="PC-LOG-01",
+            version="1.0.0",
+            token=TOKEN,
+            host="127.0.0.1",
+            port=port,
+        )
+        received: list[bytes] = []
+
+        async def log_handler(payload: bytes) -> None:
+            received.append(payload)
+
+        client.on_cmd_log = log_handler
+        await client.connect()
+
+        # Server sends CMD_LOG to the agent
+        session = mgr.get_session("PC-LOG-01")
+        assert session is not None
+        assert session.writer is not None
+        cmd = CmdLogPayload(action=LogAction.HIST_REQUEST, date="20260217")
+        writer = session.writer
+        writer.write(Packet.build(PacketType.CMD_LOG, cmd.pack()))
+        await writer.drain()
+
+        await asyncio.sleep(0.3)
+        assert len(received) == 1
+        parsed = CmdLogPayload.unpack(received[0])
+        assert parsed.action == LogAction.HIST_REQUEST
+        assert parsed.date == "20260217"
+        await client.disconnect()

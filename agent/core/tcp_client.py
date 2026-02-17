@@ -54,6 +54,7 @@ class TCPClient:
         self.on_file_chunk: PacketCallback | None = None
         self.on_cmd_ctrl: PacketCallback | None = None
         self.on_agent_update: PacketCallback | None = None
+        self.on_cmd_log: PacketCallback | None = None
 
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -199,6 +200,10 @@ class TCPClient:
                 if packet_type == PacketType.AGENT_UPDATE:
                     if self.on_agent_update is not None:
                         await self.on_agent_update(payload)
+                    continue
+                if packet_type == PacketType.CMD_LOG:
+                    if self.on_cmd_log is not None:
+                        await self.on_cmd_log(payload)
                     continue
                 if packet_type == PacketType.DISCONNECT:
                     break
