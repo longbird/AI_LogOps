@@ -4,6 +4,7 @@ agent:
 
 telegram:
   bot_token: "YOUR_BOT_TOKEN"
+  # 관리자 개인 텔레그램 ID (봇 ID 아님). @userinfobot 으로 확인 가능.
   admin_chat_id: 123456789
 
 monitoring:
@@ -28,3 +29,25 @@ connection:
   heartbeat_interval: 30
   reconnect_attempts: 5
   reconnect_delay: 10
+
+llm:
+  # API 키는 아래 직접 입력하거나, .env 파일 또는 환경변수에 설정
+  #   .env 파일: 실행 파일과 같은 폴더에 .env 생성
+  #   환경변수명: OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY
+  auth_mode: "apikey"               # apikey | subscription
+  default_provider: "openai"        # openai | claude | openrouter
+  system_prompt: "당신은 산업용 소프트웨어 로그 분석 전문가입니다. 한국어로 답변하세요."
+  max_tokens: 2000
+  openai:
+    api_key: ""                     # 비워두면 OPENAI_API_KEY 환경변수 사용
+    model: "gpt-4o-mini"
+  claude:
+    api_key: ""                     # 비워두면 ANTHROPIC_API_KEY 환경변수 사용 (API Key 또는 OAuth Token)
+    model: "claude-sonnet-4-20250514"
+  openrouter:
+    api_key: ""                     # 비워두면 OPENROUTER_API_KEY 환경변수 사용
+    model: "openai/gpt-4o-mini"     # provider/model 형식 (예: anthropic/claude-sonnet-4-20250514)
+  subscription:
+    server_url: ""                  # 구독 서버 URL (예: http://your-server:8500)
+    key: ""                         # 구독 키 (config에 미리 설정하거나, Telegram /subscribe로 입력)
+    revalidate_hours: 24            # 구독 재검증 주기 (시간)

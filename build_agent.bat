@@ -10,14 +10,14 @@ if errorlevel 1 (
 )
 
 REM Install build dependencies
-pip install pyinstaller
+python -m pip install pyinstaller
 
 REM Clean previous build
 if exist dist\AILogOps-Agent rmdir /S /Q dist\AILogOps-Agent
 if exist build\AILogOps-Agent rmdir /S /Q build\AILogOps-Agent
 
 REM Build
-pyinstaller agent.spec --noconfirm
+python -m PyInstaller agent.spec --noconfirm
 
 REM Create runtime directories
 mkdir dist\AILogOps-Agent\backups 2>nul

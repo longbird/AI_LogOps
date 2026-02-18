@@ -6,12 +6,18 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol
 
-from telegram.ext import Application, CommandHandler
+from telegram import BotCommand
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from shared.utils import setup_logging
 
 if TYPE_CHECKING:
+    from agent.core.log_watcher import LogWatcher
     from agent.core.system_monitor import SystemMonitor
+    from agent.llm.router import LLMRouter
+    from agent.llm.subscription import SubscriptionClient
+    from agent.updater.process_deploy import ProcessDeployer
+    from agent.updater.self_update import SelfUpdater
 
 
 class _MessageLike(Protocol):
@@ -69,21 +75,64 @@ class AgentTelegramPoller:
         self._state: str = "STANDBY"
         self._logger: logging.Logger = setup_logging(self.__class__.__name__)
         self.system_monitor: SystemMonitor | None = None
+        self.updater: SelfUpdater | None = None
+        self.process_deployer: ProcessDeployer | None = None
+        self.process_args: list[str] | None = None
+        self.log_watcher: LogWatcher | None = None
+        self.llm_router: LLMRouter | None = None
+        self.subscription_client: SubscriptionClient | None = None
 
     async def start(self) -> None:
         """python-telegram-bot Application 초기화 + polling 시작."""
         if self.application is not None:
             return
 
+        self._logger.info(">>> poller: building Application...")
         application = Application.builder().token(self.bot_token).build()
         application.add_handler(CommandHandler("status", self._cmd_status))
         application.add_handler(CommandHandler("connect", self._cmd_connect))
         application.add_handler(CommandHandler("disconnect", self._cmd_disconnect))
+        application.add_handler(CommandHandler("update", self._cmd_update))
+        application.add_handler(CommandHandler("deploy", self._cmd_deploy))
+        application.add_handler(CommandHandler("last", self._cmd_last))
+        application.add_handler(CommandHandler("analyze", self._cmd_analyze))
+        application.add_handler(CommandHandler("model", self._cmd_model))
+        application.add_handler(CommandHandler("subscribe", self._cmd_subscribe))
+        application.add_handler(CommandHandler("unsubscribe", self._cmd_unsubscribe))
+        application.add_handler(CommandHandler("subscription", self._cmd_subscription))
+        application.add_handler(
+            MessageHandler(filters.Document.ALL, self._handle_document)
+        )
+        application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text)
+        )
 
+        self._logger.info(">>> poller: application.initialize()...")
         await application.initialize()
+        self._logger.info(">>> poller: application.start()...")
         await application.start()
+        self._logger.info(
+            ">>> poller: start_polling() (updater=%s)...",
+            application.updater is not None,
+        )
         if application.updater is not None:
             _ = await application.updater.start_polling()
+        await application.bot.set_my_commands(
+            [
+                BotCommand("status", "시스템 상태 확인"),
+                BotCommand("connect", "서버 연결 (IP PORT)"),
+                BotCommand("disconnect", "서버 연결 해제"),
+                BotCommand("update", "에이전트 업데이트 실행"),
+                BotCommand("deploy", "대상 프로세스 업데이트 배포"),
+                BotCommand("last", "마지막 N줄 로그 조회 (/last 20)"),
+                BotCommand("analyze", "최근 로그 AI 분석 (/analyze 50)"),
+                BotCommand("model", "LLM 전환 (/model claude)"),
+                BotCommand("subscribe", "구독 인증 (OAuth 로그인)"),
+                BotCommand("unsubscribe", "구독 인증 해제"),
+                BotCommand("subscription", "구독 상태 확인"),
+            ]
+        )
+        self._logger.info(">>> poller: commands registered, started successfully")
         self.application = application
 
     async def stop(self) -> None:
@@ -172,3 +221,461 @@ class AgentTelegramPoller:
         self._state = "STANDBY"
         _ = await message.reply_text("Disconnected.")
         self._logger.info("disconnect command handled")
+
+    async def _cmd_last(self, update: _UpdateLike, context: _ContextLike) -> None:
+        """감시 로그의 마지막 N줄을 전송한다. Usage: /last [N]"""
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        if self.log_watcher is None:
+            _ = await message.reply_text("로그 감시가 설정되지 않았습니다.")
+            return
+
+        args = context.args or []
+        n = 10
+        if args:
+            try:
+                n = max(1, min(int(args[0]), 100))
+            except ValueError:
+                _ = await message.reply_text("Usage: /last [N]  (N: 1~100, 기본 10)")
+                return
+
+        entries = self.log_watcher.get_latest_files_by_dir()
+        if not entries:
+            _ = await message.reply_text("감시 중인 로그 파일이 없습니다.")
+            return
+
+        for dir_path, file_path in entries:
+            lines = self.log_watcher.read_last_n_lines(file_path, n)
+            from pathlib import Path
+
+            header = f"[{dir_path}] {Path(file_path).name} (last {len(lines)})"
+            body = "\n".join(lines) if lines else "(empty)"
+            text = f"{header}\n{body}"
+            # Telegram 메시지 4096자 제한
+            if len(text) > 4000:
+                text = text[:4000] + "\n...(truncated)"
+            _ = await message.reply_text(text)
+
+    async def _handle_document(
+        self, update: _UpdateLike, context: _ContextLike
+    ) -> None:
+        """zip/파트 파일 수신. 단일 zip 또는 분할 파트(*.partNN.zip) 지원."""
+        del context
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        doc = getattr(message, "document", None)
+        if doc is None:
+            return
+
+        file_name: str = getattr(doc, "file_name", "") or ""
+        lower_name = file_name.lower()
+        if not (lower_name.endswith(".zip") or lower_name.endswith(".exe")):
+            _ = await message.reply_text("zip 또는 exe 파일만 지원합니다.")
+            return
+
+        if self.updater is None:
+            _ = await message.reply_text("업데이터가 설정되지 않았습니다.")
+            return
+
+        _ = await message.reply_text(f"파일 수신 중: {file_name}")
+        self._logger.info("receiving file: %s", file_name)
+
+        try:
+            tg_file = await doc.get_file()
+            data = await tg_file.download_as_bytearray()
+        except Exception:
+            self._logger.exception("failed to download file from Telegram")
+            _ = await message.reply_text("파일 다운로드 실패.")
+            return
+
+        raw = bytes(data)
+
+        # 분할 파트 감지: *.partNN.zip (예: AILogOps-Agent.part01of03.zip)
+        import re
+
+        match = re.search(r"\.part(\d+)of(\d+)\.zip$", file_name, re.IGNORECASE)
+        if match:
+            part_num = int(match.group(1))
+            total_parts = int(match.group(2))
+            status_msg = self.updater.receive_part(part_num, total_parts, raw)
+            _ = await message.reply_text(status_msg)
+
+            if self.updater.all_parts_received:
+                _ = await message.reply_text("모든 파트 수신 완료. 병합 중...")
+                ok = await self.updater.merge_parts()
+                if ok:
+                    _ = await message.reply_text(self._staged_ready_message(len(raw)))
+                else:
+                    _ = await message.reply_text("파트 병합 실패. 로그를 확인하세요.")
+            return
+
+        # 단일 zip 또는 exe/기타 파일
+        if lower_name.endswith(".zip"):
+            ok = await self.updater.receive_zip(raw)
+        else:
+            ok = await self.updater.receive_file(raw, file_name)
+
+        if ok:
+            _ = await message.reply_text(self._staged_ready_message(len(raw)))
+        else:
+            _ = await message.reply_text("파일 처리 실패. 로그를 확인하세요.")
+
+    async def _cmd_update(self, update: _UpdateLike, context: _ContextLike) -> None:
+        """업데이트 실행: updater.bat 생성 → 서비스 재시작."""
+        del context
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        if self.updater is None:
+            _ = await message.reply_text("업데이터가 설정되지 않았습니다.")
+            return
+
+        if not self.updater.update_dir.exists():
+            _ = await message.reply_text(
+                "업데이트 파일이 없습니다. zip 파일을 먼저 전송하세요."
+            )
+            return
+
+        _ = await message.reply_text("업데이트를 시작합니다.\n서비스가 재시작됩니다...")
+        self._logger.info("executing self-update via /update command")
+        self.updater.execute_update()
+
+    async def _cmd_deploy(self, update: _UpdateLike, context: _ContextLike) -> None:
+        """대상 프로세스에 스테이징된 파일을 배포한다."""
+        del context
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        if self.process_deployer is None:
+            _ = await message.reply_text(
+                "프로세스 배포가 설정되지 않았습니다.\n"
+                "config.yaml의 target_process 섹션을 확인하세요."
+            )
+            return
+
+        if not self.process_deployer.has_staged_files:
+            _ = await message.reply_text(
+                "스테이징된 파일이 없습니다.\nzip 또는 exe 파일을 먼저 전송하세요."
+            )
+            return
+
+        summary = self.process_deployer.staged_file_summary()
+        process_name = self.process_deployer.process_mgr.process_name
+        _ = await message.reply_text(
+            f"[{process_name}] 배포를 시작합니다...\n"
+            f"파일 목록:\n{summary}\n\n"
+            f"(백업 → 종료 → 로그 삭제 → 교체 → 시작 → 검증)"
+        )
+        self._logger.info("executing process deploy via /deploy command")
+
+        result = await self.process_deployer.execute_deploy(
+            process_args=self.process_args,
+        )
+
+        if result.success:
+            files_text = ", ".join(result.replaced_files[:10])
+            if len(result.replaced_files) > 10:
+                files_text += f" 외 {len(result.replaced_files) - 10}개"
+            _ = await message.reply_text(
+                f"배포 성공!\n"
+                f"PID: {result.pid}\n"
+                f"교체 파일: {files_text}\n"
+                f"백업: {result.backup_path or '(신규 배포)'}"
+            )
+        else:
+            _ = await message.reply_text(f"배포 실패: {result.error}")
+
+    def _staged_ready_message(self, size: int) -> str:
+        """스테이징 완료 후 안내 메시지 생성."""
+        lines = [f"파일 수신 완료 ({size:,} bytes)."]
+        lines.append("")
+        lines.append("/update - 에이전트 업데이트")
+        if self.process_deployer is not None:
+            name = self.process_deployer.process_mgr.process_name
+            lines.append(f"/deploy - 대상 프로세스({name}) 업데이트")
+        return "\n".join(lines)
+
+    # ── LLM 관련 핸들러 ─────────────────────────────────
+
+    async def _handle_text(self, update: _UpdateLike, context: _ContextLike) -> None:
+        """일반 텍스트 메시지 → LLM 채팅."""
+        del context
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        text: str = getattr(message, "text", "") or ""
+        if not text.strip():
+            return
+
+        if self.llm_router is None or not self.llm_router.is_available:
+            # 구독 모드인 경우 안내 메시지 변경
+            if self.subscription_client is not None:
+                _ = await message.reply_text(
+                    "LLM이 활성화되지 않았습니다.\n"
+                    "/subscribe <KEY> 명령으로 구독 인증하세요."
+                )
+            else:
+                _ = await message.reply_text(
+                    "LLM이 설정되지 않았습니다. config.yaml의 llm 섹션을 확인하세요."
+                )
+            return
+
+        _ = await message.reply_text(
+            f"[{self.llm_router.current_provider}] 응답 생성 중..."
+        )
+        response = await self.llm_router.chat(text)
+        await self._send_long_message(message, response)
+
+    async def _cmd_analyze(self, update: _UpdateLike, context: _ContextLike) -> None:
+        """최근 로그를 LLM에 전달하여 분석. Usage: /analyze [N]"""
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        if self.llm_router is None or not self.llm_router.is_available:
+            _ = await message.reply_text("LLM이 설정되지 않았습니다.")
+            return
+        if self.log_watcher is None:
+            _ = await message.reply_text("로그 감시가 설정되지 않았습니다.")
+            return
+
+        args = context.args or []
+        n = 50
+        if args:
+            try:
+                n = max(1, min(int(args[0]), 200))
+            except ValueError:
+                _ = await message.reply_text("Usage: /analyze [N]  (N: 1~200, 기본 50)")
+                return
+
+        entries = self.log_watcher.get_latest_files_by_dir()
+        if not entries:
+            _ = await message.reply_text("감시 중인 로그 파일이 없습니다.")
+            return
+
+        # 각 디렉토리의 최신 로그를 수집
+        from pathlib import Path
+
+        log_sections: list[str] = []
+        for dir_path, file_path in entries:
+            lines = self.log_watcher.read_last_n_lines(file_path, n)
+            header = f"[{dir_path}] {Path(file_path).name}"
+            body = "\n".join(lines) if lines else "(empty)"
+            log_sections.append(f"{header}\n{body}")
+
+        log_context = "\n\n".join(log_sections)
+
+        analysis_prompt = (
+            "다음은 산업용 소프트웨어의 최근 로그입니다.\n"
+            "에러, 경고, 이상 패턴을 분석하고 요약해주세요.\n"
+            "문제가 있다면 원인과 조치 방안을 제안하세요.\n\n"
+            f"--- 로그 시작 ---\n{log_context}\n--- 로그 끝 ---"
+        )
+
+        _ = await message.reply_text(
+            f"[{self.llm_router.current_provider}] 로그 {n}줄 분석 중..."
+        )
+        response = await self.llm_router.chat(analysis_prompt)
+        await self._send_long_message(message, response)
+
+    async def _cmd_model(self, update: _UpdateLike, context: _ContextLike) -> None:
+        """LLM provider 전환. Usage: /model [openai|claude]"""
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        if self.llm_router is None:
+            _ = await message.reply_text("LLM이 설정되지 않았습니다.")
+            return
+
+        args = context.args or []
+        if not args:
+            providers = ", ".join(self.llm_router.available_providers)
+            _ = await message.reply_text(
+                f"현재: {self.llm_router.current_provider}\n사용 가능: {providers}\nUsage: /model <provider>"
+            )
+            return
+
+        name = args[0].lower()
+        if self.llm_router.switch_provider(name):
+            _ = await message.reply_text(f"LLM 전환: {name}")
+        else:
+            providers = ", ".join(self.llm_router.available_providers)
+            _ = await message.reply_text(f"'{name}' 사용 불가. 가능: {providers}")
+
+    # ── 구독 인증 핸들러 ────────────────────────────────
+
+    async def _cmd_subscribe(self, update: _UpdateLike, context: _ContextLike) -> None:
+        """OAuth Device Flow로 구독 인증. /subscribe 로 시작."""
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        if self.subscription_client is None:
+            _ = await message.reply_text(
+                "구독 기능이 설정되지 않았습니다.\n"
+                "config.yaml의 llm.subscription 섹션을 확인하세요."
+            )
+            return
+
+        import asyncio
+
+        _ = await message.reply_text("인증 링크 생성 중...")
+
+        # 1. Device code 요청
+        flow_info = await self.subscription_client.start_device_flow()
+        if flow_info.error:
+            _ = await message.reply_text(f"인증 시작 실패: {flow_info.error}")
+            return
+
+        # 2. 사용자에게 로그인 링크만 표시 (코드 입력 불필요)
+        _ = await message.reply_text(
+            f"아래 링크에서 로그인하세요.\n\n"
+            f"{flow_info.login_uri}\n\n"
+            f"({flow_info.expires_in // 60}분 내에 완료해야 합니다)"
+        )
+
+        # 3. 백그라운드에서 폴링 시작
+        sub_client = self.subscription_client  # 클로저 캡처 (None 아님 확정)
+        llm_router = self.llm_router
+
+        async def _poll_and_apply() -> None:
+            result = await sub_client.poll_for_token(
+                device_code=flow_info.device_code,
+                interval=flow_info.interval,
+                timeout=flow_info.expires_in,
+            )
+            if not result.valid:
+                try:
+                    await self.send_message(f"구독 인증 실패: {result.message}")
+                except Exception:
+                    pass
+                return
+
+            if llm_router is None:
+                return
+
+            loaded = llm_router.apply_subscription(
+                openai_api_key=result.openai_api_key,
+                openai_model=result.openai_model,
+                claude_api_key=result.claude_api_key,
+                claude_model=result.claude_model,
+                system_prompt=result.system_prompt,
+                max_tokens=result.max_tokens,
+            )
+            sub_client.start_revalidation()
+
+            providers_text = ", ".join(loaded) if loaded else "없음"
+            try:
+                await self.send_message(
+                    f"구독 인증 성공!\n"
+                    f"활성 Provider: {providers_text}\n\n"
+                    f"LLM 기능을 사용할 수 있습니다."
+                )
+            except Exception:
+                pass
+
+        _ = asyncio.create_task(_poll_and_apply())
+
+    async def _cmd_unsubscribe(
+        self, update: _UpdateLike, context: _ContextLike
+    ) -> None:
+        """구독 인증 해제."""
+        del context
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        if self.subscription_client is None:
+            _ = await message.reply_text("구독 기능이 설정되지 않았습니다.")
+            return
+
+        if not self.subscription_client.is_authenticated:
+            _ = await message.reply_text("현재 인증된 구독이 없습니다.")
+            return
+
+        self.subscription_client.clear()
+        if self.llm_router is not None:
+            self.llm_router.clear_subscription()
+
+        _ = await message.reply_text(
+            "구독 인증이 해제되었습니다.\n"
+            "LLM 기능이 비활성화됩니다.\n"
+            "/subscribe 명령으로 다시 인증할 수 있습니다."
+        )
+
+    async def _cmd_subscription(
+        self, update: _UpdateLike, context: _ContextLike
+    ) -> None:
+        """구독 상태 확인."""
+        del context
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        if self.subscription_client is None:
+            _ = await message.reply_text("구독 기능이 설정되지 않았습니다.")
+            return
+
+        if not self.subscription_client.is_authenticated:
+            _ = await message.reply_text(
+                "구독 미인증 상태.\n/subscribe 명령으로 인증하세요."
+            )
+            return
+
+        r = self.subscription_client.result
+        token_masked = (
+            self.subscription_client.access_token[:8] + "****"
+            if self.subscription_client.access_token
+            else "-"
+        )
+        providers = (
+            ", ".join(self.llm_router.available_providers) if self.llm_router else "-"
+        )
+        current = self.llm_router.current_provider if self.llm_router else "-"
+        _ = await message.reply_text(
+            f"구독 상태: 인증됨\n"
+            f"토큰: {token_masked}\n"
+            f"Provider: {providers}\n"
+            f"현재: {current}\n"
+            f"만료: {r.expires_at or '무제한'}"
+        )
+
+    @staticmethod
+    async def _send_long_message(message: _MessageLike, text: str) -> None:
+        """Telegram 4096자 제한 대응: 긴 메시지 분할 전송."""
+        max_len = 4000
+        if len(text) <= max_len:
+            _ = await message.reply_text(text)
+            return
+        # 분할 전송
+        for i in range(0, len(text), max_len):
+            chunk = text[i : i + max_len]
+            _ = await message.reply_text(chunk)

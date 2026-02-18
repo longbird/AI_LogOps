@@ -33,7 +33,8 @@ class ProcessScheduler:
         self._notify = on_notify
         self._interval = check_interval
         self._running = False
-        self._last_triggered: set[str] = set()
+        # "YYYY-MM-DD HH:MM" 키로 하루에 한 번만 트리거
+        self._triggered_dates: set[str] = set()
 
         self._times: list[time] = []
         for t_str in restart_times:
@@ -60,31 +61,67 @@ class ProcessScheduler:
                 elapsed += 1.0
 
     async def check_and_restart(self) -> None:
-        """현재 시간이 스케줄에 맞으면 재시작 실행."""
+        """현재 시간이 스케줄에 맞으면 재시작 실행 (하루 1회)."""
         now = datetime.now()
-        current_hm = now.strftime("%H:%M")
+        today = now.strftime("%Y-%m-%d")
+
+        # 지난 날짜 키 정리
+        self._triggered_dates = {
+            k for k in self._triggered_dates if k.startswith(today)
+        }
 
         for scheduled_time in self._times:
             time_key = scheduled_time.strftime("%H:%M")
+            full_key = f"{today} {time_key}"
+
             if now.hour == scheduled_time.hour and now.minute == scheduled_time.minute:
-                if current_hm in self._last_triggered:
-                    continue  # Already triggered this minute
+                if full_key in self._triggered_dates:
+                    continue
 
-                self._last_triggered.add(current_hm)
+                self._triggered_dates.add(full_key)
                 logger.info("scheduled restart triggered at %s", time_key)
+                await self._do_restart(time_key)
 
-                try:
-                    self._mgr.kill()
-                    new_pid = self._mgr.start(args=self._args)
+    async def _do_restart(self, time_key: str) -> None:
+        """프로세스 재시작 + 검증. 실패 시 1회 재시도."""
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self._mgr.kill()
+                await asyncio.sleep(3)
+                new_pid = self._mgr.start(args=self._args)
+
+                # 5초 후 프로세스 생존 검증
+                await asyncio.sleep(5)
+                verify_pid = self._mgr.find_pid()
+                if verify_pid is not None:
                     msg = (
                         f"[Scheduled Restart] {self._mgr.process_name} "
-                        f"restarted at {time_key}. New PID: {new_pid}"
+                        f"restarted at {time_key}. PID: {new_pid}"
                     )
                     logger.info(msg)
                     if self._notify is not None:
                         await self._notify(msg)
-                except Exception:
-                    logger.exception("scheduled restart failed at %s", time_key)
-            else:
-                # Clear trigger flag when minute passes
-                self._last_triggered.discard(time_key)
+                    return
+
+                logger.warning(
+                    "restart verification failed (attempt %d/%d)",
+                    attempt,
+                    max_attempts,
+                )
+            except Exception:
+                logger.exception(
+                    "scheduled restart failed at %s (attempt %d/%d)",
+                    time_key,
+                    attempt,
+                    max_attempts,
+                )
+
+        # 모든 시도 실패
+        msg = (
+            f"[Scheduled Restart FAILED] {self._mgr.process_name} "
+            f"at {time_key} after {max_attempts} attempts"
+        )
+        logger.error(msg)
+        if self._notify is not None:
+            await self._notify(msg)

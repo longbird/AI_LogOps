@@ -148,6 +148,32 @@ class LogWatcher:
             return None
         return files[-1]
 
+    def get_latest_files_by_dir(self) -> list[tuple[str, str]]:
+        """각 감시 디렉토리별 최신 파일 반환. [(dir_path, file_path), ...]"""
+        result: list[tuple[str, str]] = []
+        for watch_dir in self._watch_dirs:
+            if not watch_dir.exists() or not watch_dir.is_dir():
+                continue
+            files = sorted(
+                f
+                for f in watch_dir.rglob("*")
+                if f.is_file() and f.suffix.lower() in self._extensions
+            )
+            if files:
+                result.append((str(watch_dir), str(files[-1])))
+        return result
+
+    @staticmethod
+    def read_last_n_lines(filepath: str, n: int) -> list[str]:
+        """파일에서 마지막 N줄을 읽는다."""
+        try:
+            p = Path(filepath)
+            with p.open("r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+                return [line.rstrip("\n\r") for line in lines[-n:]]
+        except OSError:
+            return ["(read error)"]
+
     def enqueue_file(self, filepath: str) -> None:
         if self._loop is None:
             return

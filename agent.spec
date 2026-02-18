@@ -7,7 +7,6 @@ a = Analysis(
     binaries=[],
     datas=[
         ("agent/config.yaml", "."),
-        ("agent/updater/updater_template.bat", "."),
     ],
     hiddenimports=[
         "win32timezone",

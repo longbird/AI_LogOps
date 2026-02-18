@@ -20,8 +20,17 @@ from agent.core.process_mgr import ProcessManager
 from agent.core.scheduler import ProcessScheduler
 from agent.core.system_monitor import SystemMonitor
 from agent.core.tcp_client import TCPClient
+from agent.llm.router import LLMRouter
+from agent.llm.subscription import SubscriptionClient
 from agent.telegram.poller import AgentTelegramPoller
-from shared.utils import load_yaml_config, setup_logging
+from agent.updater.process_deploy import ProcessDeployer
+from agent.updater.self_update import SelfUpdater
+from shared.utils import (
+    load_dotenv,
+    load_yaml_config,
+    setup_file_logging,
+    setup_logging,
+)
 
 try:
     import servicemanager
@@ -37,9 +46,11 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
     _svc_display_name_: ClassVar[str] = "AI-LogOps Agent Service"
     _svc_description_: ClassVar[str] = "AI-LogOps 원격 로그 분석 및 자동 배포 에이전트"
     _svc_start_type_: ClassVar[int] = win32service.SERVICE_AUTO_START
+    _is_service_mode: ClassVar[bool] = False
 
     def __init__(self, args: list[str]):
         super().__init__(args)
+        setup_file_logging(_get_base_dir() / "log")
         self._logger: logging.Logger = setup_logging(self.__class__.__name__)
         self._stop_handle: int = win32event.CreateEvent(None, False, False, None)
         self._stop_requested: threading.Event = threading.Event()
@@ -55,6 +66,7 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
             _ = loop.call_soon_threadsafe(lambda: None)
 
     def SvcDoRun(self) -> None:
+        self.ReportServiceStatus(win32service.SERVICE_RUNNING)
         servicemanager.LogMsg(
             servicemanager.EVENTLOG_INFORMATION_TYPE,
             servicemanager.PYS_SERVICE_STARTED,
@@ -65,6 +77,8 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(self._run_agent())
+        except Exception:
+            self._logger.exception("FATAL: _run_agent() crashed")
         finally:
             pending = asyncio.all_tasks(self._loop)
             for task in pending:
@@ -83,8 +97,11 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
             )
 
     async def _run_agent(self) -> None:
-        config = _load_agent_config()
         logger = self._logger
+        logger.info(">>> _run_agent: loading .env + config...")
+        load_dotenv(_get_base_dir() / ".env")
+        config = _load_agent_config()
+        logger.info(">>> config loaded: %s", list(config.keys()))
 
         agent_cfg = _as_mapping(config.get("agent"))
         telegram_cfg = _as_mapping(config.get("telegram"))
@@ -127,15 +144,116 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
             extensions=_to_list_str(monitoring_cfg.get("watch_extensions"), [".log"]),
             on_new_line=self._build_log_sender(tcp_client, log_cmd_handler_ref),
         )
+        bot_token_val = _to_str(telegram_cfg.get("bot_token"), "")
+        admin_chat_id_val = _to_int(telegram_cfg.get("admin_chat_id"), 0)
+        logger.info(
+            ">>> telegram config: token=%s...%s, admin_chat_id=%s",
+            bot_token_val[:8] if len(bot_token_val) > 8 else "(empty)",
+            bot_token_val[-4:] if len(bot_token_val) > 4 else "",
+            admin_chat_id_val,
+        )
         poller = AgentTelegramPoller(
-            bot_token=_to_str(telegram_cfg.get("bot_token"), ""),
-            admin_chat_id=_to_int(telegram_cfg.get("admin_chat_id"), 0),
+            bot_token=bot_token_val,
+            admin_chat_id=admin_chat_id_val,
         )
 
         system_monitor = SystemMonitor(
             target_process_name=_to_str(process_cfg.get("name"), ""),
         )
         poller.system_monitor = system_monitor
+
+        updater = SelfUpdater(
+            install_dir=_get_base_dir(),
+            is_service_mode=self.__class__._is_service_mode,
+        )
+        poller.updater = updater
+        poller.log_watcher = watcher
+
+        process_deployer = ProcessDeployer(
+            process_mgr=process_mgr,
+            update_dir=updater.update_dir,
+            log_folders=_to_list_str(monitoring_cfg.get("log_folders"), []),
+        )
+        poller.process_deployer = process_deployer
+        poller.process_args = process_args or None
+
+        import os as _os
+
+        llm_cfg = _as_mapping(config.get("llm"))
+        auth_mode = _to_str(llm_cfg.get("auth_mode"), "apikey")
+        openai_cfg = _as_mapping(llm_cfg.get("openai"))
+        claude_cfg = _as_mapping(llm_cfg.get("claude"))
+        openrouter_cfg = _as_mapping(llm_cfg.get("openrouter"))
+
+        # config.yaml 값 → 비어있으면 환경변수 폴백
+        openai_key = _to_str(openai_cfg.get("api_key"), "") or _os.environ.get(
+            "OPENAI_API_KEY", ""
+        )
+        claude_key = _to_str(claude_cfg.get("api_key"), "") or _os.environ.get(
+            "ANTHROPIC_API_KEY", ""
+        )
+        openrouter_key = _to_str(openrouter_cfg.get("api_key"), "") or _os.environ.get(
+            "OPENROUTER_API_KEY", ""
+        )
+
+        llm_router = LLMRouter(
+            default_provider=_to_str(llm_cfg.get("default_provider"), "openai"),
+            openai_api_key=openai_key,
+            openai_model=_to_str(openai_cfg.get("model"), "gpt-4o-mini"),
+            claude_api_key=claude_key,
+            claude_model=_to_str(claude_cfg.get("model"), "claude-sonnet-4-20250514"),
+            openrouter_api_key=openrouter_key,
+            openrouter_model=_to_str(openrouter_cfg.get("model"), "openai/gpt-4o-mini"),
+            system_prompt=_to_str(
+                llm_cfg.get("system_prompt"),
+                "당신은 산업용 소프트웨어 로그 분석 전문가입니다. 한국어로 답변하세요.",
+            ),
+            max_tokens=_to_int(llm_cfg.get("max_tokens"), 2000),
+        )
+        poller.llm_router = llm_router
+
+        # ── 구독 인증 클라이언트 설정 ──
+        sub_cfg = _as_mapping(llm_cfg.get("subscription"))
+        sub_server_url = _to_str(sub_cfg.get("server_url"), "")
+        sub_key = _to_str(sub_cfg.get("key"), "")
+        sub_revalidate_hours = _to_int(sub_cfg.get("revalidate_hours"), 24)
+        subscription_client: SubscriptionClient | None = None
+
+        if sub_server_url:
+            agent_id = _to_str(agent_cfg.get("id"), "agent-unknown")
+            subscription_client = SubscriptionClient(
+                server_url=sub_server_url,
+                agent_id=agent_id,
+                revalidate_hours=sub_revalidate_hours,
+            )
+            poller.subscription_client = subscription_client
+
+            # config에 구독 키가 있으면 자동 인증 시도
+            if sub_key and auth_mode == "subscription":
+                logger.info(">>> auto-validating subscription key from config...")
+                sub_result = await subscription_client.validate(sub_key)
+                if sub_result.valid:
+                    loaded = llm_router.apply_subscription(
+                        openai_api_key=sub_result.openai_api_key,
+                        openai_model=sub_result.openai_model,
+                        claude_api_key=sub_result.claude_api_key,
+                        claude_model=sub_result.claude_model,
+                        system_prompt=sub_result.system_prompt,
+                        max_tokens=sub_result.max_tokens,
+                    )
+                    subscription_client.start_revalidation()
+                    logger.info(">>> subscription auto-auth OK: providers=%s", loaded)
+                else:
+                    logger.warning(
+                        ">>> subscription auto-auth failed: %s", sub_result.message
+                    )
+
+        logger.info(
+            ">>> LLM router: auth_mode=%s, providers=%s, default=%s",
+            auth_mode,
+            llm_router.available_providers,
+            llm_router.current_provider,
+        )
 
         log_cmd_handler = LogCmdHandler(
             log_watcher=watcher,
@@ -161,8 +279,27 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         scheduler: ProcessScheduler | None = None
         scheduler_task: asyncio.Task[None] | None = None
 
+        logger.info(">>> starting watcher...")
         await watcher.start()
+        logger.info(">>> watcher started. starting poller...")
         await poller.start()
+        logger.info(">>> poller started.")
+
+        agent_id = _to_str(agent_cfg.get("id"), "agent-unknown")
+        agent_ver = _to_str(agent_cfg.get("version"), "0.0.0")
+        watch_dirs_cfg = _to_list_str(monitoring_cfg.get("log_folders"), [])
+        watch_ext_cfg = {
+            e.lower()
+            for e in _to_list_str(monitoring_cfg.get("watch_extensions"), [".log"])
+        }
+        watch_summary = _build_watch_summary(watch_dirs_cfg, watch_ext_cfg)
+        try:
+            await poller.send_message(
+                f"Agent started.\nID: {agent_id}\nVersion: {agent_ver}\n{watch_summary}"
+            )
+            logger.info(">>> startup message sent to Telegram")
+        except Exception:
+            logger.exception(">>> failed to send startup message")
 
         async def _notify(message: str) -> None:
             with contextlib.suppress(Exception):
@@ -189,9 +326,23 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
             scheduler = current_scheduler
             scheduler_task = asyncio.create_task(current_scheduler.run())
 
+        process_watch_task = asyncio.create_task(
+            self._process_watch_loop(process_mgr, _notify)
+        )
+
+        logger.info(
+            ">>> entering heartbeat_loop (stop_requested=%s)",
+            self._stop_requested.is_set(),
+        )
         try:
             await self._heartbeat_loop(tcp_client)
+            logger.info(">>> heartbeat_loop exited normally")
+        except Exception:
+            logger.exception(">>> heartbeat_loop crashed")
         finally:
+            _ = process_watch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await process_watch_task
             if monitor_loop is not None:
                 monitor_loop.stop()
             if scheduler is not None:
@@ -204,6 +355,8 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                 _ = scheduler_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await scheduler_task
+            if subscription_client is not None:
+                subscription_client.stop_revalidation()
             with contextlib.suppress(Exception):
                 await poller.stop()
             with contextlib.suppress(Exception):
@@ -259,18 +412,36 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
 
         return _disconnect
 
+    async def _process_watch_loop(
+        self,
+        process_mgr: ProcessManager,
+        notify: Callable[[str], Awaitable[None]],
+        interval: int = 600,
+    ) -> None:
+        """10분마다 대상 프로세스 실행 여부를 확인하고 미실행 시 알린다."""
+        while True:
+            await asyncio.sleep(interval)
+            pid = process_mgr.find_pid()
+            if pid is None:
+                await notify(
+                    f"[Process Watch] {process_mgr.process_name} is NOT running."
+                )
+
     async def _heartbeat_loop(self, tcp_client: TCPClient) -> None:
         interval = max(1, tcp_client.heartbeat_interval)
         next_heartbeat = 0.0
         loop = asyncio.get_running_loop()
+        iteration = 0
 
         while not self._stop_requested.is_set():
+            iteration += 1
             wait_result = await asyncio.to_thread(
                 win32event.WaitForSingleObject,
                 self._stop_handle,
                 1000,
             )
             if wait_result == 0:
+                self._logger.info(">>> stop event signaled at iter=%d", iteration)
                 break
 
             now = loop.time()
@@ -281,6 +452,52 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
             if tcp_client.is_connected:
                 with contextlib.suppress(ConnectionError, OSError):
                     await tcp_client.send_heartbeat()
+
+
+def _read_last_line_of(filepath: str) -> str:
+    """파일의 마지막 줄을 읽는다. 최대 200자."""
+    try:
+        p = Path(filepath)
+        with p.open("rb") as f:
+            _ = f.seek(0, 2)
+            pos = f.tell()
+            if pos == 0:
+                return "(empty)"
+            buf = min(pos, 4096)
+            _ = f.seek(pos - buf)
+            data = f.read(buf)
+            lines = data.split(b"\n")
+            last = lines[-1] if lines[-1] else (lines[-2] if len(lines) > 1 else b"")
+            text = last.decode("utf-8", errors="replace").strip()
+            return text[:200] if text else "(empty)"
+    except OSError:
+        return "(read error)"
+
+
+def _build_watch_summary(watch_dirs: list[str], extensions: set[str]) -> str:
+    """감시 폴더별 마지막 파일의 마지막 줄 요약을 생성한다."""
+    if not watch_dirs:
+        return "No watched folders."
+    parts: list[str] = []
+    for watch_dir in watch_dirs:
+        dir_path = Path(watch_dir)
+        dir_label = str(dir_path)
+        if not dir_path.is_dir():
+            parts.append(f"[{dir_label}] (folder not found)")
+            continue
+        # 해당 폴더에서 확장자 매칭 파일을 이름순 정렬 → 마지막 = 최신
+        files = sorted(
+            f
+            for f in dir_path.rglob("*")
+            if f.is_file() and f.suffix.lower() in extensions
+        )
+        if not files:
+            parts.append(f"[{dir_label}] (no log files)")
+            continue
+        latest = files[-1]
+        last_line = _read_last_line_of(str(latest))
+        parts.append(f"[{dir_label}] {latest.name}\n  {last_line}")
+    return "\n".join(parts)
 
 
 def _as_mapping(value: object) -> dict[str, object]:
@@ -362,9 +579,23 @@ def configure_failure_actions(service_name: str) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     args = sys.argv if argv is None else argv
-    win32serviceutil.HandleCommandLine(AILogOpsAgentService)
-    if len(args) > 1 and args[1].lower() == "install":
-        configure_failure_actions(AILogOpsAgentService._svc_name_)
+
+    if len(args) == 1:
+        # SCM이 인수 없이 실행 → 서비스 디스패처 시도
+        # 실패 시(더블클릭 등 비-SCM 컨텍스트) → debug 모드 폴백
+        try:
+            AILogOpsAgentService._is_service_mode = True
+            servicemanager.Initialize()
+            servicemanager.PrepareToHostSingle(AILogOpsAgentService)
+            servicemanager.StartServiceCtrlDispatcher()
+        except Exception:
+            AILogOpsAgentService._is_service_mode = False
+            win32serviceutil.HandleCommandLine(AILogOpsAgentService, argv=["", "debug"])
+    else:
+        # 커맨드라인: install / start / stop / remove / debug
+        win32serviceutil.HandleCommandLine(AILogOpsAgentService)
+        if args[1].lower() == "install":
+            configure_failure_actions(AILogOpsAgentService._svc_name_)
 
 
 if __name__ == "__main__":
