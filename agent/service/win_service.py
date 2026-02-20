@@ -391,7 +391,16 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                 async def _on_new_recording(
                     rec_no: int, filepath: str, result: AnalysisResult
                 ) -> None:
+                    self._logger.info(
+                        "recording callback: rec_no=%d status=%s file=%s",
+                        rec_no,
+                        getattr(getattr(result, "status", None), "value", "?"),
+                        filepath,
+                    )
                     if not tcp_client.is_connected:
+                        self._logger.warning(
+                            "not connected — skipping rec_no=%d", rec_no
+                        )
                         return
                     from shared.protocol import RecAnalysisPayload
 

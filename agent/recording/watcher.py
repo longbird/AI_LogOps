@@ -112,13 +112,37 @@ class RecordingWatcher:
             await asyncio.sleep(0.5)
             try:
                 rec_no = self._extract_rec_no(filepath)
+                file_size = (
+                    Path(filepath).stat().st_size if Path(filepath).exists() else 0
+                )
+                self._logger.info(
+                    "analyzing: rec_no=%d file=%s size=%d",
+                    rec_no,
+                    Path(filepath).name,
+                    file_size,
+                )
                 result = await asyncio.to_thread(
                     analyze_recording, rec_no, filepath, 0.0
                 )
                 self._processed.add(filepath)
+                self._logger.info(
+                    "analyzed: rec_no=%d status=%s L=%.1fdB R=%.1fdB dur=%.1fs",
+                    rec_no,
+                    result.status.value,
+                    result.left.rms_db,
+                    result.right.rms_db,
+                    result.duration_wav,
+                )
                 await self._on_new_recording(rec_no, filepath, result)
             except Exception:
-                self._logger.exception("Failed to analyze: %s", filepath)
+                file_size = (
+                    Path(filepath).stat().st_size if Path(filepath).exists() else -1
+                )
+                self._logger.exception(
+                    "Failed to analyze: %s (size=%d)",
+                    filepath,
+                    file_size,
+                )
 
     @staticmethod
     def _extract_rec_no(filepath: str) -> int:
