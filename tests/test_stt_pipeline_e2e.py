@@ -36,6 +36,7 @@ if "faster_whisper" not in sys.modules:
     sys.modules["faster_whisper"] = _fw_stub
 
 from server.airec.analyzer.pipeline import PipelineResult, run_pipeline  # noqa: E402
+from server.airec.analyzer.stt import extract_channel_wav, transcribe_file  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +64,50 @@ def _create_mono_wav(path: str, duration_sec: float = 5.0) -> None:
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(b"\x00\x00" * n_frames)
+
+
+def _create_mulaw_stereo_wav(path: str, duration_sec: float = 5.0) -> None:
+    """Create a minimal stereo μ-law WAV file (silence).
+
+    μ-law format (format code 7) is used in telephone recordings.
+    This creates a raw RIFF WAV with μ-law encoding.
+    """
+    import struct
+
+    sample_rate = 8000
+    n_channels = 2
+    n_frames = int(sample_rate * duration_sec)
+
+    # μ-law silence is 0xFF (all bits set)
+    mulaw_silence = b"\xff" * (n_frames * n_channels)
+
+    with open(path, "wb") as f:
+        # RIFF header
+        f.write(b"RIFF")
+        # File size (placeholder, will update)
+        file_size_pos = f.tell()
+        f.write(b"\x00\x00\x00\x00")
+        f.write(b"WAVE")
+
+        # fmt chunk
+        f.write(b"fmt ")
+        f.write(struct.pack("<I", 16))  # chunk size
+        f.write(struct.pack("<H", 7))  # format code (7 = μ-law)
+        f.write(struct.pack("<H", n_channels))
+        f.write(struct.pack("<I", sample_rate))
+        f.write(struct.pack("<I", sample_rate * n_channels))  # byte rate
+        f.write(struct.pack("<H", n_channels))  # block align
+        f.write(struct.pack("<H", 8))  # bits per sample
+
+        # data chunk
+        f.write(b"data")
+        f.write(struct.pack("<I", len(mulaw_silence)))
+        f.write(mulaw_silence)
+
+        # Update file size
+        file_size = f.tell() - 8
+        f.seek(file_size_pos)
+        f.write(struct.pack("<I", file_size))
 
 
 @dataclass
@@ -511,3 +556,106 @@ class TestRecHandlerSTTPipeline:
         # Verify stats
         stats = handler.get_agent_stats("agent-1")
         assert stats == {"total": 1, "ok": 1, "uploaded": 1}
+
+
+# ---------------------------------------------------------------------------
+# μ-law WAV handling (format code 7)
+# ---------------------------------------------------------------------------
+
+
+class TestMulawWavHandling:
+    """Test μ-law WAV file support (telephone recordings)."""
+
+    def test_extract_channel_mulaw_stereo(self, tmp_path: Path) -> None:
+        """Test extracting a channel from a μ-law stereo WAV."""
+        wav_path = str(tmp_path / "mulaw_stereo.wav")
+        _create_mulaw_stereo_wav(wav_path, duration_sec=2.0)
+
+        # Extract left channel
+        left_wav = extract_channel_wav(wav_path, channel=0)
+        assert Path(left_wav).exists()
+
+        # Verify it's a valid PCM WAV (not μ-law)
+        with wave.open(left_wav, "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getsampwidth() == 2  # Converted to 16-bit PCM
+            assert wf.getframerate() == 8000
+            frames = wf.readframes(wf.getnframes())
+            assert len(frames) > 0
+
+        # Clean up
+        Path(left_wav).unlink()
+
+    def test_extract_channel_mulaw_right(self, tmp_path: Path) -> None:
+        """Test extracting right channel from μ-law stereo WAV."""
+        wav_path = str(tmp_path / "mulaw_stereo.wav")
+        _create_mulaw_stereo_wav(wav_path, duration_sec=2.0)
+
+        # Extract right channel
+        right_wav = extract_channel_wav(wav_path, channel=1)
+        assert Path(right_wav).exists()
+
+        # Verify it's a valid PCM WAV
+        with wave.open(right_wav, "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == 8000
+
+        # Clean up
+        Path(right_wav).unlink()
+
+    def test_transcribe_file_mulaw_stereo(self, tmp_path: Path) -> None:
+        """Test transcribe_file detects μ-law stereo and routes to stereo handler."""
+        wav_path = str(tmp_path / "mulaw_stereo.wav")
+        _create_mulaw_stereo_wav(wav_path, duration_sec=2.0)
+
+        # Mock transcribe_file to verify it's called with stereo routing
+        with patch(
+            "server.airec.analyzer.stt.transcribe_stereo",
+            return_value=_make_fake_transcript(),
+        ) as mock_stereo:
+            result = transcribe_file(wav_path)
+
+        # Verify stereo handler was called (positional args)
+        mock_stereo.assert_called_once_with(wav_path, "ko")
+        assert result is not None
+
+    def test_mulaw_mono_fallback(self, tmp_path: Path) -> None:
+        """Test that mono μ-law WAV is handled correctly."""
+        import struct
+
+        wav_path = str(tmp_path / "mulaw_mono.wav")
+        sample_rate = 8000
+        n_frames = int(sample_rate * 2.0)
+
+        # Create mono μ-law WAV
+        with open(wav_path, "wb") as f:
+            f.write(b"RIFF")
+            file_size_pos = f.tell()
+            f.write(b"\x00\x00\x00\x00")
+            f.write(b"WAVE")
+
+            # fmt chunk
+            f.write(b"fmt ")
+            f.write(struct.pack("<I", 16))
+            f.write(struct.pack("<H", 7))  # μ-law
+            f.write(struct.pack("<H", 1))  # mono
+            f.write(struct.pack("<I", sample_rate))
+            f.write(struct.pack("<I", sample_rate))
+            f.write(struct.pack("<H", 1))
+            f.write(struct.pack("<H", 8))
+
+            # data chunk
+            f.write(b"data")
+            f.write(struct.pack("<I", n_frames))
+            f.write(b"\xff" * n_frames)
+
+            # Update file size
+            file_size = f.tell() - 8
+            f.seek(file_size_pos)
+            f.write(struct.pack("<I", file_size))
+
+        # extract_channel_wav should copy mono file as-is
+        result = extract_channel_wav(wav_path, channel=0)
+        assert Path(result).exists()
+        Path(result).unlink()

@@ -24,6 +24,103 @@ _model: WhisperModel | None = None
 _model_size: str | None = None
 
 
+# μ-law decoding lookup table and helpers
+def _decode_mulaw_sample(byte_val: int) -> int:
+    """Decode a single μ-law byte to int16 PCM sample."""
+    byte_val = ~byte_val & 0xFF
+    sign = byte_val & 0x80
+    exponent = (byte_val >> 4) & 0x07
+    mantissa = byte_val & 0x0F
+    sample = ((mantissa << 3) + 0x84) << exponent
+    sample -= 0x84
+    return -sample if sign else sample
+
+
+_MULAW_TABLE = np.array([_decode_mulaw_sample(i) for i in range(256)], dtype=np.int16)
+
+
+def _decode_mulaw(data: bytes) -> np.ndarray:
+    """Decode μ-law bytes to int16 PCM samples using vectorized lookup table."""
+    indices = np.frombuffer(data, dtype=np.uint8)
+    return _MULAW_TABLE[indices]
+
+
+def _read_wav_raw(wav_path: str) -> tuple[bytes, int, int, int, int]:
+    """
+    Manually parse RIFF WAV header to extract raw audio data and metadata.
+
+    Returns:
+        (raw_data, sample_rate, n_channels, sample_width, format_code)
+        - raw_data: bytes of audio samples
+        - sample_rate: samples per second
+        - n_channels: number of channels
+        - sample_width: bytes per sample
+        - format_code: 1=PCM, 7=μ-law, etc.
+    """
+    with open(wav_path, "rb") as f:
+        # Read RIFF header
+        riff_header = f.read(4)
+        if riff_header != b"RIFF":
+            raise ValueError(f"Not a RIFF file: {wav_path}")
+
+        _ = struct.unpack("<I", f.read(4))[0]  # file_size (not used)
+        wave_header = f.read(4)
+        if wave_header != b"WAVE":
+            raise ValueError(f"Not a WAVE file: {wav_path}")
+
+        # Find 'fmt ' chunk
+        fmt_data = None
+        while True:
+            chunk_id = f.read(4)
+            if not chunk_id:
+                break
+            chunk_size = struct.unpack("<I", f.read(4))[0]
+
+            if chunk_id == b"fmt ":
+                fmt_data = f.read(chunk_size)
+                break
+            else:
+                _ = f.seek(chunk_size, 1)  # Skip this chunk
+
+        if fmt_data is None:
+            raise ValueError("No 'fmt ' chunk found in WAV file")
+
+        # Parse fmt chunk (at least 16 bytes)
+        if len(fmt_data) < 16:
+            raise ValueError("fmt chunk too small")
+
+        (
+            format_code,
+            n_channels,
+            sample_rate,
+            _,  # byte_rate (not used)
+            _,  # block_align (not used)
+            bits_per_sample,
+        ) = struct.unpack("<HHIIHH", fmt_data[:16])
+        sample_width = bits_per_sample // 8
+
+        # Find 'data' chunk
+        _ = f.seek(0)
+        _ = f.read(12)  # Skip RIFF header
+        raw_data = None
+        while True:
+            chunk_id = f.read(4)
+            if not chunk_id:
+                break
+            chunk_size = struct.unpack("<I", f.read(4))[0]
+
+            if chunk_id == b"data":
+                raw_data = f.read(chunk_size)
+                break
+            else:
+                _ = f.seek(chunk_size, 1)
+
+        if raw_data is None:
+            raise ValueError("No 'data' chunk found in WAV file")
+
+        return raw_data, sample_rate, n_channels, sample_width, format_code
+
+
 def get_model(
     model_size: str = "medium",
     device: str = "cpu",
@@ -70,20 +167,38 @@ class TranscriptResult:
 
 
 def extract_channel_wav(wav_path: str, channel: int) -> str:
-    with wave.open(wav_path, "rb") as wf:
-        n_channels = wf.getnchannels()
-        sample_width = wf.getsampwidth()
-        sample_rate = wf.getframerate()
-        n_frames = wf.getnframes()
-        raw = wf.readframes(n_frames)
+    # Try standard wave.open() first (for PCM files)
+    try:
+        with wave.open(wav_path, "rb") as wf:
+            n_channels = wf.getnchannels()
+            sample_width = wf.getsampwidth()
+            sample_rate = wf.getframerate()
+            n_frames = wf.getnframes()
+            raw = wf.readframes(n_frames)
+        format_code = 1  # PCM
+    except wave.Error:
+        # Fall back to manual parsing for μ-law or other formats
+        raw, sample_rate, n_channels, sample_width, format_code = _read_wav_raw(
+            wav_path
+        )
+        n_frames = (
+            len(raw) // (n_channels * sample_width)
+            if format_code == 1
+            else len(raw) // n_channels
+        )
 
     if n_channels < 2:
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp.close()
-        shutil.copy2(wav_path, tmp.name)
+        _ = shutil.copy2(wav_path, tmp.name)
         return tmp.name
 
-    if sample_width == 2:
+    # Handle μ-law (format code 7)
+    if format_code == 7:
+        # Decode μ-law to int16 PCM
+        samples = _decode_mulaw(raw)
+        sample_width = 2
+    elif sample_width == 2:
         fmt = f"<{n_frames * n_channels}h"
         samples = np.array(struct.unpack(fmt, raw), dtype=np.int16)
     elif sample_width == 1:
@@ -203,8 +318,13 @@ def transcribe_mono(wav_path: str, language: str = "ko") -> TranscriptResult:
 
 
 def transcribe_file(wav_path: str, language: str = "ko") -> TranscriptResult:
-    with wave.open(wav_path, "rb") as wf:
-        n_channels = wf.getnchannels()
+    # Try standard wave.open() first
+    try:
+        with wave.open(wav_path, "rb") as wf:
+            n_channels = wf.getnchannels()
+    except wave.Error:
+        # Fall back to manual parsing for μ-law or other formats
+        _, _, n_channels, _, _ = _read_wav_raw(wav_path)
 
     if n_channels >= 2:
         return transcribe_stereo(wav_path, language)
