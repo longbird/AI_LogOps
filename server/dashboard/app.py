@@ -20,6 +20,7 @@ logger = setup_logging("dashboard.app")
 def create_app(
     session_mgr: object | None = None,
     storage_mgr: object | None = None,
+    tcp_server: object | None = None,
     secret_key: str = "CHANGE_ME",
 ) -> FastAPI:
     app = FastAPI(title="AI-LogOps Dashboard")
@@ -39,6 +40,10 @@ def create_app(
         APIRouter,
         importlib.import_module("server.dashboard.routes.deploys").router,
     )
+    recordings_router = cast(
+        APIRouter,
+        importlib.import_module("server.dashboard.routes.recordings").router,
+    )
 
     templates_dir = Path(__file__).parent / "templates"
     static_dir = Path(__file__).parent / "static"
@@ -48,6 +53,7 @@ def create_app(
 
     app.state.session_mgr = session_mgr
     app.state.storage_mgr = storage_mgr
+    app.state.tcp_server = tcp_server
     app.state.secret_key = secret_key
     app.state.templates = templates
 
@@ -115,5 +121,6 @@ def create_app(
     app.include_router(logs_router)
     app.include_router(reports_router)
     app.include_router(deploys_router)
+    app.include_router(recordings_router)
 
     return app

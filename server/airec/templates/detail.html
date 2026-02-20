@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block title %}녹취 상세 #{{ rec.rec_no }} - AirREC{% endblock %}
+{% block nav_recordings %}active{% endblock %}
+
+{% block head %}
+<script src="https://unpkg.com/wavesurfer.js@7"></script>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0">
+        <i class="bi bi-mic"></i> 녹취 상세 #{{ rec.rec_no }}
+    </h4>
+    <a href="/airec/recordings?date={{ rec.date }}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left"></i> 목록으로
+    </a>
+</div>
+
+<div class="row">
+    <!-- Left column: info + waveform + controls -->
+    <div class="col-lg-8">
+        <!-- Recording Info Card -->
+        <div class="card mb-3">
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <table class="table table-sm table-borderless mb-0">
+                            <tr><th style="width:80px">Date</th><td>{{ rec.date }}</td></tr>
+                            <tr><th>Agent ID</th><td>{{ rec.agent_id }}</td></tr>
+                            <tr><th>Size</th><td>{{ (rec.file_size / 1024)|round(1) }} KB</td></tr>
+                        </table>
+                    </div>
+                    <div class="col-md-6">
+                        <table class="table table-sm table-borderless mb-0">
+                            <tr><th>Filename</th><td class="text-break small">{{ rec.filename }}</td></tr>
+                            <tr><th>Path</th><td class="text-break small">{{ rec.path }}</td></tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Waveform -->
+        <div class="waveform-container mb-2">
+            <div class="channel-label agent"><i class="bi bi-headset"></i> Audio</div>
+            <div id="waveform"></div>
+        </div>
+
+        <!-- Playback Controls -->
+        <div class="playback-controls mb-3">
+            <button id="btn-play" class="btn btn-primary btn-sm" onclick="togglePlay()">
+                <i class="bi bi-play-fill" id="play-icon"></i>
+            </button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="stopPlay()">
+                <i class="bi bi-stop-fill"></i>
+            </button>
+            <span id="current-time" class="small text-muted">00:00</span>
+            <span class="small text-muted">/</span>
+            <span id="total-time" class="small text-muted">00:00</span>
+            <div class="ms-auto d-flex gap-1">
+                <span class="small text-muted me-1">배속:</span>
+                <button class="btn btn-outline-secondary speed-btn" onclick="setSpeed(0.5)">0.5x</button>
+                <button class="btn btn-outline-secondary speed-btn active" onclick="setSpeed(1.0)">1.0x</button>
+                <button class="btn btn-outline-secondary speed-btn" onclick="setSpeed(1.5)">1.5x</button>
+                <button class="btn btn-outline-secondary speed-btn" onclick="setSpeed(2.0)">2.0x</button>
+            </div>
+        </div>
+
+        <!-- Quality Analysis (if exists) -->
+        {% if quality %}
+        <div class="card mb-3">
+            <div class="card-header"><i class="bi bi-clipboard-check"></i> 상담 품질 분석</div>
+            <div class="card-body">
+                <!-- Quality content from original -->
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Right column: Transcript -->
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-chat-text"></i> 전사 텍스트</span>
+                {% if not transcript %}
+                <!-- STT Button disabled for now as backend not fully integrated -->
+                <button class="btn btn-outline-secondary btn-sm" disabled title="Not implemented yet">
+                    <i class="bi bi-mic-mute"></i> STT (N/A)
+                </button>
+                {% endif %}
+            </div>
+            <div class="card-body p-0">
+                <div class="transcript-container" id="transcript-box">
+                    {% if segments %}
+                    {% for seg in segments %}
+                    <div class="transcript-segment" data-start="{{ seg.time }}" data-end="{{ seg.end }}" onclick="seekTo({{ seg.time }})">
+                        <span class="speaker {{ seg.speaker }}">
+                            {% if seg.speaker == 'agent' %}상담원{% elif seg.speaker == 'customer' %}고객{% else %}화자{% endif %}
+                        </span>
+                        <span class="time">{{ "%.1f"|format(seg.time) }}s</span>
+                        <div class="text">{{ seg.text }}</div>
+                    </div>
+                    {% endfor %}
+                    {% elif transcript %}
+                    <div class="p-3">
+                        <p class="mb-1"><strong>전체 텍스트:</strong></p>
+                        <p>{{ transcript.full_text or '(없음)' }}</p>
+                    </div>
+                    {% else %}
+                    <div class="p-3 text-center text-muted">
+                        <i class="bi bi-chat-text" style="font-size:2rem"></i>
+                        <p class="mt-2">전사 텍스트가 없습니다.</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Wavesurfer setup
+    const ws = WaveSurfer.create({
+        container: '#waveform',
+        waveColor: '#4A90E2',
+        progressColor: '#1E5FA8',
+        cursorColor: '#fff',
+        height: 100,
+        barWidth: 2,
+        barGap: 1,
+        responsive: true,
+        url: '/api/rec/stream/{{ rec.rec_no }}',
+    });
+
+    ws.on('ready', () => {
+        document.getElementById('total-time').textContent = formatTime(ws.getDuration());
+    });
+
+    ws.on('timeupdate', (time) => {
+        document.getElementById('current-time').textContent = formatTime(time);
+        highlightSegment(time);
+    });
+
+    ws.on('play', () => {
+        document.getElementById('play-icon').className = 'bi bi-pause-fill';
+    });
+
+    ws.on('pause', () => {
+        document.getElementById('play-icon').className = 'bi bi-play-fill';
+    });
+
+    function togglePlay() { ws.playPause(); }
+    function stopPlay() { ws.stop(); }
+
+    function seekTo(time) {
+        if (ws.getDuration() > 0) {
+            ws.seekTo(time / ws.getDuration());
+        }
+    }
+
+    function setSpeed(rate) {
+        ws.setPlaybackRate(rate);
+        document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+        event.target.classList.add('active');
+    }
+
+    // Highlight active transcript segment
+    function highlightSegment(currentTime) {
+        document.querySelectorAll('.transcript-segment').forEach(el => {
+            const start = parseFloat(el.dataset.start);
+            const end = parseFloat(el.dataset.end);
+            if (currentTime >= start && currentTime <= end) {
+                el.classList.add('active');
+                el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } else {
+                el.classList.remove('active');
+            }
+        });
+    }
+
+    // Run STT via API (Commented out/placeholder as STT backend not ready)
+    async function runSTT() {
+        // Implementation pending
+    }
+</script>
+{% endblock %}

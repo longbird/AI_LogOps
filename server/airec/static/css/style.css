@@ -1,0 +1,135 @@
+/* AirREC Dashboard Styles */
+
+/* Status badges */
+.badge-ok { background-color: #28a745; }
+.badge-empty { background-color: #dc3545; }
+.badge-muted-l, .badge-muted-r { background-color: #fd7e14; }
+.badge-dropout { background-color: #ffc107; color: #333; }
+.badge-mismatch { background-color: #6f42c1; }
+
+/* Waveform containers */
+.waveform-container {
+    background: #1a1a2e;
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 10px;
+}
+
+.channel-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 4px 10px;
+    margin-bottom: 4px;
+}
+
+.channel-label.agent { color: #4A90E2; }
+.channel-label.customer { color: #E24A4A; }
+
+/* Transcript viewer */
+.transcript-container {
+    max-height: 500px;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.transcript-segment {
+    padding: 6px 10px;
+    margin-bottom: 4px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.transcript-segment:hover { background-color: #f0f0f0; }
+.transcript-segment.active { background-color: #e8f4fd; }
+
+.transcript-segment .speaker {
+    font-weight: 600;
+    font-size: 0.8rem;
+}
+
+.transcript-segment .speaker.agent { color: #4A90E2; }
+.transcript-segment .speaker.customer { color: #E24A4A; }
+.transcript-segment .speaker.unknown { color: #6c757d; }
+
+.transcript-segment .time {
+    font-size: 0.75rem;
+    color: #999;
+    margin-left: 8px;
+}
+
+.transcript-segment .text {
+    margin-top: 2px;
+    font-size: 0.9rem;
+}
+
+/* Score display */
+.score-circle {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 1.1rem;
+    color: white;
+}
+
+.score-high { background-color: #28a745; }
+.score-mid { background-color: #ffc107; color: #333; }
+.score-low { background-color: #dc3545; }
+
+/* Stats cards */
+.stat-card {
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+    transition: transform 0.2s;
+}
+
+.stat-card:hover { transform: translateY(-2px); }
+
+.stat-card .stat-value {
+    font-size: 2rem;
+    font-weight: 700;
+}
+
+.stat-card .stat-label {
+    font-size: 0.85rem;
+    color: #6c757d;
+}
+
+/* Filter form */
+.filter-form {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 20px;
+}
+
+/* Table improvements */
+.table-recordings th { white-space: nowrap; }
+.table-recordings td { vertical-align: middle; }
+
+/* Playback controls */
+.playback-controls {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.speed-btn {
+    padding: 2px 8px;
+    font-size: 0.8rem;
+}
+
+.speed-btn.active {
+    background-color: #0d6efd;
+    color: white;
+}

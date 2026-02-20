@@ -1,0 +1,212 @@
+"""
+analyzer/stt.py - faster-whisper STT wrapper module.
+
+Provides lazy model loading, channel extraction (no FFmpeg),
+and transcription for mono and stereo WAV files.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import struct
+import tempfile
+import wave
+from dataclasses import dataclass
+
+import numpy as np
+from faster_whisper import WhisperModel
+
+logger = logging.getLogger(__name__)
+
+_model: WhisperModel | None = None
+_model_size: str | None = None
+
+
+def get_model(
+    model_size: str = "medium",
+    device: str = "cpu",
+    compute_type: str = "int8",
+) -> WhisperModel:
+    global _model, _model_size
+    if _model is None or _model_size != model_size:
+        logger.info(
+            "Loading faster-whisper model: %s (device=%s, compute=%s)",
+            model_size,
+            device,
+            compute_type,
+        )
+        _model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        _model_size = model_size
+    return _model
+
+
+@dataclass
+class Segment:
+    start: float
+    end: float
+    text: str
+
+
+@dataclass
+class SpeakerSegment:
+    time: float
+    end: float
+    speaker: str
+    text: str
+
+
+@dataclass
+class TranscriptResult:
+    segments: list[SpeakerSegment]
+    agent_segments: list[Segment]
+    customer_segments: list[Segment]
+    agent_text: str
+    customer_text: str
+    full_text: str
+    duration_sec: float
+    word_count: int
+
+
+def extract_channel_wav(wav_path: str, channel: int) -> str:
+    with wave.open(wav_path, "rb") as wf:
+        n_channels = wf.getnchannels()
+        sample_width = wf.getsampwidth()
+        sample_rate = wf.getframerate()
+        n_frames = wf.getnframes()
+        raw = wf.readframes(n_frames)
+
+    if n_channels < 2:
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp.close()
+        shutil.copy2(wav_path, tmp.name)
+        return tmp.name
+
+    if sample_width == 2:
+        fmt = f"<{n_frames * n_channels}h"
+        samples = np.array(struct.unpack(fmt, raw), dtype=np.int16)
+    elif sample_width == 1:
+        samples = np.frombuffer(raw, dtype=np.uint8).astype(np.int16) - 128
+        samples = (samples * 256).astype(np.int16)
+        sample_width = 2
+    else:
+        raise ValueError(f"Unsupported sample width: {sample_width} bytes")
+
+    channel_data = samples[channel::n_channels]
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.close()
+    with wave.open(tmp.name, "wb") as wf_out:
+        wf_out.setnchannels(1)
+        wf_out.setsampwidth(sample_width)
+        wf_out.setframerate(sample_rate)
+        wf_out.writeframes(channel_data.tobytes())
+
+    return tmp.name
+
+
+def transcribe(
+    wav_path: str,
+    language: str = "ko",
+    beam_size: int = 5,
+) -> list[Segment]:
+    model = get_model()
+    segments_iter, info = model.transcribe(
+        wav_path, language=language, beam_size=beam_size
+    )
+
+    results: list[Segment] = []
+    for seg in segments_iter:
+        text = seg.text.strip()
+        if text:
+            results.append(
+                Segment(
+                    start=round(seg.start, 3),
+                    end=round(seg.end, 3),
+                    text=text,
+                )
+            )
+
+    logger.info(
+        "Transcribed %s: %d segment(s), lang=%s (prob=%.2f)",
+        wav_path,
+        len(results),
+        info.language,
+        info.language_probability,
+    )
+    return results
+
+
+def transcribe_stereo(wav_path: str, language: str = "ko") -> TranscriptResult:
+    l_wav = extract_channel_wav(wav_path, 0)
+    r_wav = extract_channel_wav(wav_path, 1)
+    try:
+        agent_segs = transcribe(l_wav, language)
+        cust_segs = transcribe(r_wav, language)
+    finally:
+        os.unlink(l_wav)
+        os.unlink(r_wav)
+
+    combined: list[SpeakerSegment] = []
+    for s in agent_segs:
+        combined.append(
+            SpeakerSegment(time=s.start, end=s.end, speaker="agent", text=s.text)
+        )
+    for s in cust_segs:
+        combined.append(
+            SpeakerSegment(time=s.start, end=s.end, speaker="customer", text=s.text)
+        )
+    combined.sort(key=lambda x: x.time)
+
+    agent_text = " ".join(s.text for s in agent_segs)
+    customer_text = " ".join(s.text for s in cust_segs)
+    full_text = " ".join(s.text for s in combined)
+
+    all_ends = [s.end for s in agent_segs] + [s.end for s in cust_segs]
+    duration = max(all_ends) if all_ends else 0.0
+    word_count = len(full_text.split()) if full_text else 0
+
+    return TranscriptResult(
+        segments=combined,
+        agent_segments=agent_segs,
+        customer_segments=cust_segs,
+        agent_text=agent_text,
+        customer_text=customer_text,
+        full_text=full_text,
+        duration_sec=round(duration, 3),
+        word_count=word_count,
+    )
+
+
+def transcribe_mono(wav_path: str, language: str = "ko") -> TranscriptResult:
+    segs = transcribe(wav_path, language)
+
+    combined = [
+        SpeakerSegment(time=s.start, end=s.end, speaker="unknown", text=s.text)
+        for s in segs
+    ]
+    full_text = " ".join(s.text for s in segs)
+    duration = max(s.end for s in segs) if segs else 0.0
+    word_count = len(full_text.split()) if full_text else 0
+
+    return TranscriptResult(
+        segments=combined,
+        agent_segments=[],
+        customer_segments=[],
+        agent_text="",
+        customer_text="",
+        full_text=full_text,
+        duration_sec=round(duration, 3),
+        word_count=word_count,
+    )
+
+
+def transcribe_file(wav_path: str, language: str = "ko") -> TranscriptResult:
+    with wave.open(wav_path, "rb") as wf:
+        n_channels = wf.getnchannels()
+
+    if n_channels >= 2:
+        return transcribe_stereo(wav_path, language)
+    else:
+        return transcribe_mono(wav_path, language)

@@ -10,7 +10,10 @@ import sys
 import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, cast
+
+if TYPE_CHECKING:
+    from agent.recording.watcher import RecordingWatcher
 
 from agent.core.deploy_handler import DeployHandler
 from agent.core.log_cmd_handler import LogCmdHandler
@@ -25,6 +28,7 @@ from agent.llm.subscription import SubscriptionClient
 from agent.telegram.poller import AgentTelegramPoller
 from agent.updater.process_deploy import ProcessDeployer
 from agent.updater.self_update import SelfUpdater
+from shared.protocol import PacketType
 from shared.utils import (
     load_dotenv,
     load_yaml_config,
@@ -115,9 +119,11 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         check_interval = _to_int(process_cfg.get("check_interval"), 30)
         restart_times = _to_list_str(schedule_cfg.get("restart_times"), [])
 
+        from agent import __version__ as agent_version
+
         tcp_client = TCPClient(
             agent_id=_to_str(agent_cfg.get("id"), "agent-unknown"),
-            version=_to_str(agent_cfg.get("version"), "0.0.0"),
+            version=agent_version,
             token=_to_str(connection_cfg.get("token"), ""),
             host=_to_str(connection_cfg.get("host"), "127.0.0.1"),
             port=_to_int(connection_cfg.get("port"), 9500),
@@ -269,8 +275,6 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
 
         poller.on_connect = self._build_connect_handler(
             tcp_client=tcp_client,
-            watcher=watcher,
-            history_max_mb=_to_int(monitoring_cfg.get("history_max_mb"), 10),
         )
         poller.on_disconnect = self._build_disconnect_handler(tcp_client)
 
@@ -286,7 +290,7 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         logger.info(">>> poller started.")
 
         agent_id = _to_str(agent_cfg.get("id"), "agent-unknown")
-        agent_ver = _to_str(agent_cfg.get("version"), "0.0.0")
+        agent_ver = agent_version
         watch_dirs_cfg = _to_list_str(monitoring_cfg.get("log_folders"), [])
         watch_ext_cfg = {
             e.lower()
@@ -330,6 +334,290 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
             self._process_watch_loop(process_mgr, _notify)
         )
 
+        # ── Recording: CMD_REC 명령으로 동적 시작/중지 ──
+        recording_cfg = _as_mapping(config.get("recording"))
+        _rec_watcher: RecordingWatcher | None = None
+        _rec_watcher_task: asyncio.Task[None] | None = None
+
+        async def _handle_cmd_rec(payload_data: bytes) -> None:
+            nonlocal _rec_watcher, _rec_watcher_task
+
+            from shared.protocol import (
+                CmdRecAckPayload,
+                CmdRecPayload,
+                RecAckStatus,
+                RecAction,
+            )
+
+            try:
+                cmd = CmdRecPayload.unpack(payload_data)
+            except ValueError:
+                logger.warning("invalid CMD_REC payload")
+                return
+
+            if cmd.action == RecAction.START:
+                if _rec_watcher is not None:
+                    logger.info("RecordingWatcher already running, ignoring START")
+                    ack = CmdRecAckPayload(
+                        action=RecAction.START, status=RecAckStatus.SUCCESS
+                    )
+                    await tcp_client.send_packet(PacketType.CMD_REC_ACK, ack.pack())
+                    return
+
+                watch_dir = _to_str(recording_cfg.get("watch_dir"), "")
+                if not watch_dir:
+                    logger.warning("recording.watch_dir not configured")
+                    ack = CmdRecAckPayload(
+                        action=RecAction.START, status=RecAckStatus.FAILED
+                    )
+                    await tcp_client.send_packet(PacketType.CMD_REC_ACK, ack.pack())
+                    return
+
+                from agent.recording.watcher import RecordingWatcher
+                from agent.recording.models import AnalysisResult
+
+                date_filter = cmd.date  # YYYYMMDD or ""
+
+                async def _on_new_recording(
+                    rec_no: int, filepath: str, result: AnalysisResult
+                ) -> None:
+                    if not tcp_client.is_connected:
+                        return
+                    from shared.protocol import RecAnalysisPayload
+
+                    payload = RecAnalysisPayload(
+                        rec_no=rec_no,
+                        status=getattr(
+                            getattr(result, "status", None), "value", "EMPTY"
+                        ),
+                        left_rms_db=getattr(
+                            getattr(result, "left", None), "rms_db", -96.0
+                        ),
+                        right_rms_db=getattr(
+                            getattr(result, "right", None), "rms_db", -96.0
+                        ),
+                        left_silence_ratio=getattr(
+                            getattr(result, "left", None), "silence_ratio", 1.0
+                        ),
+                        right_silence_ratio=getattr(
+                            getattr(result, "right", None), "silence_ratio", 1.0
+                        ),
+                        dropout_count=getattr(result, "dropout_count", 0),
+                        duration_wav=getattr(result, "duration_wav", 0.0),
+                        duration_smdr=getattr(result, "duration_smdr", 0.0),
+                        is_stereo=getattr(result, "is_stereo", False),
+                    )
+                    with contextlib.suppress(ConnectionError, OSError):
+                        await tcp_client.send_packet(
+                            PacketType.REC_ANALYSIS_RESULT, payload.pack()
+                        )
+                    if _to_bool(recording_cfg.get("alert_on_anomaly"), True):
+                        anomaly_count = getattr(result, "anomalies", 0)
+                        if anomaly_count > 0:
+                            msg = (
+                                f"Recording anomaly detected\n"
+                                f"rec_no={rec_no}\n"
+                                f"anomalies={anomaly_count}\n"
+                                f"file={filepath}"
+                            )
+                            with contextlib.suppress(Exception):
+                                await poller.send_message(msg)
+
+                _rec_watcher = RecordingWatcher(
+                    watch_dir=watch_dir,
+                    extensions=_to_list_str(recording_cfg.get("extensions"), [".wav"]),
+                    on_new_recording=_on_new_recording,
+                    date_filter=date_filter,
+                )
+                _rec_watcher_task = asyncio.create_task(_rec_watcher.start())
+                logger.info(
+                    "RecordingWatcher started: watch_dir=%s date_filter=%s",
+                    watch_dir,
+                    date_filter or "(all)",
+                )
+
+                ack = CmdRecAckPayload(
+                    action=RecAction.START, status=RecAckStatus.SUCCESS
+                )
+                await tcp_client.send_packet(PacketType.CMD_REC_ACK, ack.pack())
+
+            elif cmd.action == RecAction.STOP:
+                if _rec_watcher is not None:
+                    await _rec_watcher.stop()
+                    _rec_watcher = None
+                if _rec_watcher_task is not None:
+                    _rec_watcher_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await _rec_watcher_task
+                    _rec_watcher_task = None
+                logger.info("RecordingWatcher stopped")
+
+                ack = CmdRecAckPayload(
+                    action=RecAction.STOP, status=RecAckStatus.SUCCESS
+                )
+                await tcp_client.send_packet(PacketType.CMD_REC_ACK, ack.pack())
+
+        tcp_client.on_cmd_rec = _handle_cmd_rec
+
+        # Upload handler (always register, works when watcher sends results)
+        from agent.recording.uploader import RecordingUploader
+
+        _uploader = RecordingUploader(
+            agent_id=_to_str(agent_cfg.get("id"), "agent-unknown"),
+        )
+
+        async def _handle_rec_upload_req(payload_data: bytes) -> None:
+            from shared.protocol import RecUploadReqPayload, RecUploadAckPayload
+
+            req = RecUploadReqPayload.unpack(payload_data)
+            watch_dir = _to_str(recording_cfg.get("watch_dir"), "")
+            target: str | None = None
+            from pathlib import Path as _Path
+
+            for f in _Path(watch_dir).rglob("*.wav"):
+                try:
+                    if int(f.stem) == req.rec_no:
+                        target = str(f)
+                        break
+                except ValueError:
+                    continue
+            if target is None:
+                logger.warning("rec_no=%s not found in %s", req.rec_no, watch_dir)
+                return
+            rec_no, status, file_size = await _uploader.upload(
+                rec_no=req.rec_no,
+                filepath=target,
+                upload_url=req.upload_url,
+            )
+            ack = RecUploadAckPayload(rec_no=rec_no, status=status, file_size=file_size)
+            with contextlib.suppress(ConnectionError, OSError):
+                await tcp_client.send_packet(PacketType.REC_UPLOAD_ACK, ack.pack())
+
+        tcp_client.on_rec_upload_req = _handle_rec_upload_req
+
+        async def _handle_stt_result(payload_data: bytes) -> None:
+            from shared.protocol import SttResultPayload
+
+            try:
+                stt = SttResultPayload.unpack(payload_data)
+            except (ValueError, KeyError):
+                logger.warning("invalid STT_RESULT payload")
+                return
+
+            db_cfg = _as_mapping(recording_cfg.get("db"))
+            if not db_cfg:
+                logger.warning("recording.db not configured, cannot save STT result")
+                return
+
+            try:
+                from agent.db.connection import get_connection
+                from agent.db.helpers import insert_transcript, insert_call_quality
+
+                conn = await asyncio.to_thread(get_connection, db_cfg)
+                tid = await asyncio.to_thread(
+                    insert_transcript,
+                    conn,
+                    stt.rec_no,
+                    stt.full_text,
+                    stt.agent_text,
+                    stt.customer_text,
+                    stt.segments_json,
+                    stt.duration_sec,
+                    stt.word_count,
+                )
+                await asyncio.to_thread(
+                    insert_call_quality,
+                    conn,
+                    stt.rec_no,
+                    tid,
+                    stt.first_response_sec,
+                    stt.agent_talk_ratio,
+                    stt.customer_talk_ratio,
+                    stt.silence_ratio,
+                    stt.required_phrase_hit,
+                    stt.required_phrase_list,
+                    stt.forbidden_word_hit,
+                    stt.forbidden_word_list,
+                    stt.score_total,
+                    stt.score_response,
+                    stt.score_phrase,
+                    stt.score_silence,
+                )
+                logger.info(
+                    "STT result saved to DB: rec_no=%s transcript_id=%s",
+                    stt.rec_no,
+                    tid,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to save STT result to DB: rec_no=%s", stt.rec_no
+                )
+
+        tcp_client.on_stt_result = _handle_stt_result
+
+        async def _handle_rec_data_req(payload_data: bytes) -> None:
+            from shared.protocol import RecDataReqPayload, RecDataRespPayload
+
+            try:
+                req = RecDataReqPayload.unpack(payload_data)
+            except (ValueError, KeyError):
+                logger.warning("invalid REC_DATA_REQ payload")
+                return
+
+            db_cfg = _as_mapping(recording_cfg.get("db"))
+            if not db_cfg:
+                logger.warning("recording.db not configured, cannot query recordings")
+                return
+
+            try:
+                from agent.db.connection import get_connection
+                from agent.db.helpers import (
+                    query_recordings_list,
+                    query_recording_detail,
+                )
+
+                conn = await asyncio.to_thread(get_connection, db_cfg)
+
+                if req.query_type == "detail":
+                    row = await asyncio.to_thread(
+                        query_recording_detail, conn, req.rec_no
+                    )
+                    records: list[dict[str, object]] = [row] if row else []
+                else:
+                    records = await asyncio.to_thread(
+                        query_recordings_list, conn, req.date_str
+                    )
+
+                # Convert datetime objects to ISO string for JSON serialization
+                import datetime as _dt
+
+                serializable: list[dict[str, object]] = []
+                for rec in records:
+                    row_dict: dict[str, object] = {}
+                    for k, v in rec.items():
+                        if isinstance(v, _dt.datetime):
+                            row_dict[k] = v.isoformat()
+                        elif isinstance(v, bytes):
+                            row_dict[k] = v.decode("utf-8", errors="replace")
+                        else:
+                            row_dict[k] = v
+                    serializable.append(row_dict)
+
+                resp = RecDataRespPayload(
+                    query_type=req.query_type, records=serializable
+                )
+                with contextlib.suppress(ConnectionError, OSError):
+                    await tcp_client.send_packet(PacketType.REC_DATA_RESP, resp.pack())
+                logger.info(
+                    "REC_DATA_RESP sent: query_type=%s records=%d",
+                    req.query_type,
+                    len(serializable),
+                )
+            except Exception:
+                logger.exception("Failed to handle REC_DATA_REQ")
+
+        tcp_client.on_rec_data_req = _handle_rec_data_req
+
         logger.info(
             ">>> entering heartbeat_loop (stop_requested=%s)",
             self._stop_requested.is_set(),
@@ -357,6 +645,9 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                     await scheduler_task
             if subscription_client is not None:
                 subscription_client.stop_revalidation()
+            if _rec_watcher is not None:
+                with contextlib.suppress(Exception):
+                    await _rec_watcher.stop()
             with contextlib.suppress(Exception):
                 await poller.stop()
             with contextlib.suppress(Exception):
@@ -374,7 +665,7 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
             if not tcp_client.is_connected:
                 return
             log_cmd_handler = log_cmd_handler_ref[0]
-            if log_cmd_handler is not None and not log_cmd_handler.is_realtime_active:
+            if log_cmd_handler is None or not log_cmd_handler.is_realtime_active:
                 return
             with contextlib.suppress(ConnectionError, OSError):
                 await tcp_client.send_log_line(filename, line)
@@ -384,8 +675,6 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
     def _build_connect_handler(
         self,
         tcp_client: TCPClient,
-        watcher: LogWatcher,
-        history_max_mb: int,
     ) -> Callable[[str, int], Awaitable[None]]:
         async def _connect(ip: str, port: int) -> None:
             tcp_client.host = ip
@@ -394,12 +683,7 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
             if not connected:
                 self._logger.warning("connect command failed: %s:%s", ip, port)
                 return
-
-            for filepath in watcher.get_watchable_files():
-                data = watcher.read_history(filepath, max_mb=history_max_mb)
-                filename = Path(filepath).name
-                with contextlib.suppress(ConnectionError, OSError):
-                    await tcp_client.send_log_history(filename, data)
+            self._logger.info("connected to server: %s:%s", ip, port)
 
         return _connect
 
@@ -577,12 +861,25 @@ def configure_failure_actions(service_name: str) -> None:
         logger.warning("failed to configure recovery options: %s", exc)
 
 
+def _launch_gui() -> None:
+    """콘솔 창을 숨기고 GUI를 시작한다."""
+    import ctypes
+
+    hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+    if hwnd:
+        ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+
+    from agent.gui.app import run_gui
+
+    run_gui()
+
+
 def main(argv: list[str] | None = None) -> None:
     args = sys.argv if argv is None else argv
 
     if len(args) == 1:
         # SCM이 인수 없이 실행 → 서비스 디스패처 시도
-        # 실패 시(더블클릭 등 비-SCM 컨텍스트) → debug 모드 폴백
+        # 실패 시(더블클릭 등 비-SCM 컨텍스트) → GUI 모드 폴백
         try:
             AILogOpsAgentService._is_service_mode = True
             servicemanager.Initialize()
@@ -590,11 +887,16 @@ def main(argv: list[str] | None = None) -> None:
             servicemanager.StartServiceCtrlDispatcher()
         except Exception:
             AILogOpsAgentService._is_service_mode = False
-            win32serviceutil.HandleCommandLine(AILogOpsAgentService, argv=["", "debug"])
+            _launch_gui()
     else:
+        cmd = args[1].lower()
+        if cmd == "gui":
+            _launch_gui()
+            return
+
         # 커맨드라인: install / start / stop / remove / debug
         win32serviceutil.HandleCommandLine(AILogOpsAgentService)
-        if args[1].lower() == "install":
+        if cmd == "install":
             configure_failure_actions(AILogOpsAgentService._svc_name_)
 
 

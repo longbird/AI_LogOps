@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import ClassVar, cast
+from typing import Any, ClassVar, cast
 
 HEADER_SIZE = 5
 MAX_PAYLOAD_SIZE = 10 * 1024 * 1024
@@ -25,6 +26,14 @@ class PacketType(IntEnum):
     LOG_FILE_LIST = 0x17
     LOG_FILE_SELECT = 0x18
     AGENT_UPDATE = 0x20
+    CMD_REC = 0x28
+    CMD_REC_ACK = 0x29
+    REC_ANALYSIS_RESULT = 0x30
+    REC_UPLOAD_REQ = 0x31
+    REC_UPLOAD_ACK = 0x32
+    STT_RESULT = 0x35
+    REC_DATA_REQ = 0x36
+    REC_DATA_RESP = 0x37
     HEARTBEAT = 0xFE
     DISCONNECT = 0xFF
 
@@ -55,6 +64,16 @@ class LogAction(IntEnum):
 
 
 class LogAckStatus(IntEnum):
+    SUCCESS = 0x00
+    FAILED = 0x01
+
+
+class RecAction(IntEnum):
+    START = 0x01
+    STOP = 0x02
+
+
+class RecAckStatus(IntEnum):
     SUCCESS = 0x00
     FAILED = 0x01
 
@@ -329,6 +348,98 @@ class FileAckPayload:
 
 
 @dataclass(slots=True)
+class RecAnalysisPayload:
+    rec_no: int
+    status: str
+    left_rms_db: float
+    right_rms_db: float
+    left_silence_ratio: float
+    right_silence_ratio: float
+    dropout_count: int
+    duration_wav: float
+    duration_smdr: float
+    is_stereo: bool
+
+    def pack(self) -> bytes:
+        data = {
+            "rec_no": self.rec_no,
+            "status": self.status,
+            "left_rms_db": self.left_rms_db,
+            "right_rms_db": self.right_rms_db,
+            "left_silence_ratio": self.left_silence_ratio,
+            "right_silence_ratio": self.right_silence_ratio,
+            "dropout_count": self.dropout_count,
+            "duration_wav": self.duration_wav,
+            "duration_smdr": self.duration_smdr,
+            "is_stereo": self.is_stereo,
+        }
+        return json.dumps(data, separators=(",", ":")).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> RecAnalysisPayload:
+        decoded_raw = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        if not isinstance(decoded_raw, dict):
+            raise ValueError("rec analysis payload JSON must be an object")
+        return cls(
+            rec_no=int(decoded_raw["rec_no"]),
+            status=str(decoded_raw["status"]),
+            left_rms_db=float(decoded_raw["left_rms_db"]),
+            right_rms_db=float(decoded_raw["right_rms_db"]),
+            left_silence_ratio=float(decoded_raw["left_silence_ratio"]),
+            right_silence_ratio=float(decoded_raw["right_silence_ratio"]),
+            dropout_count=int(decoded_raw["dropout_count"]),
+            duration_wav=float(decoded_raw["duration_wav"]),
+            duration_smdr=float(decoded_raw["duration_smdr"]),
+            is_stereo=bool(decoded_raw["is_stereo"]),
+        )
+
+
+@dataclass(slots=True)
+class RecUploadReqPayload:
+    rec_no: int
+    upload_url: str
+
+    def pack(self) -> bytes:
+        data = {
+            "rec_no": self.rec_no,
+            "upload_url": self.upload_url,
+        }
+        return json.dumps(data, separators=(",", ":")).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> RecUploadReqPayload:
+        decoded_raw = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        if not isinstance(decoded_raw, dict):
+            raise ValueError("rec upload req payload JSON must be an object")
+        return cls(
+            rec_no=int(decoded_raw["rec_no"]),
+            upload_url=str(decoded_raw["upload_url"]),
+        )
+
+
+@dataclass(slots=True)
+class RecUploadAckPayload:
+    rec_no: int
+    status: int
+    file_size: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!IBQ")
+    _SIZE: ClassVar[int] = 13
+
+    def pack(self) -> bytes:
+        if not 0 <= self.status <= 0xFF:
+            raise ValueError("status must fit in 1 byte")
+        return self._STRUCT.pack(self.rec_no, self.status, self.file_size)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> RecUploadAckPayload:
+        if len(data) != cls._SIZE:
+            raise ValueError("rec upload ack payload must be exactly 13 bytes")
+        rec_no, status, file_size = cast(tuple[int, int, int], cls._STRUCT.unpack(data))
+        return cls(rec_no=rec_no, status=status, file_size=file_size)
+
+
+@dataclass(slots=True)
 class CmdCtrlPayload:
     """CMD_CTRL: [Action(1B)] = 1B."""
 
@@ -433,6 +544,57 @@ class CmdLogAckPayload:
             action=LogAction(action_raw),
             status=LogAckStatus(status_raw),
             file_count=file_count,
+        )
+
+
+@dataclass(slots=True)
+class CmdRecPayload:
+    """CMD_REC: [Action(1B)][Date(8B, null-padded UTF-8 "YYYYMMDD")] = 9B."""
+
+    action: RecAction
+    date: str
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!B8s")
+    _SIZE: ClassVar[int] = 9
+
+    def pack(self) -> bytes:
+        return self._STRUCT.pack(
+            RecAction(self.action),
+            _encode_fixed(self.date, 8, "date"),
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdRecPayload:
+        if len(data) != cls._SIZE:
+            raise ValueError("cmd rec payload must be exactly 9 bytes")
+        action_raw, date_raw = cast(tuple[int, bytes], cls._STRUCT.unpack(data))
+        return cls(action=RecAction(action_raw), date=_decode_fixed(date_raw))
+
+
+@dataclass(slots=True)
+class CmdRecAckPayload:
+    """CMD_REC_ACK: [Action(1B)][Status(1B)] = 2B."""
+
+    action: RecAction
+    status: RecAckStatus
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!BB")
+    _SIZE: ClassVar[int] = 2
+
+    def pack(self) -> bytes:
+        return self._STRUCT.pack(
+            RecAction(self.action),
+            RecAckStatus(self.status),
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdRecAckPayload:
+        if len(data) != cls._SIZE:
+            raise ValueError("cmd rec ack payload must be exactly 2 bytes")
+        action_raw, status_raw = cast(tuple[int, int], cls._STRUCT.unpack(data))
+        return cls(
+            action=RecAction(action_raw),
+            status=RecAckStatus(status_raw),
         )
 
 
@@ -575,6 +737,142 @@ class DisconnectPayload:
             raise ValueError("disconnect payload must be exactly 1 byte")
         (reason_raw,) = cast(tuple[int], cls._STRUCT.unpack(data))
         return cls(reason=DisconnectReason(reason_raw))
+
+
+# ---------------------------------------------------------------------------
+# STT 결과 + 녹취 데이터 조회 (JSON 기반 가변 길이)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class SttResultPayload:
+    """STT_RESULT: 서버 → 에이전트. STT + 통화품질 분석 결과."""
+
+    rec_no: int
+    agent_id: str
+    full_text: str
+    agent_text: str
+    customer_text: str
+    segments_json: str
+    duration_sec: float
+    word_count: int
+    score_total: float
+    score_response: float
+    score_phrase: float
+    score_silence: float
+    # 통화품질 상세
+    first_response_sec: float = 0.0
+    agent_talk_ratio: float = 0.0
+    customer_talk_ratio: float = 0.0
+    silence_ratio: float = 0.0
+    required_phrase_hit: bool = False
+    required_phrase_list: str = ""
+    forbidden_word_hit: bool = False
+    forbidden_word_list: str = ""
+
+    def pack(self) -> bytes:
+        data: dict[str, object] = {
+            "rec_no": self.rec_no,
+            "agent_id": self.agent_id,
+            "full_text": self.full_text,
+            "agent_text": self.agent_text,
+            "customer_text": self.customer_text,
+            "segments_json": self.segments_json,
+            "duration_sec": self.duration_sec,
+            "word_count": self.word_count,
+            "score_total": self.score_total,
+            "score_response": self.score_response,
+            "score_phrase": self.score_phrase,
+            "score_silence": self.score_silence,
+            "first_response_sec": self.first_response_sec,
+            "agent_talk_ratio": self.agent_talk_ratio,
+            "customer_talk_ratio": self.customer_talk_ratio,
+            "silence_ratio": self.silence_ratio,
+            "required_phrase_hit": self.required_phrase_hit,
+            "required_phrase_list": self.required_phrase_list,
+            "forbidden_word_hit": self.forbidden_word_hit,
+            "forbidden_word_list": self.forbidden_word_list,
+        }
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> SttResultPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(
+            rec_no=int(d["rec_no"]),
+            agent_id=str(d["agent_id"]),
+            full_text=str(d.get("full_text", "")),
+            agent_text=str(d.get("agent_text", "")),
+            customer_text=str(d.get("customer_text", "")),
+            segments_json=str(d.get("segments_json", "[]")),
+            duration_sec=float(d.get("duration_sec", 0.0)),
+            word_count=int(d.get("word_count", 0)),
+            score_total=float(d.get("score_total", 0.0)),
+            score_response=float(d.get("score_response", 0.0)),
+            score_phrase=float(d.get("score_phrase", 0.0)),
+            score_silence=float(d.get("score_silence", 0.0)),
+            first_response_sec=float(d.get("first_response_sec", 0.0)),
+            agent_talk_ratio=float(d.get("agent_talk_ratio", 0.0)),
+            customer_talk_ratio=float(d.get("customer_talk_ratio", 0.0)),
+            silence_ratio=float(d.get("silence_ratio", 0.0)),
+            required_phrase_hit=bool(d.get("required_phrase_hit", False)),
+            required_phrase_list=str(d.get("required_phrase_list", "")),
+            forbidden_word_hit=bool(d.get("forbidden_word_hit", False)),
+            forbidden_word_list=str(d.get("forbidden_word_list", "")),
+        )
+
+
+@dataclass(slots=True)
+class RecDataReqPayload:
+    """REC_DATA_REQ: 서버 → 에이전트. 녹취 데이터 조회 요청."""
+
+    query_type: str  # "list" | "detail"
+    date_str: str  # YYYYMMDD (list 필터)
+    rec_no: int  # detail 조회 시
+
+    def pack(self) -> bytes:
+        data: dict[str, object] = {
+            "query_type": self.query_type,
+            "date_str": self.date_str,
+            "rec_no": self.rec_no,
+        }
+        return json.dumps(data, separators=(",", ":")).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> RecDataReqPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(
+            query_type=str(d.get("query_type", "list")),
+            date_str=str(d.get("date_str", "")),
+            rec_no=int(d.get("rec_no", 0)),
+        )
+
+
+@dataclass(slots=True)
+class RecDataRespPayload:
+    """REC_DATA_RESP: 에이전트 → 서버. 녹취 데이터 조회 결과."""
+
+    query_type: str
+    records: list[dict[str, Any]]
+
+    def pack(self) -> bytes:
+        data: dict[str, object] = {
+            "query_type": self.query_type,
+            "records": self.records,
+        }
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+
+    @classmethod
+    def unpack(cls, data: bytes) -> RecDataRespPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(
+            query_type=str(d.get("query_type", "list")),
+            records=list(d.get("records", [])),
+        )
 
 
 class Packet:

@@ -59,6 +59,10 @@ class TCPClient:
         self.on_agent_update: PacketCallback | None = None
         self.on_cmd_log: PacketCallback | None = None
         self.on_log_file_select: PacketCallback | None = None
+        self.on_rec_upload_req: PacketCallback | None = None
+        self.on_cmd_rec: PacketCallback | None = None
+        self.on_stt_result: PacketCallback | None = None
+        self.on_rec_data_req: PacketCallback | None = None
 
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -218,6 +222,22 @@ class TCPClient:
                 if packet_type == PacketType.LOG_FILE_SELECT:
                     if self.on_log_file_select is not None:
                         await self.on_log_file_select(payload)
+                    continue
+                if packet_type == PacketType.REC_UPLOAD_REQ:
+                    if self.on_rec_upload_req is not None:
+                        await self.on_rec_upload_req(payload)
+                    continue
+                if packet_type == PacketType.CMD_REC:
+                    if self.on_cmd_rec is not None:
+                        await self.on_cmd_rec(payload)
+                    continue
+                if packet_type == PacketType.STT_RESULT:
+                    if self.on_stt_result is not None:
+                        await self.on_stt_result(payload)
+                    continue
+                if packet_type == PacketType.REC_DATA_REQ:
+                    if self.on_rec_data_req is not None:
+                        await self.on_rec_data_req(payload)
                     continue
                 if packet_type == PacketType.DISCONNECT:
                     break

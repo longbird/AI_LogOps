@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}대시보드 - AirREC{% endblock %}
+{% block nav_dashboard %}active{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0"><i class="bi bi-graph-up"></i> 대시보드</h4>
+    <form method="get" class="d-flex gap-2">
+        <input type="text" class="form-control form-control-sm" name="date"
+               value="{{ date }}" placeholder="YYYYMMDD" style="width:120px">
+        <button type="submit" class="btn btn-primary btn-sm">조회</button>
+    </form>
+</div>
+
+<!-- Stats Cards Row -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card border-primary">
+            <div class="stat-value text-primary">{{ total_today }}</div>
+            <div class="stat-label">전체 녹취</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card border-success">
+            <div class="stat-value text-success">{{ transcribed_today }}</div>
+            <div class="stat-label">STT 완료 (Mock)</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card border-info">
+            <div class="stat-value text-info">
+                {% if total_today > 0 %}{{ "%.0f"|format(transcribed_today / total_today * 100) }}%{% else %}0%{% endif %}
+            </div>
+            <div class="stat-label">분석 완료율</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card {% if avg_score_today >= 70 %}border-success{% elif avg_score_today >= 40 %}border-warning{% else %}border-danger{% endif %}">
+            <div class="stat-value {% if avg_score_today >= 70 %}text-success{% elif avg_score_today >= 40 %}text-warning{% else %}text-danger{% endif %}">
+                {{ "%.1f"|format(avg_score_today) }}
+            </div>
+            <div class="stat-label">평균 품질 점수</div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- 7-day Trend Chart -->
+    <div class="col-lg-8 mb-4">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-bar-chart"></i> 최근 7일 추이</div>
+            <div class="card-body">
+                <canvas id="trendChart" height="250"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Agent Score Ranking -->
+    <div class="col-lg-4 mb-4">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-trophy"></i> Agent File Count</div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Agent ID</th>
+                            <th>Files</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for stat in ext_stats %}
+                        <tr>
+                            <td>
+                                {% if loop.index <= 3 %}
+                                <span class="badge {% if loop.index == 1 %}bg-warning text-dark{% elif loop.index == 2 %}bg-secondary{% else %}bg-dark{% endif %}">
+                                    {{ loop.index }}
+                                </span>
+                                {% else %}
+                                {{ loop.index }}
+                                {% endif %}
+                            </td>
+                            <td>{{ stat.ext }}</td>
+                            <td>{{ stat.cnt }}</td>
+                        </tr>
+                        {% endfor %}
+                        {% if not ext_stats %}
+                        <tr><td colspan="3" class="text-center text-muted py-3">데이터 없음</td></tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Score Distribution Chart -->
+<div class="row">
+    <div class="col-lg-6 mb-4">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-pie-chart"></i> 점수 분포 (Mock)</div>
+            <div class="card-body">
+                <canvas id="scoreChart" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+    <!-- Scheduler removed -->
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // 7-day Trend Chart
+    const dailyData = {{ daily_stats | tojson }};
+    const labels = dailyData.map(d => {
+        const s = d.oper_day;
+        return s.substring(4, 6) + '/' + s.substring(6, 8);
+    });
+
+    new Chart(document.getElementById('trendChart'), {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: '전체 녹취',
+                    data: dailyData.map(d => d.total),
+                    backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                    borderColor: 'rgba(54, 162, 235, 1)',
+                    borderWidth: 1,
+                    yAxisID: 'y',
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                y: { type: 'linear', position: 'left', title: { display: true, text: '건수' } }
+            }
+        }
+    });
+
+    // Score Distribution (Dummy for now)
+    const scoreRanges = { '90+': 0, '70-89': 0, '50-69': 0, '30-49': 0, '<30': 0 };
+    // Assuming ext_stats has score data, but we only have counts. Mocking reasonable empty chart or handled.
+    // For now, let's just show zeros or empty.
+
+    new Chart(document.getElementById('scoreChart'), {
+        type: 'doughnut',
+        data: {
+            labels: Object.keys(scoreRanges),
+            datasets: [{
+                data: Object.values(scoreRanges),
+                backgroundColor: ['#28a745', '#20c997', '#ffc107', '#fd7e14', '#dc3545'],
+            }]
+        },
+        options: { responsive: true, plugins: { legend: { position: 'right' } } }
+    });
+</script>
+{% endblock %}

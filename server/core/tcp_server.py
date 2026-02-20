@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from typing import Protocol, cast
 
 from server.core.session_mgr import SessionManager
@@ -14,7 +14,10 @@ from shared.protocol import (
     AuthStatus,
     CmdLogPayload,
     CmdLogAckPayload,
+    CmdRecPayload,
+    CmdRecAckPayload,
     LogAction,
+    RecAction,
     LogFileListPayload,
     LogFileSelectPayload,
     Packet,
@@ -28,6 +31,11 @@ from shared.protocol import (
     FileChunkPayload,
     LogHistPayload,
     LogRealPayload,
+    RecAnalysisPayload,
+    RecDataReqPayload,
+    RecDataRespPayload,
+    RecUploadAckPayload,
+    SttResultPayload,
 )
 from shared.utils import compute_sha256, setup_logging
 
@@ -43,16 +51,21 @@ class TCPServer:
         session_mgr: SessionManager,
         auth_token: str,
         storage_mgr: StorageManager | None = None,
+        rec_handler: Any | None = None,  # server.airec.rec_handler.RecHandler
+        rec_storage: Any | None = None,  # server.airec.storage.RecordingStorage
     ):
         self.host: str = host
         self.port: int = port
         self.session_mgr: SessionManager = session_mgr
         self.auth_token: str = auth_token
         self.storage_mgr: StorageManager | None = storage_mgr
+        self.rec_handler: Any | None = rec_handler
+        self.rec_storage: Any | None = rec_storage
         self._logger: logging.Logger = setup_logging(self.__class__.__name__)
         self._server: asyncio.base_events.Server | None = None
         self._is_running: bool = False
         self._deploy_results: dict[str, asyncio.Future[CmdCtrlAckPayload]] = {}
+        self._rec_data_futures: dict[str, asyncio.Future[RecDataRespPayload]] = {}
 
     @property
     def is_running(self) -> bool:
@@ -174,7 +187,9 @@ class TCPServer:
 
         if auth_payload.token != self.auth_token:
             self._logger.warning(
-                "auth failed: invalid token for agent_id=%s", auth_payload.agent_id
+                "auth failed: invalid token for agent_id=%s (received='%s')",
+                auth_payload.agent_id,
+                auth_payload.token,
             )
             await self._send_auth_ack(writer, AuthStatus.FAILED, "")
             return None
@@ -252,6 +267,22 @@ class TCPServer:
 
             if packet_type == PacketType.CMD_LOG_ACK:
                 self._handle_cmd_log_ack(agent_id, payload)
+                continue
+
+            if packet_type == PacketType.CMD_REC_ACK:
+                self._handle_cmd_rec_ack(agent_id, payload)
+                continue
+
+            if packet_type == PacketType.REC_ANALYSIS_RESULT:
+                await self._handle_rec_analysis(agent_id, payload, writer)
+                continue
+
+            if packet_type == PacketType.REC_UPLOAD_ACK:
+                await self._handle_rec_upload_ack(agent_id, payload, writer)
+                continue
+
+            if packet_type == PacketType.REC_DATA_RESP:
+                self._handle_rec_data_resp(agent_id, payload)
                 continue
 
             self._logger.warning(
@@ -366,6 +397,32 @@ class TCPServer:
             ack.file_count,
         )
 
+    async def send_rec_command(
+        self, agent_id: str, action: RecAction, date: str = ""
+    ) -> bool:
+        """CMD_REC 패킷을 에이전트에 전송."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return False
+        writer = cast(_WriterLike, session.writer)
+        cmd = CmdRecPayload(action=action, date=date)
+        writer.write(Packet.build(PacketType.CMD_REC, cmd.pack()))
+        await writer.drain()
+        return True
+
+    def _handle_cmd_rec_ack(self, agent_id: str, payload: bytes) -> None:
+        try:
+            ack = CmdRecAckPayload.unpack(payload)
+        except ValueError:
+            self._logger.warning("invalid CMD_REC_ACK payload: agent_id=%s", agent_id)
+            return
+        self._logger.info(
+            "cmd rec ack: agent_id=%s action=%s status=%s",
+            agent_id,
+            ack.action.name,
+            ack.status.name,
+        )
+
     async def _handle_log_file_list(
         self, agent_id: str, payload: bytes, writer: _WriterLike
     ) -> None:
@@ -439,6 +496,149 @@ class TCPServer:
         self, agent_id: str
     ) -> asyncio.Future[CmdCtrlAckPayload] | None:
         return self._deploy_results.get(agent_id)
+
+    async def _handle_rec_analysis(
+        self, agent_id: str, payload: bytes, writer: _WriterLike
+    ) -> None:
+        """Handle REC_ANALYSIS_RESULT: store result, optionally request upload."""
+        if self.rec_handler is None:
+            self._logger.debug("rec_handler not configured, ignoring analysis result")
+            return
+
+        try:
+            analysis = RecAnalysisPayload.unpack(payload)
+        except (ValueError, KeyError):
+            self._logger.warning(
+                "invalid REC_ANALYSIS_RESULT payload: agent_id=%s", agent_id
+            )
+            return
+
+        # Import handle method dynamically to avoid coupling
+        upload_req = self.rec_handler.handle_analysis_result(agent_id, analysis)  # type: ignore[union-attr]
+        if upload_req is not None:
+            writer.write(Packet.build(PacketType.REC_UPLOAD_REQ, upload_req.pack()))
+            await writer.drain()
+            self._logger.info(
+                "sent REC_UPLOAD_REQ: agent_id=%s rec_no=%s",
+                agent_id,
+                analysis.rec_no,
+            )
+
+    async def _handle_rec_upload_ack(
+        self, agent_id: str, payload: bytes, writer: _WriterLike
+    ) -> None:
+        """Handle REC_UPLOAD_ACK from agent. Trigger STT if upload succeeded."""
+        if self.rec_handler is None:
+            return
+
+        try:
+            ack = RecUploadAckPayload.unpack(payload)
+        except ValueError:
+            self._logger.warning(
+                "invalid REC_UPLOAD_ACK payload: agent_id=%s", agent_id
+            )
+            return
+
+        self.rec_handler.handle_upload_ack(  # type: ignore[union-attr]
+            agent_id=agent_id,
+            rec_no=ack.rec_no,
+            status=ack.status,
+            file_size=ack.file_size,
+        )
+        self._logger.info(
+            "rec upload ack: agent_id=%s rec_no=%s status=%s size=%s",
+            agent_id,
+            ack.rec_no,
+            ack.status,
+            ack.file_size,
+        )
+
+        # Trigger STT pipeline on successful upload
+        if ack.status == 0 and self.rec_storage is not None:
+            wav_path = self.rec_storage.find_by_rec_no(ack.rec_no)  # type: ignore[union-attr]
+            if wav_path is not None:
+                self._logger.info(
+                    "triggering STT pipeline: agent_id=%s rec_no=%s path=%s",
+                    agent_id,
+                    ack.rec_no,
+                    wav_path,
+                )
+                # Run pipeline in thread to avoid blocking event loop
+                stt_payload: SttResultPayload | None = await asyncio.to_thread(
+                    self.rec_handler.run_stt_pipeline,  # type: ignore[union-attr]
+                    agent_id,
+                    ack.rec_no,
+                    str(wav_path),
+                )
+                if stt_payload is not None:
+                    writer.write(
+                        Packet.build(PacketType.STT_RESULT, stt_payload.pack())
+                    )
+                    await writer.drain()
+                    self._logger.info(
+                        "sent STT_RESULT: agent_id=%s rec_no=%s",
+                        agent_id,
+                        ack.rec_no,
+                    )
+                else:
+                    self._logger.warning(
+                        "STT pipeline returned no result: agent_id=%s rec_no=%s",
+                        agent_id,
+                        ack.rec_no,
+                    )
+            else:
+                self._logger.warning(
+                    "uploaded WAV not found in storage: agent_id=%s rec_no=%s",
+                    agent_id,
+                    ack.rec_no,
+                )
+
+    def _handle_rec_data_resp(self, agent_id: str, payload: bytes) -> None:
+        """Handle REC_DATA_RESP from agent — resolve pending future."""
+        try:
+            resp = RecDataRespPayload.unpack(payload)
+        except (ValueError, KeyError):
+            self._logger.warning("invalid REC_DATA_RESP payload: agent_id=%s", agent_id)
+            return
+
+        future = self._rec_data_futures.pop(agent_id, None)
+        if future is not None and not future.done():
+            future.set_result(resp)
+        self._logger.debug(
+            "rec data resp: agent_id=%s query_type=%s records=%d",
+            agent_id,
+            resp.query_type,
+            len(resp.records),
+        )
+
+    async def send_rec_data_req(
+        self,
+        agent_id: str,
+        query_type: str,
+        date_str: str = "",
+        rec_no: int = 0,
+        timeout: float = 30.0,
+    ) -> RecDataRespPayload | None:
+        """Send REC_DATA_REQ to agent and wait for response."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return None
+        writer = cast(_WriterLike, session.writer)
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[RecDataRespPayload] = loop.create_future()
+        self._rec_data_futures[agent_id] = future
+
+        req = RecDataReqPayload(query_type=query_type, date_str=date_str, rec_no=rec_no)
+        writer.write(Packet.build(PacketType.REC_DATA_REQ, req.pack()))
+        await writer.drain()
+
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._rec_data_futures.pop(agent_id, None)
+            self._logger.warning("rec data req timed out: agent_id=%s", agent_id)
+            return None
 
 
 class _WriterLike(Protocol):
