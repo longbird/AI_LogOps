@@ -61,9 +61,8 @@ def test_recordings_with_data(test_env):
 
     # Create dummy recording
     agent_id = "agent_007"
-    rec_no = 12345
-    filename = f"rec_{rec_no}.wav"
-    storage.store(agent_id, rec_no, b"dummy wav content", filename)
+    filename = "rec_12345.wav"
+    storage.store(agent_id, b"dummy wav content", filename)
 
     # Query with today's date (storage.store uses today)
     today = datetime.now().strftime("%Y%m%d")
@@ -72,26 +71,24 @@ def test_recordings_with_data(test_env):
     assert response.status_code == 200
     assert agent_id in response.text
     assert filename in response.text
-    assert "12345" in response.text
 
 
 def test_recording_detail_found(test_env):
     client, storage, _ = test_env
 
     agent_id = "agent_008"
-    rec_no = 999
-    filename = f"rec_{rec_no}.wav"
-    storage.store(agent_id, rec_no, b"dummy wav content", filename)
+    filename = "rec_999.wav"
+    storage.store(agent_id, b"dummy wav content", filename)
 
-    response = client.get(f"/airec/recording/{rec_no}")
+    response = client.get(f"/airec/recording/{filename}")
     assert response.status_code == 200
-    assert f"녹취 상세 #{rec_no}" in response.text
+    assert filename in response.text
     assert agent_id in response.text
 
 
 def test_recording_detail_not_found(test_env):
     client, _, _ = test_env
-    response = client.get("/airec/recording/999999")
+    response = client.get("/airec/recording/nonexistent.wav")
     # Our implementation returns HTML 404
     assert response.status_code == 404
     assert "Recording not found" in response.text
@@ -109,9 +106,9 @@ def test_dashboard_stats(test_env):
     client, storage, _ = test_env
 
     # Store multiple files
-    storage.store("agent_A", 1, b"data", "rec_1.wav")
-    storage.store("agent_A", 2, b"data", "rec_2.wav")
-    storage.store("agent_B", 3, b"data", "rec_3.wav")
+    storage.store("agent_A", b"data", "rec_1.wav")
+    storage.store("agent_A", b"data", "rec_2.wav")
+    storage.store("agent_B", b"data", "rec_3.wav")
 
     today = datetime.now().strftime("%Y%m%d")
     response = client.get(f"/airec/dashboard?date={today}")
@@ -132,7 +129,7 @@ def test_pagination(test_env):
     # Create 60 recordings
     agent_id = "bulk_agent"
     for i in range(60):
-        storage.store(agent_id, 1000 + i, b"x", f"rec_{1000 + i}.wav")
+        storage.store(agent_id, b"x", f"rec_{1000 + i}.wav")
 
     today = datetime.now().strftime("%Y%m%d")
 

@@ -152,7 +152,7 @@ class TestAnalyzeCallQuality:
 class TestPipelineResult:
     def test_dataclass(self):
         r = PipelineResult(
-            rec_no=1,
+            filename="test.wav",
             full_text="test",
             agent_text="a",
             customer_text="c",
@@ -164,5 +164,5 @@ class TestPipelineResult:
             score_phrase=80.0,
             score_silence=85.0,
         )
-        assert r.rec_no == 1
+        assert r.filename == "test.wav"
         assert r.score_total == 85.0

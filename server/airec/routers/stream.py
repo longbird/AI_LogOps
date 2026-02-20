@@ -21,11 +21,11 @@ def create_stream_router(storage: RecordingStorage) -> APIRouter:
     """Create stream router with storage dependency."""
     router = APIRouter(prefix="/api/rec", tags=["airec-stream"])
 
-    def stream_recording(rec_no: int, request: Request) -> Response:
+    def stream_recording(filename: str, request: Request) -> Response:
         """Stream a WAV file with HTTP Range support for browser playback."""
-        file_path = storage.find_by_rec_no(rec_no)
+        file_path = storage.find_by_filename(filename)
         if file_path is None:
-            raise HTTPException(404, f"Recording {rec_no} not found")
+            raise HTTPException(404, f"Recording {filename} not found")
 
         full_path = str(file_path)
         file_name = file_path.name
@@ -81,6 +81,6 @@ def create_stream_router(storage: RecordingStorage) -> APIRouter:
             },
         )
 
-    router.add_api_route("/stream/{rec_no}", stream_recording, methods=["GET"])
+    router.add_api_route("/stream/{filename:path}", stream_recording, methods=["GET"])
 
     return router

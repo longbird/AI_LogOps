@@ -24,7 +24,7 @@ class ChannelStats:
 
 @dataclass
 class AnalysisResult:
-    rec_no: int
+    filename: str
     status: AnalysisStatus = AnalysisStatus.OK
     left: ChannelStats = field(default_factory=ChannelStats)
     right: ChannelStats = field(default_factory=ChannelStats)

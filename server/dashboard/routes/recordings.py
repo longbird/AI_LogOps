@@ -19,7 +19,7 @@ class _TCPServerLike(Protocol):
         agent_id: str,
         query_type: str,
         date_str: str = ...,
-        rec_no: int = ...,
+        filename: str = ...,
         timeout: float = ...,
     ) -> Any | None: ...
 
@@ -83,10 +83,10 @@ async def api_rec_list(
     return JSONResponse({"records": resp.records})
 
 
-@router.get("/api/rec/detail/{rec_no}")
+@router.get("/api/rec/detail/{filename:path}")
 async def api_rec_detail(
     request: Request,
-    rec_no: int,
+    filename: str,
     agent_id: str = "",
 ) -> JSONResponse:
     state = _state(request)
@@ -105,7 +105,7 @@ async def api_rec_detail(
     resp = await tcp_server.send_rec_data_req(
         agent_id=agent_id,
         query_type="detail",
-        rec_no=rec_no,
+        filename=filename,
     )
     if resp is None:
         return JSONResponse(

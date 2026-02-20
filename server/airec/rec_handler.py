@@ -19,7 +19,7 @@ _logger = logging.getLogger(__name__)
 class AnalysisRecord:
     """In-memory record of an agent's analysis result."""
 
-    rec_no: int
+    filename: str
     agent_id: str
     status: str
     left_rms_db: float
@@ -39,17 +39,17 @@ class RecHandler:
 
     def __init__(self, upload_base_url: str = "http://localhost:8000") -> None:
         self._upload_base_url = upload_base_url.rstrip("/")
-        self._records: dict[tuple[str, int], AnalysisRecord] = {}
-        # Track rec_nos pending upload per agent
-        self._pending_uploads: dict[str, set[int]] = {}
+        self._records: dict[tuple[str, str], AnalysisRecord] = {}
+        # Track filenames pending upload per agent
+        self._pending_uploads: dict[str, set[str]] = {}
 
     @property
-    def records(self) -> dict[tuple[str, int], AnalysisRecord]:
-        """All stored analysis records keyed by (agent_id, rec_no)."""
+    def records(self) -> dict[tuple[str, str], AnalysisRecord]:
+        """All stored analysis records keyed by (agent_id, filename)."""
         return self._records
 
     @property
-    def pending_uploads(self) -> dict[str, set[int]]:
+    def pending_uploads(self) -> dict[str, set[str]]:
         """Pending upload requests per agent."""
         return self._pending_uploads
 
@@ -63,7 +63,7 @@ class RecHandler:
         Returns RecUploadReqPayload if upload needed, None otherwise.
         """
         record = AnalysisRecord(
-            rec_no=payload.rec_no,
+            filename=payload.filename,
             agent_id=agent_id,
             status=payload.status,
             left_rms_db=payload.left_rms_db,
@@ -75,13 +75,13 @@ class RecHandler:
             duration_smdr=payload.duration_smdr,
             is_stereo=payload.is_stereo,
         )
-        key = (agent_id, payload.rec_no)
+        key = (agent_id, payload.filename)
         self._records[key] = record
 
         _logger.info(
-            "analysis result stored: agent_id=%s rec_no=%s status=%s",
+            "analysis result stored: agent_id=%s filename=%s status=%s",
             agent_id,
-            payload.rec_no,
+            payload.filename,
             payload.status,
         )
 
@@ -89,49 +89,49 @@ class RecHandler:
         if self._should_request_upload(record):
             upload_url = f"{self._upload_base_url}/api/rec/upload"
             pending = self._pending_uploads.setdefault(agent_id, set())
-            pending.add(payload.rec_no)
+            pending.add(payload.filename)
             _logger.info(
-                "requesting upload: agent_id=%s rec_no=%s url=%s",
+                "requesting upload: agent_id=%s filename=%s url=%s",
                 agent_id,
-                payload.rec_no,
+                payload.filename,
                 upload_url,
             )
-            return RecUploadReqPayload(rec_no=payload.rec_no, upload_url=upload_url)
+            return RecUploadReqPayload(filename=payload.filename, upload_url=upload_url)
         return None
 
     def handle_upload_ack(
-        self, agent_id: str, rec_no: int, status: int, file_size: int
+        self, agent_id: str, filename: str, status: int, file_size: int
     ) -> None:
         """Process upload acknowledgement from agent.
 
         Args:
             agent_id: Agent identifier.
-            rec_no: Recording number.
+            filename: Recording filename.
             status: 0=success, 1=file_not_found, 2=upload_failed.
             file_size: Size of uploaded file.
         """
-        key = (agent_id, rec_no)
+        key = (agent_id, filename)
         record = self._records.get(key)
 
         # Remove from pending
         pending = self._pending_uploads.get(agent_id)
         if pending is not None:
-            pending.discard(rec_no)
+            pending.discard(filename)
 
         if status == 0:
             if record is not None:
                 record.uploaded = True
             _logger.info(
-                "upload success: agent_id=%s rec_no=%s size=%d",
+                "upload success: agent_id=%s filename=%s size=%d",
                 agent_id,
-                rec_no,
+                filename,
                 file_size,
             )
         else:
             _logger.warning(
-                "upload failed: agent_id=%s rec_no=%s status=%d",
+                "upload failed: agent_id=%s filename=%s status=%d",
                 agent_id,
-                rec_no,
+                filename,
                 status,
             )
 
@@ -155,7 +155,7 @@ class RecHandler:
         return True
 
     def run_stt_pipeline(
-        self, agent_id: str, rec_no: int, wav_path: str
+        self, agent_id: str, filename: str, wav_path: str
     ) -> SttResultPayload | None:
         """Run STT pipeline on uploaded WAV and return result payload.
 
@@ -164,15 +164,15 @@ class RecHandler:
         try:
             from server.airec.analyzer.pipeline import run_pipeline
 
-            result = run_pipeline(rec_no, wav_path)
+            result = run_pipeline(filename, wav_path)
         except Exception:
             _logger.exception(
-                "STT pipeline failed: agent_id=%s rec_no=%s", agent_id, rec_no
+                "STT pipeline failed: agent_id=%s filename=%s", agent_id, filename
             )
             return None
 
         return SttResultPayload(
-            rec_no=result.rec_no,
+            filename=result.filename,
             agent_id=agent_id,
             full_text=result.full_text,
             agent_text=result.agent_text,

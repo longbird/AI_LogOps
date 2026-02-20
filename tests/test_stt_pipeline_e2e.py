@@ -180,7 +180,7 @@ def _make_fake_transcript() -> FakeTranscriptResult:
 
 
 def _make_analysis_payload(
-    rec_no: int = 1001,
+    filename: str = "rec_1001.wav",
     *,
     status: str = "OK",
     is_stereo: bool = True,
@@ -188,7 +188,7 @@ def _make_analysis_payload(
 ) -> RecAnalysisPayload:
     """Create a RecAnalysisPayload for testing."""
     return RecAnalysisPayload(
-        rec_no=rec_no,
+        filename=filename,
         status=status,
         left_rms_db=-20.0,
         right_rms_db=-22.0,
@@ -211,12 +211,14 @@ class TestRecHandlerAnalysis:
 
     def test_ok_stereo_recording_requests_upload(self) -> None:
         handler = RecHandler(upload_base_url="http://localhost:8080")
-        payload = _make_analysis_payload(rec_no=100, status="OK", is_stereo=True)
+        payload = _make_analysis_payload(
+            filename="rec_100.wav", status="OK", is_stereo=True
+        )
 
         result = handler.handle_analysis_result("agent-1", payload)
 
         assert result is not None
-        assert result.rec_no == 100
+        assert result.filename == "rec_100.wav"
         assert "upload" in result.upload_url
 
     def test_mono_recording_skips_upload(self) -> None:
@@ -244,43 +246,47 @@ class TestRecHandlerAnalysis:
 
     def test_analysis_record_stored(self) -> None:
         handler = RecHandler()
-        payload = _make_analysis_payload(rec_no=200)
+        payload = _make_analysis_payload(filename="rec_200.wav")
 
         handler.handle_analysis_result("agent-1", payload)
 
-        assert ("agent-1", 200) in handler.records
-        record = handler.records[("agent-1", 200)]
+        assert ("agent-1", "rec_200.wav") in handler.records
+        record = handler.records[("agent-1", "rec_200.wav")]
         assert record.status == "OK"
         assert record.is_stereo is True
         assert record.uploaded is False
 
     def test_upload_ack_marks_uploaded(self) -> None:
         handler = RecHandler()
-        payload = _make_analysis_payload(rec_no=300)
+        payload = _make_analysis_payload(filename="rec_300.wav")
         handler.handle_analysis_result("agent-1", payload)
 
-        handler.handle_upload_ack("agent-1", 300, status=0, file_size=1024)
+        handler.handle_upload_ack(
+            "agent-1", filename="rec_300.wav", status=0, file_size=1024
+        )
 
-        assert handler.records[("agent-1", 300)].uploaded is True
+        assert handler.records[("agent-1", "rec_300.wav")].uploaded is True
 
     def test_already_uploaded_skips_re_upload(self) -> None:
         handler = RecHandler()
-        payload = _make_analysis_payload(rec_no=400)
+        payload = _make_analysis_payload(filename="rec_400.wav")
         handler.handle_analysis_result("agent-1", payload)
-        handler.handle_upload_ack("agent-1", 400, status=0, file_size=1024)
+        handler.handle_upload_ack(
+            "agent-1", filename="rec_400.wav", status=0, file_size=1024
+        )
 
         # Verify the record is marked uploaded
-        assert handler.records[("agent-1", 400)].uploaded is True
+        assert handler.records[("agent-1", "rec_400.wav")].uploaded is True
 
     def test_agent_stats(self) -> None:
         handler = RecHandler()
         handler.handle_analysis_result(
-            "a1", _make_analysis_payload(rec_no=1, status="OK")
+            "a1", _make_analysis_payload(filename="rec_001.wav", status="OK")
         )
         handler.handle_analysis_result(
-            "a1", _make_analysis_payload(rec_no=2, status="MUTED")
+            "a1", _make_analysis_payload(filename="rec_002.wav", status="MUTED")
         )
-        handler.handle_upload_ack("a1", 1, status=0, file_size=100)
+        handler.handle_upload_ack("a1", filename="rec_001.wav", status=0, file_size=100)
 
         stats = handler.get_agent_stats("a1")
         assert stats["total"] == 2
@@ -298,34 +304,34 @@ class TestRecordingStorage:
         storage = RecordingStorage(base_dir=str(tmp_path / "recordings"))
         data = b"RIFF" + b"\x00" * 100
 
-        saved = storage.store("agent-1", 1001, data, "rec_1001.wav")
+        saved = storage.store("agent-1", data, "rec_1001.wav")
 
         assert saved.exists()
         assert saved.read_bytes() == data
 
-    def test_find_by_rec_no(self, tmp_path: Path) -> None:
+    def test_find_by_filename(self, tmp_path: Path) -> None:
         storage = RecordingStorage(base_dir=str(tmp_path / "recordings"))
         data = b"RIFF" + b"\x00" * 50
-        storage.store("agent-1", 2001, data, "rec_2001.wav")
+        storage.store("agent-1", data, "rec_2001.wav")
 
-        found = storage.find_by_rec_no(2001)
+        found = storage.find_by_filename("rec_2001.wav")
 
         assert found is not None
         assert found.name == "rec_2001.wav"
 
     def test_find_nonexistent_returns_none(self, tmp_path: Path) -> None:
         storage = RecordingStorage(base_dir=str(tmp_path / "recordings"))
-        assert storage.find_by_rec_no(9999) is None
+        assert storage.find_by_filename("rec_9999.wav") is None
 
     def test_list_recordings(self, tmp_path: Path) -> None:
         storage = RecordingStorage(base_dir=str(tmp_path / "recordings"))
-        storage.store("agent-1", 1, b"\x00" * 10, "rec_1.wav")
-        storage.store("agent-1", 2, b"\x00" * 20, "rec_2.wav")
+        storage.store("agent-1", b"\x00" * 10, "rec_1.wav")
+        storage.store("agent-1", b"\x00" * 20, "rec_2.wav")
 
         listings = storage.list_recordings(agent_id="agent-1")
         assert len(listings) == 2
-        rec_nos = {entry["rec_no"] for entry in listings}
-        assert rec_nos == {1, 2}
+        fnames = {entry["filename"] for entry in listings}
+        assert fnames == {"rec_1.wav", "rec_2.wav"}
 
 
 # ---------------------------------------------------------------------------
@@ -407,10 +413,10 @@ class TestPipelineE2E:
             "server.airec.analyzer.stt.transcribe_file",
             return_value=fake_transcript,
         ):
-            result = run_pipeline(1001, wav_path)
+            result = run_pipeline("test_1001.wav", wav_path)
 
         assert isinstance(result, PipelineResult)
-        assert result.rec_no == 1001
+        assert result.filename == "test_1001.wav"
         assert result.full_text != ""
         assert result.agent_text != ""
         assert result.customer_text != ""
@@ -426,7 +432,7 @@ class TestPipelineE2E:
             "server.airec.analyzer.stt.transcribe_file",
             return_value=_make_fake_transcript(),
         ):
-            result = run_pipeline(1002, wav_path)
+            result = run_pipeline("test_1002.wav", wav_path)
 
         segments = json.loads(result.segments_json)
         assert isinstance(segments, list)
@@ -446,7 +452,7 @@ class TestPipelineE2E:
             "server.airec.analyzer.stt.transcribe_file",
             return_value=_make_fake_transcript(),
         ):
-            result = run_pipeline(1003, wav_path)
+            result = run_pipeline("test_1003.wav", wav_path)
 
         # "감사합니다", "안녕하세요" in agent text
         assert result.required_phrase_hit is True
@@ -461,7 +467,7 @@ class TestPipelineE2E:
             "server.airec.analyzer.stt.transcribe_file",
             return_value=_make_fake_transcript(),
         ):
-            result = run_pipeline(1004, wav_path)
+            result = run_pipeline("test_1004.wav", wav_path)
 
         assert result.agent_talk_ratio > 0
         assert result.customer_talk_ratio > 0
@@ -490,11 +496,11 @@ class TestRecHandlerSTTPipeline:
             "server.airec.analyzer.stt.transcribe_file",
             return_value=_make_fake_transcript(),
         ):
-            result = handler.run_stt_pipeline("agent-1", 5001, wav_path)
+            result = handler.run_stt_pipeline("agent-1", "rec_5001.wav", wav_path)
 
         assert result is not None
         assert isinstance(result, SttResultPayload)
-        assert result.rec_no == 5001
+        assert result.filename == "rec_5001.wav"
         assert result.agent_id == "agent-1"
         assert result.full_text != ""
         assert result.agent_text != ""
@@ -510,7 +516,9 @@ class TestRecHandlerSTTPipeline:
             "server.airec.analyzer.stt.transcribe_file",
             side_effect=RuntimeError("STT model not found"),
         ):
-            result = handler.run_stt_pipeline("agent-1", 9999, "/nonexistent.wav")
+            result = handler.run_stt_pipeline(
+                "agent-1", "nonexistent.wav", "/nonexistent.wav"
+            )
 
         assert result is None
 
@@ -520,7 +528,9 @@ class TestRecHandlerSTTPipeline:
         storage = RecordingStorage(base_dir=str(tmp_path / "recordings"))
 
         # Step 1: Agent sends analysis result
-        payload = _make_analysis_payload(rec_no=6001, status="OK", is_stereo=True)
+        payload = _make_analysis_payload(
+            filename="rec_6001.wav", status="OK", is_stereo=True
+        )
         upload_req = handler.handle_analysis_result("agent-1", payload)
         assert upload_req is not None, "Should request upload for OK stereo recording"
 
@@ -528,22 +538,26 @@ class TestRecHandlerSTTPipeline:
         wav_path = str(tmp_path / "rec_6001.wav")
         _create_stereo_wav(wav_path)
         wav_data = Path(wav_path).read_bytes()
-        stored_path = storage.store("agent-1", 6001, wav_data, "rec_6001.wav")
+        stored_path = storage.store("agent-1", wav_data, "rec_6001.wav")
 
         # Step 3: Upload ack → mark as uploaded
-        handler.handle_upload_ack("agent-1", 6001, status=0, file_size=len(wav_data))
-        assert handler.records[("agent-1", 6001)].uploaded is True
+        handler.handle_upload_ack(
+            "agent-1", filename="rec_6001.wav", status=0, file_size=len(wav_data)
+        )
+        assert handler.records[("agent-1", "rec_6001.wav")].uploaded is True
 
         # Step 4: Server runs STT pipeline on stored WAV
         with patch(
             "server.airec.analyzer.stt.transcribe_file",
             return_value=_make_fake_transcript(),
         ):
-            stt_result = handler.run_stt_pipeline("agent-1", 6001, str(stored_path))
+            stt_result = handler.run_stt_pipeline(
+                "agent-1", "rec_6001.wav", str(stored_path)
+            )
 
         # Step 5: Verify result payload
         assert stt_result is not None
-        assert stt_result.rec_no == 6001
+        assert stt_result.filename == "rec_6001.wav"
         assert stt_result.agent_id == "agent-1"
         assert stt_result.score_total > 0
         assert stt_result.required_phrase_hit is True

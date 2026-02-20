@@ -9,7 +9,7 @@ from shared.protocol import RecAnalysisPayload, RecUploadReqPayload
 
 
 def _make_payload(
-    rec_no: int = 1,
+    filename: str = "rec_001.wav",
     status: str = "OK",
     is_stereo: bool = True,
     duration_wav: float = 10.0,
@@ -21,7 +21,7 @@ def _make_payload(
     duration_smdr: float = 10.0,
 ) -> RecAnalysisPayload:
     return RecAnalysisPayload(
-        rec_no=rec_no,
+        filename=filename,
         status=status,
         left_rms_db=left_rms_db,
         right_rms_db=right_rms_db,
@@ -39,20 +39,20 @@ class TestHandleAnalysisResult:
         """OK + stereo + duration >= 3s → returns RecUploadReqPayload."""
         handler = RecHandler(upload_base_url="http://server:8000")
         payload = _make_payload(
-            rec_no=42, status="OK", is_stereo=True, duration_wav=10.0
+            filename="rec_042.wav", status="OK", is_stereo=True, duration_wav=10.0
         )
 
         result = handler.handle_analysis_result("agent1", payload)
 
         assert isinstance(result, RecUploadReqPayload)
-        assert result.rec_no == 42
+        assert result.filename == "rec_042.wav"
         assert result.upload_url == "http://server:8000/api/rec/upload"
 
     def test_handle_analysis_result_empty(self) -> None:
         """EMPTY status → returns None (no upload)."""
         handler = RecHandler()
         payload = _make_payload(
-            rec_no=1, status="EMPTY", is_stereo=True, duration_wav=10.0
+            filename="rec_001.wav", status="EMPTY", is_stereo=True, duration_wav=10.0
         )
 
         result = handler.handle_analysis_result("agent1", payload)
@@ -63,7 +63,7 @@ class TestHandleAnalysisResult:
         """OK + mono → returns None."""
         handler = RecHandler()
         payload = _make_payload(
-            rec_no=1, status="OK", is_stereo=False, duration_wav=10.0
+            filename="rec_001.wav", status="OK", is_stereo=False, duration_wav=10.0
         )
 
         result = handler.handle_analysis_result("agent1", payload)
@@ -73,7 +73,9 @@ class TestHandleAnalysisResult:
     def test_handle_analysis_result_short(self) -> None:
         """OK + stereo + duration < 3s → returns None."""
         handler = RecHandler()
-        payload = _make_payload(rec_no=1, status="OK", is_stereo=True, duration_wav=2.9)
+        payload = _make_payload(
+            filename="rec_001.wav", status="OK", is_stereo=True, duration_wav=2.9
+        )
 
         result = handler.handle_analysis_result("agent1", payload)
 
@@ -82,27 +84,29 @@ class TestHandleAnalysisResult:
     def test_handle_analysis_result_stores_record(self) -> None:
         """Analysis result is stored in records dict."""
         handler = RecHandler()
-        payload = _make_payload(rec_no=7, status="OK", is_stereo=True, duration_wav=5.0)
+        payload = _make_payload(
+            filename="rec_007.wav", status="OK", is_stereo=True, duration_wav=5.0
+        )
 
         handler.handle_analysis_result("agentX", payload)
 
-        assert ("agentX", 7) in handler.records
-        record = handler.records[("agentX", 7)]
+        assert ("agentX", "rec_007.wav") in handler.records
+        record = handler.records[("agentX", "rec_007.wav")]
         assert record.status == "OK"
-        assert record.rec_no == 7
+        assert record.filename == "rec_007.wav"
         assert record.agent_id == "agentX"
 
     def test_handle_analysis_result_adds_to_pending(self) -> None:
-        """Upload-eligible result adds rec_no to pending_uploads."""
+        """Upload-eligible result adds filename to pending_uploads."""
         handler = RecHandler()
         payload = _make_payload(
-            rec_no=5, status="OK", is_stereo=True, duration_wav=10.0
+            filename="rec_005.wav", status="OK", is_stereo=True, duration_wav=10.0
         )
 
         handler.handle_analysis_result("agent1", payload)
 
         assert "agent1" in handler.pending_uploads
-        assert 5 in handler.pending_uploads["agent1"]
+        assert "rec_005.wav" in handler.pending_uploads["agent1"]
 
 
 class TestHandleUploadAck:
@@ -110,46 +114,54 @@ class TestHandleUploadAck:
         """status=0 → record.uploaded = True."""
         handler = RecHandler()
         payload = _make_payload(
-            rec_no=1, status="OK", is_stereo=True, duration_wav=10.0
+            filename="rec_001.wav", status="OK", is_stereo=True, duration_wav=10.0
         )
         handler.handle_analysis_result("agent1", payload)
 
-        handler.handle_upload_ack(agent_id="agent1", rec_no=1, status=0, file_size=1024)
+        handler.handle_upload_ack(
+            agent_id="agent1", filename="rec_001.wav", status=0, file_size=1024
+        )
 
-        record = handler.records[("agent1", 1)]
+        record = handler.records[("agent1", "rec_001.wav")]
         assert record.uploaded is True
 
     def test_handle_upload_ack_failure(self) -> None:
         """status=2 → record.uploaded = False."""
         handler = RecHandler()
         payload = _make_payload(
-            rec_no=1, status="OK", is_stereo=True, duration_wav=10.0
+            filename="rec_001.wav", status="OK", is_stereo=True, duration_wav=10.0
         )
         handler.handle_analysis_result("agent1", payload)
 
-        handler.handle_upload_ack(agent_id="agent1", rec_no=1, status=2, file_size=0)
+        handler.handle_upload_ack(
+            agent_id="agent1", filename="rec_001.wav", status=2, file_size=0
+        )
 
-        record = handler.records[("agent1", 1)]
+        record = handler.records[("agent1", "rec_001.wav")]
         assert record.uploaded is False
 
     def test_handle_upload_ack_removes_from_pending(self) -> None:
-        """Upload ack (success or failure) removes rec_no from pending_uploads."""
+        """Upload ack (success or failure) removes filename from pending_uploads."""
         handler = RecHandler()
         payload = _make_payload(
-            rec_no=3, status="OK", is_stereo=True, duration_wav=10.0
+            filename="rec_003.wav", status="OK", is_stereo=True, duration_wav=10.0
         )
         handler.handle_analysis_result("agent1", payload)
-        assert 3 in handler.pending_uploads.get("agent1", set())
+        assert "rec_003.wav" in handler.pending_uploads.get("agent1", set())
 
-        handler.handle_upload_ack(agent_id="agent1", rec_no=3, status=0, file_size=512)
+        handler.handle_upload_ack(
+            agent_id="agent1", filename="rec_003.wav", status=0, file_size=512
+        )
 
-        assert 3 not in handler.pending_uploads.get("agent1", set())
+        assert "rec_003.wav" not in handler.pending_uploads.get("agent1", set())
 
     def test_handle_upload_ack_unknown_record(self) -> None:
-        """Upload ack for unknown rec_no does not raise."""
+        """Upload ack for unknown filename does not raise."""
         handler = RecHandler()
         # Should not raise even if record doesn't exist
-        handler.handle_upload_ack(agent_id="agent1", rec_no=999, status=0, file_size=0)
+        handler.handle_upload_ack(
+            agent_id="agent1", filename="rec_999.wav", status=0, file_size=0
+        )
 
 
 class TestGetAgentStats:
@@ -158,16 +170,24 @@ class TestGetAgentStats:
         handler = RecHandler()
 
         # 3 records for agent1: 2 OK (1 uploaded), 1 EMPTY
-        p1 = _make_payload(rec_no=1, status="OK", is_stereo=True, duration_wav=10.0)
-        p2 = _make_payload(rec_no=2, status="OK", is_stereo=True, duration_wav=10.0)
-        p3 = _make_payload(rec_no=3, status="EMPTY", is_stereo=True, duration_wav=10.0)
+        p1 = _make_payload(
+            filename="rec_001.wav", status="OK", is_stereo=True, duration_wav=10.0
+        )
+        p2 = _make_payload(
+            filename="rec_002.wav", status="OK", is_stereo=True, duration_wav=10.0
+        )
+        p3 = _make_payload(
+            filename="rec_003.wav", status="EMPTY", is_stereo=True, duration_wav=10.0
+        )
 
         handler.handle_analysis_result("agent1", p1)
         handler.handle_analysis_result("agent1", p2)
         handler.handle_analysis_result("agent1", p3)
 
-        # Mark rec_no=1 as uploaded
-        handler.handle_upload_ack(agent_id="agent1", rec_no=1, status=0, file_size=100)
+        # Mark rec_001.wav as uploaded
+        handler.handle_upload_ack(
+            agent_id="agent1", filename="rec_001.wav", status=0, file_size=100
+        )
 
         stats = handler.get_agent_stats("agent1")
 
@@ -184,8 +204,12 @@ class TestGetAgentStats:
     def test_get_agent_stats_isolates_agents(self) -> None:
         """Stats for one agent don't include records from another."""
         handler = RecHandler()
-        p1 = _make_payload(rec_no=1, status="OK", is_stereo=True, duration_wav=10.0)
-        p2 = _make_payload(rec_no=1, status="OK", is_stereo=True, duration_wav=10.0)
+        p1 = _make_payload(
+            filename="rec_001.wav", status="OK", is_stereo=True, duration_wav=10.0
+        )
+        p2 = _make_payload(
+            filename="rec_001.wav", status="OK", is_stereo=True, duration_wav=10.0
+        )
 
         handler.handle_analysis_result("agent1", p1)
         handler.handle_analysis_result("agent2", p2)
@@ -199,18 +223,22 @@ class TestGetAgentStats:
 
 class TestDuplicateAnalysis:
     def test_duplicate_analysis_overwrites(self) -> None:
-        """Same (agent_id, rec_no) overwrites previous record."""
+        """Same (agent_id, filename) overwrites previous record."""
         handler = RecHandler()
 
-        p1 = _make_payload(rec_no=1, status="OK", is_stereo=True, duration_wav=10.0)
-        p2 = _make_payload(rec_no=1, status="EMPTY", is_stereo=False, duration_wav=1.0)
+        p1 = _make_payload(
+            filename="rec_001.wav", status="OK", is_stereo=True, duration_wav=10.0
+        )
+        p2 = _make_payload(
+            filename="rec_001.wav", status="EMPTY", is_stereo=False, duration_wav=1.0
+        )
 
         handler.handle_analysis_result("agent1", p1)
         handler.handle_analysis_result("agent1", p2)
 
         # Only one record should exist
         assert len(handler.records) == 1
-        record = handler.records[("agent1", 1)]
+        record = handler.records[("agent1", "rec_001.wav")]
         assert record.status == "EMPTY"
         assert record.is_stereo is False
         assert record.duration_wav == 1.0

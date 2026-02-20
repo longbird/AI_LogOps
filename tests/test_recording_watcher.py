@@ -57,7 +57,7 @@ class TestModels:
         assert stats.silence_ratio == 1.0
 
     def test_analysis_result_defaults(self):
-        r = AnalysisResult(rec_no=1)
+        r = AnalysisResult(filename="test.wav")
         assert r.status == AnalysisStatus.OK
         assert r.dropout_count == 0
 
@@ -141,9 +141,9 @@ class TestAudioQuality:
         os.close(fd)
         try:
             _create_test_wav(path, duration_sec=1.0, channels=1, silence=True)
-            result = analyze_recording(rec_no=1, filepath=path)
+            result = analyze_recording(filename="test.wav", filepath=path)
             assert result.status == AnalysisStatus.EMPTY
-            assert result.rec_no == 1
+            assert result.filename == "test.wav"
         finally:
             os.unlink(path)
 
@@ -152,9 +152,9 @@ class TestAudioQuality:
         os.close(fd)
         try:
             _create_test_wav(path, duration_sec=1.0, channels=1, silence=False)
-            result = analyze_recording(rec_no=2, filepath=path)
+            result = analyze_recording(filename="test.wav", filepath=path)
             assert result.status == AnalysisStatus.OK
-            assert result.rec_no == 2
+            assert result.filename == "test.wav"
         finally:
             os.unlink(path)
 
@@ -170,7 +170,7 @@ class TestAudioQuality:
 
     def test_file_not_found(self):
         with pytest.raises(FileNotFoundError):
-            analyze_recording(rec_no=0, filepath="/nonexistent.wav")
+            analyze_recording(filename="nonexistent.wav", filepath="/nonexistent.wav")
 
 
 @pytest.mark.asyncio
@@ -178,10 +178,10 @@ async def test_watcher_detects_new_wav():
     """New WAV file in watched dir triggers on_new_recording callback."""
     from datetime import datetime as _dt
 
-    detected: list[tuple[int, str, AnalysisResult]] = []
+    detected: list[tuple[str, str, AnalysisResult]] = []
 
-    async def on_new(rec_no: int, filepath: str, result: AnalysisResult) -> None:
-        detected.append((rec_no, filepath, result))
+    async def on_new(filename: str, filepath: str, result: AnalysisResult) -> None:
+        detected.append((filename, filepath, result))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # 날짜 서브디렉토리 생성 (실환경 구조: watch_dir/YYYYMMDD/)
@@ -205,7 +205,7 @@ async def test_watcher_detects_new_wav():
             await watcher.stop()
 
         assert len(detected) >= 1
-        assert detected[0][0] == 1  # rec_no extracted from "test_001"
+        assert detected[0][0] == "test_001.wav"  # filename from the created file
         assert detected[0][1] == wav_path
         assert isinstance(detected[0][2], AnalysisResult)
 
@@ -215,7 +215,7 @@ async def test_watcher_ignores_non_wav():
     """Non-WAV files should be ignored."""
     detected: list[str] = []
 
-    async def on_new(rec_no: int, filepath: str, result: AnalysisResult) -> None:
+    async def on_new(filename: str, filepath: str, result: AnalysisResult) -> None:
         detected.append(filepath)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -240,7 +240,7 @@ async def test_watcher_processed_count():
     """processed_count property tracks number of analyzed files."""
     from datetime import datetime as _dt
 
-    async def on_new(rec_no: int, filepath: str, result: AnalysisResult) -> None:
+    async def on_new(filename: str, filepath: str, result: AnalysisResult) -> None:
         pass
 
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -40,6 +40,7 @@ def _install_pywin32_stubs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     win32service = ModuleType("win32service")
     win32service.SERVICE_STOP_PENDING = 3
+    win32service.SERVICE_RUNNING = 4
     win32service.SERVICE_AUTO_START = 2
 
     win32event = ModuleType("win32event")

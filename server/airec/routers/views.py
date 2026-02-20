@@ -66,9 +66,9 @@ def create_views_router(storage: RecordingStorage) -> APIRouter:
         )
 
     # Recording detail
-    @router.get("/recording/{rec_no}")
-    def recording_detail(request: Request, rec_no: int):
-        file_path = storage.find_by_rec_no(rec_no)
+    @router.get("/recording/{filename:path}")
+    def recording_detail(request: Request, filename: str):
+        file_path = storage.find_by_filename(filename)
 
         if file_path is None:
             from fastapi.responses import HTMLResponse
@@ -76,8 +76,7 @@ def create_views_router(storage: RecordingStorage) -> APIRouter:
             return HTMLResponse("<h3>Recording not found</h3>", status_code=404)
 
         rec = {
-            "rec_no": rec_no,
-            "filename": file_path.name,
+            "filename": filename,
             "file_size": file_path.stat().st_size,
             "date": file_path.parent.name,
             "agent_id": file_path.parent.parent.name,

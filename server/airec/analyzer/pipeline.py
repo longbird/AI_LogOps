@@ -34,7 +34,7 @@ class _TranscriptLike(Protocol):
 class PipelineResult:
     """Result of the full analysis pipeline."""
 
-    rec_no: int
+    filename: str
     full_text: str
     agent_text: str
     customer_text: str
@@ -56,11 +56,11 @@ class PipelineResult:
     forbidden_word_list: str = ""
 
 
-def run_pipeline(rec_no: int, wav_path: str, language: str = "ko") -> PipelineResult:
+def run_pipeline(filename: str, wav_path: str, language: str = "ko") -> PipelineResult:
     """Run full STT + quality analysis pipeline on a WAV file.
 
     Args:
-        rec_no: Recording number identifier.
+        filename: Recording filename identifier.
         wav_path: Path to the WAV file.
         language: BCP-47 language code for STT.
 
@@ -76,13 +76,13 @@ def run_pipeline(rec_no: int, wav_path: str, language: str = "ko") -> PipelineRe
 
     transcribe = cast(Callable[[str, str], _TranscriptLike], transcribe_file)
 
-    _logger.info("Pipeline start: rec_no=%s path=%s", rec_no, wav_path)
+    _logger.info("Pipeline start: filename=%s path=%s", filename, wav_path)
 
     # Step 1: STT
     transcript = transcribe(wav_path, language)
     _logger.info(
-        "STT done: rec_no=%s segments=%d words=%d",
-        rec_no,
+        "STT done: filename=%s segments=%d words=%d",
+        filename,
         len(transcript.segments),
         transcript.word_count,
     )
@@ -90,8 +90,8 @@ def run_pipeline(rec_no: int, wav_path: str, language: str = "ko") -> PipelineRe
     # Step 2: Call quality
     quality: CallQualityResult = analyze_call_quality(transcript)
     _logger.info(
-        "Quality done: rec_no=%s score=%.1f",
-        rec_no,
+        "Quality done: filename=%s score=%.1f",
+        filename,
         quality.score_total,
     )
 
@@ -110,7 +110,7 @@ def run_pipeline(rec_no: int, wav_path: str, language: str = "ko") -> PipelineRe
     )
 
     return PipelineResult(
-        rec_no=rec_no,
+        filename=filename,
         full_text=transcript.full_text,
         agent_text=transcript.agent_text,
         customer_text=transcript.customer_text,

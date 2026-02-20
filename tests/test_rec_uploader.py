@@ -35,12 +35,12 @@ class TestRecordingUploader:
     @pytest.mark.asyncio
     async def test_upload_file_not_found(self) -> None:
         uploader = RecordingUploader(agent_id="test-agent")
-        rec_no, status, size = await uploader.upload(
-            rec_no=1,
+        fname, status, size = await uploader.upload(
+            filename="rec_001.wav",
             filepath="/nonexistent/path/recording.wav",
             upload_url="https://example.com/api/upload",
         )
-        assert rec_no == 1
+        assert fname == "rec_001.wav"
         assert status == 1  # file_not_found
         assert size == 0
 
@@ -52,12 +52,12 @@ class TestRecordingUploader:
         try:
             _create_test_wav(path)
             uploader = RecordingUploader(agent_id="test-agent", timeout=2.0)
-            rec_no, status, size = await uploader.upload(
-                rec_no=42,
+            fname, status, size = await uploader.upload(
+                filename="rec_042.wav",
                 filepath=path,
                 upload_url="https://127.0.0.1:19999/api/upload",
             )
-            assert rec_no == 42
+            assert fname == "rec_042.wav"
             assert status == 2  # upload_failed (connection refused)
             assert size > 0  # file exists, size was read
         finally:
@@ -71,12 +71,12 @@ class TestRecordingUploader:
         try:
             _create_test_wav(path)
             uploader = RecordingUploader(agent_id="test-agent", timeout=2.0)
-            rec_no, status, size = await uploader.upload(
-                rec_no=99,
+            fname, status, size = await uploader.upload(
+                filename="rec_099.wav",
                 filepath=path,
                 upload_url="not-a-valid-url",
             )
-            assert rec_no == 99
+            assert fname == "rec_099.wav"
             assert status == 2
             assert size > 0
         finally:

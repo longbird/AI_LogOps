@@ -349,7 +349,7 @@ class FileAckPayload:
 
 @dataclass(slots=True)
 class RecAnalysisPayload:
-    rec_no: int
+    filename: str
     status: str
     left_rms_db: float
     right_rms_db: float
@@ -362,7 +362,7 @@ class RecAnalysisPayload:
 
     def pack(self) -> bytes:
         data = {
-            "rec_no": self.rec_no,
+            "filename": self.filename,
             "status": self.status,
             "left_rms_db": self.left_rms_db,
             "right_rms_db": self.right_rms_db,
@@ -381,7 +381,7 @@ class RecAnalysisPayload:
         if not isinstance(decoded_raw, dict):
             raise ValueError("rec analysis payload JSON must be an object")
         return cls(
-            rec_no=int(decoded_raw["rec_no"]),
+            filename=str(decoded_raw["filename"]),
             status=str(decoded_raw["status"]),
             left_rms_db=float(decoded_raw["left_rms_db"]),
             right_rms_db=float(decoded_raw["right_rms_db"]),
@@ -396,12 +396,12 @@ class RecAnalysisPayload:
 
 @dataclass(slots=True)
 class RecUploadReqPayload:
-    rec_no: int
+    filename: str
     upload_url: str
 
     def pack(self) -> bytes:
         data = {
-            "rec_no": self.rec_no,
+            "filename": self.filename,
             "upload_url": self.upload_url,
         }
         return json.dumps(data, separators=(",", ":")).encode("utf-8")
@@ -412,31 +412,35 @@ class RecUploadReqPayload:
         if not isinstance(decoded_raw, dict):
             raise ValueError("rec upload req payload JSON must be an object")
         return cls(
-            rec_no=int(decoded_raw["rec_no"]),
+            filename=str(decoded_raw["filename"]),
             upload_url=str(decoded_raw["upload_url"]),
         )
 
 
 @dataclass(slots=True)
 class RecUploadAckPayload:
-    rec_no: int
+    filename: str
     status: int
     file_size: int
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!IBQ")
-    _SIZE: ClassVar[int] = 13
-
     def pack(self) -> bytes:
-        if not 0 <= self.status <= 0xFF:
-            raise ValueError("status must fit in 1 byte")
-        return self._STRUCT.pack(self.rec_no, self.status, self.file_size)
+        data = {
+            "filename": self.filename,
+            "status": self.status,
+            "file_size": self.file_size,
+        }
+        return json.dumps(data, separators=(",", ":")).encode("utf-8")
 
     @classmethod
     def unpack(cls, data: bytes) -> RecUploadAckPayload:
-        if len(data) != cls._SIZE:
-            raise ValueError("rec upload ack payload must be exactly 13 bytes")
-        rec_no, status, file_size = cast(tuple[int, int, int], cls._STRUCT.unpack(data))
-        return cls(rec_no=rec_no, status=status, file_size=file_size)
+        decoded_raw = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        if not isinstance(decoded_raw, dict):
+            raise ValueError("rec upload ack payload JSON must be an object")
+        return cls(
+            filename=str(decoded_raw["filename"]),
+            status=int(decoded_raw["status"]),
+            file_size=int(decoded_raw["file_size"]),
+        )
 
 
 @dataclass(slots=True)
@@ -748,7 +752,7 @@ class DisconnectPayload:
 class SttResultPayload:
     """STT_RESULT: 서버 → 에이전트. STT + 통화품질 분석 결과."""
 
-    rec_no: int
+    filename: str
     agent_id: str
     full_text: str
     agent_text: str
@@ -772,7 +776,7 @@ class SttResultPayload:
 
     def pack(self) -> bytes:
         data: dict[str, object] = {
-            "rec_no": self.rec_no,
+            "filename": self.filename,
             "agent_id": self.agent_id,
             "full_text": self.full_text,
             "agent_text": self.agent_text,
@@ -801,7 +805,7 @@ class SttResultPayload:
     def unpack(cls, data: bytes) -> SttResultPayload:
         d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
         return cls(
-            rec_no=int(d["rec_no"]),
+            filename=str(d["filename"]),
             agent_id=str(d["agent_id"]),
             full_text=str(d.get("full_text", "")),
             agent_text=str(d.get("agent_text", "")),
@@ -830,13 +834,13 @@ class RecDataReqPayload:
 
     query_type: str  # "list" | "detail"
     date_str: str  # YYYYMMDD (list 필터)
-    rec_no: int  # detail 조회 시
+    filename: str = ""  # detail 조회 시
 
     def pack(self) -> bytes:
         data: dict[str, object] = {
             "query_type": self.query_type,
             "date_str": self.date_str,
-            "rec_no": self.rec_no,
+            "filename": self.filename,
         }
         return json.dumps(data, separators=(",", ":")).encode("utf-8")
 
@@ -846,7 +850,7 @@ class RecDataReqPayload:
         return cls(
             query_type=str(d.get("query_type", "list")),
             date_str=str(d.get("date_str", "")),
-            rec_no=int(d.get("rec_no", 0)),
+            filename=str(d.get("filename", "")),
         )
 
 

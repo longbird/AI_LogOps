@@ -22,23 +22,23 @@ class RecordingUploader:
         self._timeout: float = timeout
 
     async def upload(
-        self, rec_no: int, filepath: str, upload_url: str
-    ) -> tuple[int, int, int]:
+        self, filename: str, filepath: str, upload_url: str
+    ) -> tuple[str, int, int]:
         """Upload a WAV file to the command server.
 
         Args:
-            rec_no: Recording number identifier.
+            filename: Recording filename identifier (WAV basename).
             filepath: Absolute path to the WAV file.
             upload_url: HTTPS URL for multipart upload.
 
         Returns:
-            (rec_no, status, file_size)
+            (filename, status, file_size)
             status: 0=success, 1=file_not_found, 2=upload_failed
         """
         path = Path(filepath)
         if not path.is_file():
-            _logger.warning("rec_no=%s file not found: %s", rec_no, filepath)
-            return rec_no, 1, 0
+            _logger.warning("filename=%s file not found: %s", filename, filepath)
+            return filename, 1, 0
 
         file_size = path.stat().st_size
         try:
@@ -50,18 +50,18 @@ class RecordingUploader:
                     resp = await client.post(
                         upload_url,
                         files={"file": (path.name, f, "audio/wav")},
-                        data={"rec_no": str(rec_no), "agent_id": self._agent_id},
+                        data={"filename": filename, "agent_id": self._agent_id},
                     )
                 if resp.status_code == 200:
-                    _logger.info("rec_no=%s uploaded (%d bytes)", rec_no, file_size)
-                    return rec_no, 0, file_size
+                    _logger.info("filename=%s uploaded (%d bytes)", filename, file_size)
+                    return filename, 0, file_size
                 _logger.error(
-                    "rec_no=%s upload HTTP %d: %s",
-                    rec_no,
+                    "filename=%s upload HTTP %d: %s",
+                    filename,
                     resp.status_code,
                     resp.text[:200],
                 )
-                return rec_no, 2, file_size
+                return filename, 2, file_size
         except Exception:
-            _logger.exception("rec_no=%s upload failed", rec_no)
-            return rec_no, 2, file_size
+            _logger.exception("filename=%s upload failed", filename)
+            return filename, 2, file_size

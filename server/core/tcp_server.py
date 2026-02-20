@@ -558,9 +558,9 @@ class TCPServer:
             writer.write(Packet.build(PacketType.REC_UPLOAD_REQ, upload_req.pack()))
             await writer.drain()
             self._logger.info(
-                "sent REC_UPLOAD_REQ: agent_id=%s rec_no=%s",
+                "sent REC_UPLOAD_REQ: agent_id=%s filename=%s",
                 agent_id,
-                analysis.rec_no,
+                analysis.filename,
             )
 
     async def _handle_rec_upload_ack(
@@ -580,33 +580,33 @@ class TCPServer:
 
         self.rec_handler.handle_upload_ack(  # type: ignore[union-attr]
             agent_id=agent_id,
-            rec_no=ack.rec_no,
+            filename=ack.filename,
             status=ack.status,
             file_size=ack.file_size,
         )
         self._logger.info(
-            "rec upload ack: agent_id=%s rec_no=%s status=%s size=%s",
+            "rec upload ack: agent_id=%s filename=%s status=%s size=%s",
             agent_id,
-            ack.rec_no,
+            ack.filename,
             ack.status,
             ack.file_size,
         )
 
         # Trigger STT pipeline on successful upload
         if ack.status == 0 and self.rec_storage is not None:
-            wav_path = self.rec_storage.find_by_rec_no(ack.rec_no)  # type: ignore[union-attr]
+            wav_path = self.rec_storage.find_by_filename(ack.filename)  # type: ignore[union-attr]
             if wav_path is not None:
                 self._logger.info(
-                    "triggering STT pipeline: agent_id=%s rec_no=%s path=%s",
+                    "triggering STT pipeline: agent_id=%s filename=%s path=%s",
                     agent_id,
-                    ack.rec_no,
+                    ack.filename,
                     wav_path,
                 )
                 # Run pipeline in thread to avoid blocking event loop
                 stt_payload: SttResultPayload | None = await asyncio.to_thread(
                     self.rec_handler.run_stt_pipeline,  # type: ignore[union-attr]
                     agent_id,
-                    ack.rec_no,
+                    ack.filename,
                     str(wav_path),
                 )
                 if stt_payload is not None:
@@ -615,21 +615,21 @@ class TCPServer:
                     )
                     await writer.drain()
                     self._logger.info(
-                        "sent STT_RESULT: agent_id=%s rec_no=%s",
+                        "sent STT_RESULT: agent_id=%s filename=%s",
                         agent_id,
-                        ack.rec_no,
+                        ack.filename,
                     )
                 else:
                     self._logger.warning(
-                        "STT pipeline returned no result: agent_id=%s rec_no=%s",
+                        "STT pipeline returned no result: agent_id=%s filename=%s",
                         agent_id,
-                        ack.rec_no,
+                        ack.filename,
                     )
             else:
                 self._logger.warning(
-                    "uploaded WAV not found in storage: agent_id=%s rec_no=%s",
+                    "uploaded WAV not found in storage: agent_id=%s filename=%s",
                     agent_id,
-                    ack.rec_no,
+                    ack.filename,
                 )
 
     def _handle_rec_data_resp(self, agent_id: str, payload: bytes) -> None:
@@ -655,7 +655,7 @@ class TCPServer:
         agent_id: str,
         query_type: str,
         date_str: str = "",
-        rec_no: int = 0,
+        filename: str = "",
         timeout: float = 30.0,
     ) -> RecDataRespPayload | None:
         """Send REC_DATA_REQ to agent and wait for response."""
@@ -668,7 +668,9 @@ class TCPServer:
         future: asyncio.Future[RecDataRespPayload] = loop.create_future()
         self._rec_data_futures[agent_id] = future
 
-        req = RecDataReqPayload(query_type=query_type, date_str=date_str, rec_no=rec_no)
+        req = RecDataReqPayload(
+            query_type=query_type, date_str=date_str, filename=filename
+        )
         writer.write(Packet.build(PacketType.REC_DATA_REQ, req.pack()))
         await writer.drain()
 

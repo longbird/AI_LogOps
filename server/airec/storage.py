@@ -24,7 +24,7 @@ class RecordingStorage:
     def base_dir(self) -> Path:
         return self._base
 
-    def store(self, agent_id: str, rec_no: int, data: bytes, filename: str) -> Path:
+    def store(self, agent_id: str, data: bytes, filename: str) -> Path:
         """Store a WAV file and return the saved path.
 
         Files are saved to: {base_dir}/{agent_id}/{YYYYMMDD}/{filename}
@@ -35,20 +35,19 @@ class RecordingStorage:
         target = target_dir / filename
         _ = target.write_bytes(data)
         _logger.info(
-            "stored rec_no=%s agent=%s path=%s size=%d",
-            rec_no,
+            "stored filename=%s agent=%s path=%s size=%d",
+            filename,
             agent_id,
             target,
             len(data),
         )
         return target
 
-    def find_file(self, agent_id: str, rec_no: int, filename: str) -> Path | None:
+    def find_file(self, agent_id: str, filename: str) -> Path | None:
         """Find a stored WAV file by agent_id and filename.
 
         Searches date-based directories in reverse order (most recent first).
         """
-        _ = rec_no
         agent_dir = self._base / agent_id
         if not agent_dir.is_dir():
             return None
@@ -60,13 +59,11 @@ class RecordingStorage:
                 return candidate
         return None
 
-    def find_by_rec_no(self, rec_no: int) -> Path | None:
-        """Find a WAV file by rec_no across all agents.
+    def find_by_filename(self, filename: str) -> Path | None:
+        """Find a WAV file by filename across all agents.
 
-        Searches for filenames containing the rec_no.
+        Searches for exact filename match.
         """
-        import re
-
         if not self._base.exists():
             return None
         for agent_dir in self._base.iterdir():
@@ -78,8 +75,7 @@ class RecordingStorage:
                 for file_path in date_dir.iterdir():
                     if not file_path.is_file() or file_path.suffix.lower() != ".wav":
                         continue
-                    match = re.search(r"(\d+)", file_path.stem)
-                    if match and int(match.group(1)) == rec_no:
+                    if file_path.name == filename:
                         return file_path
         return None
 
@@ -90,10 +86,8 @@ class RecordingStorage:
     ) -> list[dict[str, object]]:
         """List stored recordings with metadata.
 
-        Returns list of dicts with: agent_id, date, filename, rec_no, file_size, path
+        Returns list of dicts with: agent_id, date, filename, file_size, path
         """
-        import re
-
         if not self._base.exists():
             return []
 
@@ -117,14 +111,11 @@ class RecordingStorage:
                 for file_path in sorted(date_dir.iterdir()):
                     if not file_path.is_file() or file_path.suffix.lower() != ".wav":
                         continue
-                    match = re.search(r"(\d+)", file_path.stem)
-                    rec_no = int(match.group(1)) if match else 0
                     results.append(
                         {
                             "agent_id": aid,
                             "date": date_dir.name,
                             "filename": file_path.name,
-                            "rec_no": rec_no,
                             "file_size": file_path.stat().st_size,
                             "path": str(file_path),
                         }

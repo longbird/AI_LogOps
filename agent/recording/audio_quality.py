@@ -42,7 +42,7 @@ def get_wav_duration(filepath: str) -> float:
 
 
 def analyze_recording(
-    rec_no: int,
+    filename: str,
     filepath: str,
     smdr_duration: float = 0.0,
 ) -> AnalysisResult:
@@ -51,8 +51,8 @@ def analyze_recording(
         raise FileNotFoundError(f"Recording file not found: {filepath}")
 
     logger.info(
-        "analyze rec_no=%d file=%s size=%d",
-        rec_no,
+        "analyze filename=%s file=%s size=%d",
+        filename,
         filepath,
         os.path.getsize(filepath),
     )
@@ -62,9 +62,9 @@ def analyze_recording(
     left_silence, right_silence, _ = analyze_file_silence(filepath)
 
     logger.info(
-        "analyze rec_no=%d duration=%.1fs stereo=%s "
+        "analyze filename=%s duration=%.1fs stereo=%s "
         "L=%.1fdB R=%.1fdB silence_L=%.1f%% silence_R=%.1f%%",
-        rec_no,
+        filename,
         wav_duration,
         is_stereo,
         left_rms_db,
@@ -112,7 +112,7 @@ def analyze_recording(
     duration_diff = abs(wav_duration - smdr_duration) if smdr_duration > 0.0 else 0.0
 
     return AnalysisResult(
-        rec_no=rec_no,
+        filename=filename,
         status=status,
         left=left_stats,
         right=right_stats,
@@ -132,20 +132,20 @@ def analyze_batch(
     results: list[AnalysisResult] = []
 
     for entry in recordings:
-        rec_no: int = int(entry["rec_no"])
+        filename: str = str(entry["filename"])
         filepath: str = str(entry["filepath"])
         smdr_duration: float = float(entry.get("smdr_duration", 0.0))
 
         try:
-            result = analyze_recording(rec_no, filepath, smdr_duration)
+            result = analyze_recording(filename, filepath, smdr_duration)
         except Exception:
             logger.exception(
-                "analyze_batch failed: rec_no=%d file=%s",
-                rec_no,
+                "analyze_batch failed: filename=%s file=%s",
+                filename,
                 filepath,
             )
             result = AnalysisResult(
-                rec_no=rec_no,
+                filename=filename,
                 status=AnalysisStatus.EMPTY,
                 duration_smdr=smdr_duration,
             )

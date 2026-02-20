@@ -20,26 +20,26 @@ class TestRecordingStorage:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = RecordingStorage(tmpdir)
             data = b"RIFF" + b"\x00" * 100
-            path = storage.store("agent-01", 12345, data, "12345.wav")
+            path = storage.store("agent-01", data, "rec_12345.wav")
             assert path.exists()
             assert path.read_bytes() == data
 
-            found = storage.find_by_rec_no(12345)
+            found = storage.find_by_filename("rec_12345.wav")
             assert found is not None
-            assert found.name == "12345.wav"
+            assert found.name == "rec_12345.wav"
 
     def test_find_nonexistent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = RecordingStorage(tmpdir)
-            assert storage.find_by_rec_no(99999) is None
+            assert storage.find_by_filename("rec_99999.wav") is None
 
     def test_find_file_by_agent_and_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = RecordingStorage(tmpdir)
-            storage.store("agent-01", 100, b"data", "100.wav")
-            found = storage.find_file("agent-01", 100, "100.wav")
+            storage.store("agent-01", b"data", "rec_100.wav")
+            found = storage.find_file("agent-01", "rec_100.wav")
             assert found is not None
-            assert found.name == "100.wav"
+            assert found.name == "rec_100.wav"
 
     def test_list_recordings_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -49,9 +49,9 @@ class TestRecordingStorage:
     def test_list_recordings_with_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = RecordingStorage(tmpdir)
-            storage.store("agent-01", 1, b"d1", "rec_1.wav")
-            storage.store("agent-01", 2, b"d2", "rec_2.wav")
-            storage.store("agent-02", 3, b"d3", "rec_3.wav")
+            storage.store("agent-01", b"d1", "rec_1.wav")
+            storage.store("agent-01", b"d2", "rec_2.wav")
+            storage.store("agent-02", b"d3", "rec_3.wav")
 
             all_recs = storage.list_recordings()
             assert len(all_recs) == 3
@@ -97,12 +97,12 @@ class TestUploadEndpoint:
             resp = client.post(
                 "/api/rec/upload",
                 files={"file": ("test_001.wav", wav_data, "audio/wav")},
-                data={"rec_no": "1", "agent_id": "test-agent"},
+                data={"filename": "rec_001.wav", "agent_id": "test-agent"},
             )
             assert resp.status_code == 200
             body = resp.json()
             assert body["status"] == "ok"
-            assert body["rec_no"] == 1
+            assert body["filename"] == "rec_001.wav"
             assert body["agent_id"] == "test-agent"
             assert body["size"] == len(wav_data)
 
@@ -115,7 +115,7 @@ class TestUploadEndpoint:
             resp = client.post(
                 "/api/rec/upload",
                 files={"file": ("readme.txt", b"hello", "text/plain")},
-                data={"rec_no": "1", "agent_id": "test-agent"},
+                data={"filename": "readme.txt", "agent_id": "test-agent"},
             )
             assert resp.status_code == 400
 
@@ -128,11 +128,11 @@ class TestUploadEndpoint:
             resp = client.post(
                 "/api/rec/upload",
                 files={"file": ("empty.wav", b"", "audio/wav")},
-                data={"rec_no": "1", "agent_id": "test-agent"},
+                data={"filename": "empty.wav", "agent_id": "test-agent"},
             )
             assert resp.status_code == 400
 
-    def test_upload_invalid_rec_no(self) -> None:
+    def test_upload_missing_filename(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = RecordingStorage(tmpdir)
             app = self._create_app(storage)
@@ -141,9 +141,9 @@ class TestUploadEndpoint:
             resp = client.post(
                 "/api/rec/upload",
                 files={"file": ("test.wav", b"RIFF\x00" * 10, "audio/wav")},
-                data={"rec_no": "not-a-number", "agent_id": "test-agent"},
+                data={"agent_id": "test-agent"},
             )
-            assert resp.status_code == 400
+            assert resp.status_code == 422
 
 
 class TestStreamEndpoint:
@@ -165,12 +165,12 @@ class TestStreamEndpoint:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = RecordingStorage(tmpdir)
             wav_data = b"RIFF" + b"\xab" * 200
-            storage.store("agent-01", 42, wav_data, "42.wav")
+            storage.store("agent-01", wav_data, "rec_42.wav")
 
             app = self._create_app(storage)
             client = TestClient(app)
 
-            resp = client.get("/api/rec/stream/42")
+            resp = client.get("/api/rec/stream/rec_42.wav")
             assert resp.status_code == 200
             assert resp.headers["content-type"] == "audio/wav"
             assert len(resp.content) == len(wav_data)
@@ -179,13 +179,13 @@ class TestStreamEndpoint:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = RecordingStorage(tmpdir)
             wav_data = b"RIFF" + b"\xcd" * 500
-            storage.store("agent-01", 55, wav_data, "55.wav")
+            storage.store("agent-01", wav_data, "rec_55.wav")
 
             app = self._create_app(storage)
             client = TestClient(app)
 
             resp = client.get(
-                "/api/rec/stream/55",
+                "/api/rec/stream/rec_55.wav",
                 headers={"Range": "bytes=0-99"},
             )
             assert resp.status_code == 206
@@ -214,8 +214,8 @@ class TestRecordingsEndpoint:
     def test_list_with_recordings(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = RecordingStorage(tmpdir)
-            storage.store("a1", 1, b"d1", "rec_1.wav")
-            storage.store("a1", 2, b"d2", "rec_2.wav")
+            storage.store("a1", b"d1", "rec_1.wav")
+            storage.store("a1", b"d2", "rec_2.wav")
 
             app = self._create_app(storage)
             client = TestClient(app)
@@ -228,8 +228,8 @@ class TestRecordingsEndpoint:
     def test_list_filter_by_agent(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = RecordingStorage(tmpdir)
-            storage.store("a1", 1, b"d1", "rec_1.wav")
-            storage.store("a2", 2, b"d2", "rec_2.wav")
+            storage.store("a1", b"d1", "rec_1.wav")
+            storage.store("a2", b"d2", "rec_2.wav")
 
             app = self._create_app(storage)
             client = TestClient(app)

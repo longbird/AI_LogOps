@@ -621,16 +621,16 @@ class AgentGUI:
                 date_filter = cmd.date  # YYYYMMDD or ""
 
                 async def _on_new_recording(
-                    rec_no: int, filepath: str, result: AnalysisResult
+                    filename: str, filepath: str, result: AnalysisResult
                 ) -> None:
                     logger.info(
-                        "recording callback: rec_no=%d status=%s file=%s",
-                        rec_no,
+                        "recording callback: filename=%s status=%s file=%s",
+                        filename,
                         getattr(getattr(result, "status", None), "value", "?"),
                         filepath,
                     )
                     if not tcp_client.is_connected:
-                        logger.warning("not connected — skipping rec_no=%d", rec_no)
+                        logger.warning("not connected — skipping filename=%s", filename)
                         return
                     from shared.protocol import (
                         PacketType as _PT,
@@ -638,7 +638,7 @@ class AgentGUI:
                     )
 
                     payload = RecAnalysisPayload(
-                        rec_no=rec_no,
+                        filename=filename,
                         status=getattr(
                             getattr(result, "status", None), "value", "EMPTY"
                         ),
@@ -676,7 +676,7 @@ class AgentGUI:
                                     getattr(result, "right", None), "rms_db", -96.0
                                 )
                                 await poller.send_message(
-                                    f"[녹취 이상] rec_no={rec_no}\n"
+                                    f"[녹취 이상] filename={filename}\n"
                                     f"상태: {status_val}\n"
                                     f"L: {left_db:.1f}dB / R: {right_db:.1f}dB"
                                 )
@@ -734,21 +734,20 @@ class AgentGUI:
             from pathlib import Path as _Path
 
             for f in _Path(watch_dir).rglob("*.wav"):
-                try:
-                    if int(f.stem) == req.rec_no:
-                        target = str(f)
-                        break
-                except ValueError:
-                    continue
+                if f.name == req.filename:
+                    target = str(f)
+                    break
             if target is None:
-                logger.warning("rec_no=%s not found in %s", req.rec_no, watch_dir)
+                logger.warning("filename=%s not found in %s", req.filename, watch_dir)
                 return
-            rec_no, status, file_size = await _uploader.upload(
-                rec_no=req.rec_no,
+            filename_out, status, file_size = await _uploader.upload(
+                filename=req.filename,
                 filepath=target,
                 upload_url=req.upload_url,
             )
-            ack = RecUploadAckPayload(rec_no=rec_no, status=status, file_size=file_size)
+            ack = RecUploadAckPayload(
+                filename=filename_out, status=status, file_size=file_size
+            )
             with contextlib.suppress(ConnectionError, OSError):
                 await tcp_client.send_packet(PacketType.REC_UPLOAD_ACK, ack.pack())
 
@@ -776,7 +775,7 @@ class AgentGUI:
                 tid = await asyncio.to_thread(
                     insert_transcript,
                     conn,
-                    stt.rec_no,
+                    stt.filename,
                     stt.full_text,
                     stt.agent_text,
                     stt.customer_text,
@@ -787,7 +786,7 @@ class AgentGUI:
                 await asyncio.to_thread(
                     insert_call_quality,
                     conn,
-                    stt.rec_no,
+                    stt.filename,
                     tid,
                     stt.first_response_sec,
                     stt.agent_talk_ratio,
@@ -803,13 +802,13 @@ class AgentGUI:
                     stt.score_silence,
                 )
                 logger.info(
-                    "STT result saved to DB: rec_no=%s transcript_id=%s",
-                    stt.rec_no,
+                    "STT result saved to DB: filename=%s transcript_id=%s",
+                    stt.filename,
                     tid,
                 )
             except Exception:
                 logger.exception(
-                    "Failed to save STT result to DB: rec_no=%s", stt.rec_no
+                    "Failed to save STT result to DB: filename=%s", stt.filename
                 )
 
         tcp_client.on_stt_result = _handle_stt_result
@@ -839,7 +838,7 @@ class AgentGUI:
 
                 if req.query_type == "detail":
                     row = await asyncio.to_thread(
-                        query_recording_detail, conn, req.rec_no
+                        query_recording_detail, conn, req.filename
                     )
                     records: list[dict[str, object]] = [row] if row else []
                 else:
