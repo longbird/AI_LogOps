@@ -187,15 +187,15 @@ def extract_channel_wav(wav_path: str, channel: int) -> str:
             else len(raw) // n_channels
         )
 
-    if n_channels < 2:
+    # PCM 모노는 그대로 복사
+    if n_channels < 2 and format_code == 1:
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp.close()
         _ = shutil.copy2(wav_path, tmp.name)
         return tmp.name
 
-    # Handle μ-law (format code 7)
+    # μ-law → int16 PCM 변환 (모노/스테레오 공통)
     if format_code == 7:
-        # Decode μ-law to int16 PCM
         samples = _decode_mulaw(raw)
         sample_width = 2
     elif sample_width == 2:
@@ -208,7 +208,7 @@ def extract_channel_wav(wav_path: str, channel: int) -> str:
     else:
         raise ValueError(f"Unsupported sample width: {sample_width} bytes")
 
-    channel_data = samples[channel::n_channels]
+    channel_data = samples if n_channels < 2 else samples[channel::n_channels]
 
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()

@@ -878,6 +878,7 @@ class AgentGUI:
             tcp_client.reconnect_delay, 10
         )  # config.yaml 값 사용, 최소 10초
         _reconnect_counter = 0
+        _first_reconnect = True  # 첫 재접속은 빠르게 (5초)
 
         if _auto_connect:
             logger.info("auto-connect: %s:%s ...", tcp_client.host, tcp_client.port)
@@ -898,14 +899,20 @@ class AgentGUI:
 
                 if tcp_client.is_connected:
                     _reconnect_counter = 0
-                    # heartbeat
-                    with contextlib.suppress(ConnectionError, OSError):
-                        await tcp_client.send_heartbeat()
+                    _first_reconnect = True
+                    # heartbeat (실패 시 즉시 연결 종료)
+                    try:
+                        await asyncio.wait_for(tcp_client.send_heartbeat(), timeout=5.0)
+                    except (ConnectionError, OSError, asyncio.TimeoutError):
+                        logger.warning("heartbeat failed — closing connection")
+                        await tcp_client.close_on_error()
                 elif _auto_connect:
-                    # 자동 재접속 (reconnect_delay 간격으로 시도)
+                    # 자동 재접속: 첫 시도는 빠르게(5초), 이후 reconnect_delay 간격
                     _reconnect_counter += 1
-                    if _reconnect_counter >= _reconnect_delay:
+                    _threshold = 5 if _first_reconnect else _reconnect_delay
+                    if _reconnect_counter >= _threshold:
                         _reconnect_counter = 0
+                        _first_reconnect = False
                         logger.info(
                             "reconnecting to %s:%s ...",
                             tcp_client.host,
@@ -914,6 +921,7 @@ class AgentGUI:
                         connected = await tcp_client.connect()
                         if connected:
                             logger.info("reconnected successfully")
+                            _first_reconnect = True
                             self._root.after(
                                 0,
                                 lambda: self._status_var.set("서버 재접속됨"),

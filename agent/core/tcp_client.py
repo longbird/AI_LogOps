@@ -184,6 +184,18 @@ class TCPClient:
         payload = LogFileListPayload(entries=entries)
         await self.send_packet(PacketType.LOG_FILE_LIST, payload.pack())
 
+    async def close_on_error(self) -> None:
+        """연결 오류 시 강제 종료 (DISCONNECT 패킷 전송 없이).
+
+        heartbeat 전송 실패 등 연결이 이미 끊어진 상황에서 사용.
+        _recv_loop 종료 → _connected = False → 재접속 로직 트리거.
+        """
+        if self._recv_task is not None:
+            _ = self._recv_task.cancel()
+        writer = self._writer
+        if writer is not None and not writer.is_closing():
+            writer.close()
+
     async def _recv_loop(self) -> None:
         """서버로부터 패킷 수신 루프 (asyncio.Task로 실행)."""
 
@@ -191,9 +203,22 @@ class TCPClient:
         if reader is None:
             return
 
+        # 서버 응답 타임아웃: heartbeat 에코가 오지 않으면 연결 끊김으로 간주
+        read_timeout = max(self.heartbeat_interval * 2, 30)
+
         try:
             while True:
-                header_bytes = await reader.readexactly(HEADER_SIZE)
+                try:
+                    header_bytes = await asyncio.wait_for(
+                        reader.readexactly(HEADER_SIZE),
+                        timeout=read_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    self._logger.warning(
+                        "no data from server for %ds — connection presumed dead",
+                        read_timeout,
+                    )
+                    break
                 packet_type, payload_length = PacketHeader.unpack(header_bytes)
                 payload = await reader.readexactly(payload_length)
 
