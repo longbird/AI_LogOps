@@ -106,20 +106,28 @@ async def upload_deploy(
         size_mb,
     )
 
-    # TCP로 에이전트에 전송 (기존 CMD_DEPLOY + FILE_CHUNK 프로토콜 사용)
-    ok = await tcp_server.send_deploy(agent_id, str(temp_path))
-    if not ok:
-        temp_path.unlink(missing_ok=True)
-        return JSONResponse(
-            {"error": "failed to push deploy to agent"}, status_code=502
-        )
+    # TCP로 에이전트에 비동기 전송 (대용량 zip은 전송에 수십 초 소요)
+    async def _push_and_cleanup() -> None:
+        try:
+            ok = await tcp_server.send_deploy(agent_id, str(temp_path))
+            if ok:
+                logger.info(
+                    "deploy push complete: deploy_id=%s agent_id=%s",
+                    deploy_id,
+                    agent_id,
+                )
+            else:
+                logger.error(
+                    "deploy push failed: deploy_id=%s agent_id=%s", deploy_id, agent_id
+                )
+        except Exception:
+            logger.exception("deploy push error: deploy_id=%s", deploy_id)
+        finally:
+            # 전송 완료 후 정리 (10초 대기)
+            await asyncio.sleep(10)
+            temp_path.unlink(missing_ok=True)
 
-    # 임시 파일 비동기 정리 (60초 후)
-    async def _cleanup() -> None:
-        await asyncio.sleep(60)
-        temp_path.unlink(missing_ok=True)
-
-    _ = asyncio.create_task(_cleanup())
+    _ = asyncio.create_task(_push_and_cleanup())
 
     return JSONResponse(
         {
@@ -128,7 +136,7 @@ async def upload_deploy(
             "agent_id": agent_id,
             "file": filename,
             "size_mb": round(size_mb, 1),
-            "message": f"Deploy pushed to agent '{agent_id}'. Agent will restart automatically.",
+            "message": f"Deploy started for agent '{agent_id}'. Transfer in progress.",
         }
     )
 

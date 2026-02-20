@@ -460,7 +460,10 @@ class TCPServer:
         await writer.drain()
 
     async def send_deploy(self, agent_id: str, file_path: str) -> bool:
-        """에이전트에 파일 배포. CMD_DEPLOY + FILE_CHUNKs 전송."""
+        """에이전트에 파일 배포. CMD_DEPLOY + FILE_CHUNKs 전송.
+
+        대용량 파일(zip 등)을 위해 64KB 청크와 배치 drain을 사용한다.
+        """
         session = self.session_mgr.get_session(agent_id)
         if session is None or session.writer is None:
             return False
@@ -482,14 +485,26 @@ class TCPServer:
         writer.write(Packet.build(PacketType.CMD_DEPLOY, cmd.pack()))
         await writer.drain()
 
+        deploy_chunk_size = 64 * 1024  # 64KB (vs 기본 4KB)
+        drain_interval = 16  # 16청크마다 flush (≈1MB 단위)
         seq = 0
-        for offset in range(0, len(data), CHUNK_SIZE):
-            chunk_data = data[offset : offset + CHUNK_SIZE]
+        for offset in range(0, len(data), deploy_chunk_size):
+            chunk_data = data[offset : offset + deploy_chunk_size]
             chunk = FileChunkPayload(seq_num=seq, data=chunk_data)
             writer.write(Packet.build(PacketType.FILE_CHUNK, chunk.pack()))
-            await writer.drain()
             seq += 1
+            if seq % drain_interval == 0:
+                await writer.drain()
 
+        # 잔여 데이터 flush
+        await writer.drain()
+        self._logger.info(
+            "deploy sent: agent_id=%s file=%s chunks=%d size=%.1f MB",
+            agent_id,
+            path.name,
+            seq,
+            len(data) / (1024 * 1024),
+        )
         return True
 
     def get_deploy_result_future(
