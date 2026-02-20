@@ -4,10 +4,61 @@
 **설명:** 다중 에이전트 원격 로그 분석 및 자동 배포 시스템  
 **개발 기간:** 2026-02-16 ~ 현재  
 **브랜치:** `develop`  
-**최신 버전:** v1.4.3  
-**테스트:** 434+ 전체 통과  
+**최신 버전:** v1.4.4
+**테스트:** 253 전체 통과
 
 ---
+
+## 0-1. v1.4.4 (2026-02-21)
+
+### 주요 변경 사항
+
+#### Git 시크릿 제거 & 보안 강화
+- `server/config.yaml`에서 하드코딩된 시크릿(OpenAI API Key, Telegram 봇 토큰) 제거
+- `git filter-repo --replace-text`로 전체 히스토리(66개 커밋)에서 시크릿 완전 제거
+- 모든 비밀 값은 `.env` 또는 환경 변수에서 로드하도록 변경
+
+#### 서버 봇 명령 라우팅 정리
+- `run_server.py`에서 dead code 제거: `agent_bot` 초기화, `send_to_agent()` 함수, agent 봇 전달 코드
+- `_run_telegram()` 파라미터에서 `agent_bot_token`, `agent_chat_id` 제거
+- 에이전트 send-only 전환 완료로 불필요해진 코드 정리
+
+#### TCP 이벤트 텔레그램 알림
+- `TCPServer`에 `notify_callback` 매개변수 추가
+- 에이전트 접속/해제, 배포 완료/롤백 시 텔레그램 자동 알림
+- `_telegram_notify()` 범용화 (HealthMonitor + TCPServer 공용)
+
+#### E2E STT 파이프라인 테스트
+- `tests/test_stt_pipeline_e2e.py` 신규 작성 (25개 테스트)
+  - RecHandler 분석 결과 처리, 업로드 결정 로직 (8 tests)
+  - WAV 저장/검색 (4 tests)
+  - 통화 품질 점수 계산 (6 tests)
+  - 전체 파이프라인 mock STT (4 tests)
+  - RecHandler → SttResultPayload 변환 (3 tests)
+
+#### 기존 테스트 수정 (14개 실패 → 0개)
+- `test_self_update.py`: SelfUpdater 신 API에 맞게 전면 재작성
+- `test_integration_phase4.py`: StubProcessManager.kill_all() + chunk 수 동적 계산
+- `test_integration_final.py`: SelfUpdater API, faster_whisper optional import, chunk_size 수정
+
+### 수정 파일
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `server/config.yaml` | 시크릿 제거, .env 참조 안내 |
+| `server/core/tcp_server.py` | notify_callback, _notify() 헬퍼, 이벤트 알림 |
+| `run_server.py` | dead code 제거, _telegram_notify 범용화 |
+| `tests/test_stt_pipeline_e2e.py` | 신규: 25개 E2E STT 테스트 |
+| `tests/test_self_update.py` | SelfUpdater 신 API 전면 재작성 |
+| `tests/test_integration_phase4.py` | kill_all() 스텁 + chunk 수 수정 |
+| `tests/test_integration_final.py` | SelfUpdater + faster_whisper + chunk_size |
+
+### 발견 사항
+
+- GitHub Push Protection이 config.yaml의 하드코딩된 시크릿 차단 → filter-repo로 해결
+- `unittest.mock.patch` 경로: lazy import 사용 시 모듈 경로가 달라짐
+- `faster_whisper` 모듈 미설치 환경에서 테스트 시 sys.modules 스텁 필요
+- `SelfUpdater` API가 완전히 변경됨 — 구 API와 호환 불가
 
 ## 0. v1.4.0 ~ v1.4.3 (2026-02-20)
 
@@ -645,5 +696,7 @@ AI-LogOps/
 | 57 | `1e416ab` | 02-17 18:15 | TCPServer 파일 목록 비교 |
 | 58 | `1dc95ac` | 02-17 18:19 | E2E 테스트 + 텔레그램 피드백 |
 | 59 | `29610a4` | 02-17 18:20 | win_service 콜백 와이어링 |
+| 60 | `b396a1a` | 02-20 | Git 시크릿 제거 + filter-repo |
+| 61 | `9ca6abf` | 02-21 | TCP 이벤트 알림, dead code 정리, E2E STT 테스트 |
 
-**총 59개 커밋, 2일간 개발.**
+**총 61개 커밋, 3일간 개발.**
