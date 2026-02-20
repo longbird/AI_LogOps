@@ -6,26 +6,33 @@ server:
 ai:
   default_provider: "openai"
   openai:
-    api_key: "REDACTED_OPENAI_KEY"
+    # API 키는 .env 파일 또는 환경변수(OPENAI_API_KEY)에 설정하세요
+    api_key: ""
     model: "gpt-4o"
   claude:
-    api_key: "sk-ant-..."
+    # API 키는 .env 파일 또는 환경변수(ANTHROPIC_API_KEY)에 설정하세요
+    api_key: ""
     model: "claude-sonnet-4-20250514"
 
 telegram:
+  # 봇 토큰은 .env 파일 또는 환경변수에 설정하세요
+  # TELEGRAM_SERVER_BOT_TOKEN, TELEGRAM_AGENT_BOT_TOKEN
   # 서버봇: 서버가 폴링하며 에이전트 결과를 수신
-  server_bot_token: "REDACTED_SERVER_BOT_TOKEN"
+  server_bot_token: ""
   # 에이전트봇: 서버가 에이전트에게 명령을 전송
-  agent_bot_token: "REDACTED_AGENT_BOT_TOKEN"
+  agent_bot_token: ""
   # 에이전트 관리자 채팅 ID (에이전트봇에 명령 전송 대상)
+  # TELEGRAM_AGENT_CHAT_ID 환경변수로도 설정 가능
   agent_chat_id: 0
   # 서버 관리자 채팅 ID 목록 (서버봇 결과 수신 허용)
-  admin_chat_ids: [0]
+  # TELEGRAM_ADMIN_CHAT_ID 환경변수로도 설정 가능
+  admin_chat_ids: []
 
 dashboard:
   host: "0.0.0.0"
   port: 8080
-  secret_key: "REDACTED_DASHBOARD_SECRET"
+  # DASHBOARD_SECRET_KEY 환경변수로도 설정 가능
+  secret_key: "CHANGE_ME"
 
 storage:
   base_dir: "./storage"
