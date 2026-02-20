@@ -173,8 +173,6 @@ def _load_config(config_path: str) -> dict[str, Any]:
 
 async def _run_telegram(
     server_bot_token: str,
-    agent_bot_token: str,
-    agent_chat_id: int,
     admin_chat_ids: list[int],
     tcp_server: Any,
     session_mgr: Any,
@@ -182,9 +180,9 @@ async def _run_telegram(
     ai_pipeline: Any,
     shutdown_event: asyncio.Event,
 ) -> None:
-    """2-봇 텔레그램 릴레이: 서버봇 폴링 + 에이전트봇으로 명령 전송."""
+    """서버봇 텔레그램: 관리자 명령 수신 → TCP 기반 처리 → 응답 전송."""
     try:
-        from telegram import Bot, Update  # type: ignore[import]
+        from telegram import Update  # type: ignore[import]
         from telegram.ext import (  # type: ignore[import]
             Application,
             CommandHandler,
@@ -204,18 +202,7 @@ async def _run_telegram(
     from server.telegram.ai_commands import AICommandHandler
     from server.telegram.rec_commands import RecCommandHandler
 
-    # ── 에이전트봇: 명령 전송용 (폴링 안 함) ──
-    agent_bot = Bot(token=agent_bot_token)
-
-    async def send_to_agent(text: str) -> None:
-        """에이전트봇을 통해 에이전트에게 명령 전송."""
-        try:
-            await agent_bot.send_message(chat_id=agent_chat_id, text=text)
-            logger.info("에이전트에 명령 전송: %s", text[:80])
-        except Exception:
-            logger.exception("에이전트 명령 전송 실패")
-
-    # ── TelegramHandler (기존 명령 라우터) ──
+    # ── TelegramHandler (TCP 기반 명령 라우터) ──
     tg_handler = TelegramHandler(admin_chat_ids=admin_chat_ids)
 
     log_cmd = LogCommandHandler(tcp_server=tcp_server, session_mgr=session_mgr)
@@ -261,7 +248,7 @@ async def _run_telegram(
         print(f"{'=' * 60}\n")
 
     async def _handle_command(update: Update, context: Any) -> None:
-        """서버봇에서 관리자 명령 수신 → TCP 기반 명령 처리 + 에이전트봇으로 전달."""
+        """서버봇에서 관리자 명령 수신 → TCP 기반 명령 처리."""
         if update.message is None or update.message.text is None:
             return
         chat_id = update.message.chat_id
@@ -271,14 +258,9 @@ async def _run_telegram(
         if chat_id not in set(admin_chat_ids):
             return
 
-        # 1. TCP 기반 명령 라우터로 처리
+        # TCP 기반 명령 라우터로 처리 → 관리자에게 응답
         response = await tg_handler.handle(text=text, chat_id=chat_id)
-
-        # 2. 서버봇에서 관리자에게 응답
         await update.message.reply_text(response)
-
-        # 3. 에이전트봇으로도 명령 전달
-        await send_to_agent(text)
 
     # 명령 + 텍스트 모두 처리
     application.add_handler(
@@ -404,8 +386,6 @@ async def _main(args: argparse.Namespace) -> None:
 
     tg_cfg: dict[str, Any] = cfg.get("telegram", {})
     server_bot_token: str = str(tg_cfg.get("server_bot_token", ""))
-    agent_bot_token: str = str(tg_cfg.get("agent_bot_token", ""))
-    agent_chat_id: int = int(tg_cfg.get("agent_chat_id", 0))
     admin_chat_ids: list[int] = [int(x) for x in tg_cfg.get("admin_chat_ids", [])]
 
     dash_cfg: dict[str, Any] = cfg.get("dashboard", {})
@@ -435,13 +415,11 @@ async def _main(args: argparse.Namespace) -> None:
             "telegram.server_bot_token을 설정하세요."
         )
         telegram_enabled = False
-    if telegram_enabled and (
-        not agent_bot_token or agent_bot_token in ("YOUR_AGENT_BOT_TOKEN", "")
-    ):
+    if telegram_enabled and not admin_chat_ids:
         logger.warning(
-            "에이전트봇 토큰이 설정되지 않았습니다. 텔레그램을 비활성화합니다. "
-            "TELEGRAM_AGENT_BOT_TOKEN 환경변수 또는 config.yaml의 "
-            "telegram.agent_bot_token을 설정하세요."
+            "관리자 채팅 ID가 설정되지 않았습니다. 텔레그램을 비활성화합니다. "
+            "TELEGRAM_ADMIN_CHAT_ID 환경변수 또는 config.yaml의 "
+            "telegram.admin_chat_ids를 설정하세요."
         )
         telegram_enabled = False
 
@@ -526,9 +504,9 @@ async def _main(args: argparse.Namespace) -> None:
     except Exception:
         logger.exception("AI 프로바이더 초기화 실패. AI 기능이 비활성화됩니다.")
 
-    # 8. 텔레그램 알림 함수 (HealthMonitor용)
+    # 8. 텔레그램 알림 함수 (TCPServer, HealthMonitor 공용)
     async def _telegram_notify(message: str) -> None:
-        """헬스 모니터에서 텔레그램 알림 전송."""
+        """텔레그램으로 관리자에게 알림 전송."""
         if not telegram_enabled or not admin_chat_ids:
             return
         try:
@@ -536,9 +514,13 @@ async def _main(args: argparse.Namespace) -> None:
 
             bot = Bot(token=server_bot_token)
             for chat_id in admin_chat_ids:
-                await bot.send_message(chat_id=chat_id, text=f"⚠️ {message}")
+                await bot.send_message(chat_id=chat_id, text=message)
         except Exception:
-            logger.exception("텔레그램 알림 전송 실패")
+            logger.debug("텔레그램 알림 전송 실패")
+
+    async def _health_notify(message: str) -> None:
+        """헬스 모니터 전용 알림 (⚠️ 접두사 추가)."""
+        await _telegram_notify(f"⚠️ {message}")
 
     # 9. TCP 서버 초기화
     # auth_token: 환경변수 또는 기본값 사용
@@ -552,6 +534,7 @@ async def _main(args: argparse.Namespace) -> None:
         storage_mgr=storage_mgr,
         rec_handler=rec_handler,
         rec_storage=rec_storage,
+        notify_callback=_telegram_notify if telegram_enabled else None,
     )
 
     # 10. 헬스 모니터 초기화
@@ -561,7 +544,7 @@ async def _main(args: argparse.Namespace) -> None:
 
         health_monitor = HealthMonitor(
             config=health_cfg,
-            telegram_notifier=_telegram_notify if telegram_enabled else None,
+            telegram_notifier=_health_notify if telegram_enabled else None,
         )
 
     # 11. 대시보드 앱 생성
@@ -621,8 +604,6 @@ async def _main(args: argparse.Namespace) -> None:
             asyncio.create_task(
                 _run_telegram(
                     server_bot_token=server_bot_token,
-                    agent_bot_token=agent_bot_token,
-                    agent_chat_id=agent_chat_id,
                     admin_chat_ids=admin_chat_ids,
                     tcp_server=tcp_server,
                     session_mgr=session_mgr,

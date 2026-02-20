@@ -70,6 +70,10 @@ class StubProcessManager:
         self.kill_calls += 1
         return True
 
+    def kill_all(self) -> bool:
+        self.kill_calls += 1
+        return True
+
     def start(self) -> int:
         pid = self.start_values[min(self.start_calls, len(self.start_values) - 1)]
         self.start_calls += 1
@@ -174,7 +178,10 @@ async def test_deploy_file_ack_flow(
     future = server.get_deploy_result_future(client.agent_id)
     assert future is not None
     _ = await asyncio.wait_for(future, timeout=2.0)
-    assert file_ack_seq == [0, 1, 2]
+    # deploy uses 4096-byte chunks (deploy_chunk_size in tcp_server.py)
+    deploy_chunk_size = 4096
+    expected_chunks = (len(data) + deploy_chunk_size - 1) // deploy_chunk_size
+    assert file_ack_seq == list(range(expected_chunks))
 
     await client.disconnect()
 

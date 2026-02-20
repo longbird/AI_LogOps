@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -9,89 +9,107 @@ from agent.updater.self_update import SelfUpdater
 
 
 @pytest.mark.asyncio
-async def test_receive_update_writes_temp_file_when_sha_matches(tmp_path: Path) -> None:
-    updater = SelfUpdater(backup_dir=str(tmp_path / "backups"), current_version="1.2.3")
-    data = b"new-agent-binary"
-    expected_sha = hashlib.sha256(data).hexdigest()
+async def test_receive_zip_extracts_to_update_dir(tmp_path: Path) -> None:
+    """Test that receive_zip extracts zip data to update_dir."""
+    updater = SelfUpdater(install_dir=tmp_path)
 
-    ok = await updater.receive_update(data=data, sha256=expected_sha)
+    # Create a simple zip file in memory
+    import io
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr("test.txt", "test content")
+    zip_data = zip_buffer.getvalue()
+
+    ok = await updater.receive_zip(zip_data)
 
     assert ok is True
-    assert updater.new_binary_path.exists()
-    assert updater.new_binary_path.read_bytes() == data
+    assert updater.update_dir.exists()
+    assert (updater.update_dir / "test.txt").exists()
+    assert (updater.update_dir / "test.txt").read_text() == "test content"
 
 
 @pytest.mark.asyncio
-async def test_receive_update_removes_temp_file_when_sha_mismatch(
-    tmp_path: Path,
-) -> None:
-    updater = SelfUpdater(backup_dir=str(tmp_path / "backups"), current_version="1.2.3")
+async def test_receive_zip_returns_false_on_bad_zip(tmp_path: Path) -> None:
+    """Test that receive_zip returns False for invalid zip data."""
+    updater = SelfUpdater(install_dir=tmp_path)
+    bad_zip_data = b"not a valid zip file"
 
-    ok = await updater.receive_update(data=b"invalid", sha256="0" * 64)
+    ok = await updater.receive_zip(bad_zip_data)
 
     assert ok is False
-    assert not updater.new_binary_path.exists()
 
 
-def test_generate_updater_bat_fills_template_with_paths(tmp_path: Path) -> None:
-    updater = SelfUpdater(backup_dir=str(tmp_path / "backups"), current_version="2.0.0")
+@pytest.mark.asyncio
+async def test_receive_file_saves_to_update_dir(tmp_path: Path) -> None:
+    """Test that receive_file saves a single file to update_dir."""
+    updater = SelfUpdater(install_dir=tmp_path)
+    file_data = b"binary file content"
 
-    bat_path = Path(updater.generate_updater_bat())
+    ok = await updater.receive_file(file_data, "agent.exe")
+
+    assert ok is True
+    assert updater.update_dir.exists()
+    assert (updater.update_dir / "agent.exe").exists()
+    assert (updater.update_dir / "agent.exe").read_bytes() == file_data
+
+
+def test_generate_updater_bat_creates_bat_file(tmp_path: Path) -> None:
+    """Test that generate_updater_bat creates updater.bat with correct paths."""
+    updater = SelfUpdater(install_dir=tmp_path, is_service_mode=False)
+
+    bat_path_str = updater.generate_updater_bat()
+    bat_path = Path(bat_path_str)
     content = bat_path.read_text(encoding="utf-8")
 
     assert bat_path.exists()
+    assert bat_path == updater.updater_bat_path
+    assert str(updater.install_dir) in content
+    assert str(updater.backup_dir) in content
+    assert str(updater.update_dir) in content
+    assert "taskkill" in content  # debug mode template
+
+
+def test_generate_updater_bat_service_mode(tmp_path: Path) -> None:
+    """Test that generate_updater_bat uses service template when is_service_mode=True."""
+    updater = SelfUpdater(install_dir=tmp_path, is_service_mode=True)
+
+    bat_path_str = updater.generate_updater_bat()
+    content = Path(bat_path_str).read_text(encoding="utf-8")
+
     assert "net stop AILogOps-Agent" in content
     assert "net start AILogOps-Agent" in content
-    assert "if errorlevel 1" in content
-    assert "agent_2.0.0.exe" in content
-    assert str(updater.current_exe_path) in content
-    assert str(updater.new_binary_path) in content
 
 
-def test_verify_version_on_boot_returns_true_when_version_matches(
-    tmp_path: Path,
-) -> None:
-    updater = SelfUpdater(backup_dir=str(tmp_path / "backups"), current_version="3.1.0")
-    updater.write_version_file("3.1.0")
+def test_backup_dir_created_from_install_dir(tmp_path: Path) -> None:
+    """Test that backup_dir is correctly derived from install_dir."""
+    updater = SelfUpdater(install_dir=tmp_path)
 
-    ok = updater.verify_version_on_boot()
-
-    assert ok is True
+    assert updater.backup_dir == tmp_path / "backups"
 
 
-def test_verify_version_on_boot_rolls_back_when_version_mismatch(
-    tmp_path: Path,
-) -> None:
-    updater = SelfUpdater(backup_dir=str(tmp_path / "backups"), current_version="3.1.0")
-    updater.write_version_file("3.0.0")
-    _ = updater.current_exe_path.write_bytes(b"broken")
+def test_paths_derived_from_install_dir(tmp_path: Path) -> None:
+    """Test that all paths are correctly derived from install_dir."""
+    updater = SelfUpdater(install_dir=tmp_path)
 
-    updater.backup_dir.mkdir(parents=True, exist_ok=True)
-    _ = (updater.backup_dir / "agent_3.0.0.exe").write_bytes(b"old")
-    _ = (updater.backup_dir / "agent_3.0.5.exe").write_bytes(b"restored")
-
-    ok = updater.verify_version_on_boot()
-
-    assert ok is False
-    assert updater.current_exe_path.read_bytes() == b"restored"
-    assert updater.version_file_path.read_text(encoding="utf-8").strip() == "3.1.0"
-
-
-def test_write_version_file_writes_expected_content(tmp_path: Path) -> None:
-    updater = SelfUpdater(backup_dir=str(tmp_path / "backups"), current_version="9.9.9")
-
-    updater.write_version_file("9.9.10")
-
-    assert updater.version_file_path.exists()
-    assert updater.version_file_path.read_text(encoding="utf-8").strip() == "9.9.10"
+    assert updater.install_dir == tmp_path
+    assert updater.temp_dir == tmp_path / "temp"
+    assert updater.parts_dir == tmp_path / "temp" / "parts"
+    assert updater.update_dir == tmp_path / "temp" / "update"
+    assert updater.backup_dir == tmp_path / "backups"
+    assert updater.updater_bat_path == tmp_path / "updater.bat"
 
 
 def test_execute_update_spawns_updater_and_exits(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    updater = SelfUpdater(backup_dir=str(tmp_path / "backups"), current_version="1.0.0")
-    _ = updater.generate_updater_bat()
+    """Test that execute_update generates bat and spawns subprocess."""
+    updater = SelfUpdater(install_dir=tmp_path)
+
+    # Create update_dir with dummy files
+    updater.update_dir.mkdir(parents=True, exist_ok=True)
+    _ = (updater.update_dir / "test.txt").write_text("test")
 
     calls: dict[str, object] = {}
 

@@ -43,6 +43,12 @@ if TYPE_CHECKING:
     from server.storage.manager import StorageManager
 
 
+class _NotifyCallback(Protocol):
+    """TCPServer 이벤트 알림 콜백 프로토콜."""
+
+    async def __call__(self, message: str) -> None: ...
+
+
 class TCPServer:
     def __init__(
         self,
@@ -53,6 +59,7 @@ class TCPServer:
         storage_mgr: StorageManager | None = None,
         rec_handler: Any | None = None,  # server.airec.rec_handler.RecHandler
         rec_storage: Any | None = None,  # server.airec.storage.RecordingStorage
+        notify_callback: _NotifyCallback | None = None,
     ):
         self.host: str = host
         self.port: int = port
@@ -61,11 +68,20 @@ class TCPServer:
         self.storage_mgr: StorageManager | None = storage_mgr
         self.rec_handler: Any | None = rec_handler
         self.rec_storage: Any | None = rec_storage
+        self._notify_callback: _NotifyCallback | None = notify_callback
         self._logger: logging.Logger = setup_logging(self.__class__.__name__)
         self._server: asyncio.base_events.Server | None = None
         self._is_running: bool = False
         self._deploy_results: dict[str, asyncio.Future[CmdCtrlAckPayload]] = {}
         self._rec_data_futures: dict[str, asyncio.Future[RecDataRespPayload]] = {}
+
+    async def _notify(self, message: str) -> None:
+        """이벤트 알림 콜백 호출. 실패 시 무시."""
+        if self._notify_callback is not None:
+            try:
+                await self._notify_callback(message)
+            except Exception:
+                self._logger.debug("notify callback failed: %s", message[:80])
 
     @property
     def is_running(self) -> bool:
@@ -146,6 +162,7 @@ class TCPServer:
         finally:
             if agent_id is not None:
                 self.session_mgr.remove_session(agent_id)
+                await self._notify(f"🔌 에이전트 연결 해제: {agent_id}")
             try:
                 if not writer.is_closing():
                     writer.close()
@@ -212,6 +229,9 @@ class TCPServer:
             "auth success: agent_id=%s session_id=%s",
             auth_payload.agent_id,
             session.session_id,
+        )
+        await self._notify(
+            f"✅ 에이전트 접속: {auth_payload.agent_id} (v{auth_payload.version})"
         )
         return auth_payload.agent_id
 
@@ -367,8 +387,12 @@ class TCPServer:
 
         if ack.status == CtrlAckStatus.DEPLOY_VERIFIED:
             self._logger.info("deploy verified: agent_id=%s pid=%s", agent_id, ack.pid)
+            asyncio.create_task(
+                self._notify(f"✅ 배포 완료: {agent_id} (pid={ack.pid})")
+            )
         elif ack.status == CtrlAckStatus.DEPLOY_ROLLBACK:
             self._logger.warning("deploy rolled back: agent_id=%s", agent_id)
+            asyncio.create_task(self._notify(f"⚠️ 배포 롤백: {agent_id}"))
 
     async def send_log_command(
         self, agent_id: str, action: LogAction, date: str = ""
