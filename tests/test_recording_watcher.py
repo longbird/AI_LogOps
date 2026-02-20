@@ -176,22 +176,31 @@ class TestAudioQuality:
 @pytest.mark.asyncio
 async def test_watcher_detects_new_wav():
     """New WAV file in watched dir triggers on_new_recording callback."""
+    from datetime import datetime as _dt
+
     detected: list[tuple[int, str, AnalysisResult]] = []
 
     async def on_new(rec_no: int, filepath: str, result: AnalysisResult) -> None:
         detected.append((rec_no, filepath, result))
 
     with tempfile.TemporaryDirectory() as tmpdir:
+        # 날짜 서브디렉토리 생성 (실환경 구조: watch_dir/YYYYMMDD/)
+        date_dir = os.path.join(tmpdir, _dt.now().strftime("%Y%m%d"))
+        os.makedirs(date_dir, exist_ok=True)
+
         watcher = RecordingWatcher(
             watch_dir=tmpdir,
             extensions=[".wav"],
             on_new_recording=on_new,
+            min_file_size=0,
+            min_duration_sec=0.0,
         )
         await watcher.start()
         try:
-            wav_path = os.path.join(tmpdir, "test_001.wav")
+            wav_path = os.path.join(date_dir, "test_001.wav")
             _create_test_wav(wav_path, duration_sec=0.5)
-            await asyncio.sleep(2.0)
+            # 안정화 대기: STABLE_CHECK_SEC(2) × (STABLE_COUNT(2)+1) + 여유
+            await asyncio.sleep(8.0)
         finally:
             await watcher.stop()
 
@@ -229,21 +238,27 @@ async def test_watcher_ignores_non_wav():
 @pytest.mark.asyncio
 async def test_watcher_processed_count():
     """processed_count property tracks number of analyzed files."""
+    from datetime import datetime as _dt
 
     async def on_new(rec_no: int, filepath: str, result: AnalysisResult) -> None:
         pass
 
     with tempfile.TemporaryDirectory() as tmpdir:
+        date_dir = os.path.join(tmpdir, _dt.now().strftime("%Y%m%d"))
+        os.makedirs(date_dir, exist_ok=True)
+
         watcher = RecordingWatcher(
             watch_dir=tmpdir,
             extensions=[".wav"],
             on_new_recording=on_new,
+            min_file_size=0,
+            min_duration_sec=0.0,
         )
         assert watcher.processed_count == 0
         await watcher.start()
         try:
-            _create_test_wav(os.path.join(tmpdir, "rec_100.wav"), duration_sec=0.5)
-            await asyncio.sleep(2.0)
+            _create_test_wav(os.path.join(date_dir, "rec_100.wav"), duration_sec=0.5)
+            await asyncio.sleep(8.0)
         finally:
             await watcher.stop()
 

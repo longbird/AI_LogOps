@@ -22,6 +22,14 @@ from agent.recording.models import AnalysisResult
 
 RecordingCallback = Callable[[int, str, AnalysisResult], Awaitable[None]]
 
+# ── 파일 완성 대기 상수 ──
+# μ-law mono 8kHz = 8,000 bytes/sec → 3초 = 24KB
+MIN_FILE_SIZE = 16_000  # 최소 파일 크기 (약 2초 분량)
+MIN_DURATION_SEC = 3.0  # 최소 녹취 길이 (초)
+STABLE_CHECK_SEC = 2.0  # 크기 안정화 확인 간격 (초)
+STABLE_COUNT = 2  # 연속 동일 크기 횟수 (2회 × 2초 = 4초 무변동)
+STABLE_MAX_WAIT = 300  # 최대 대기 시간 (초, 5분)
+
 
 class _RecEventHandler(FileSystemEventHandler):
     def __init__(self, watcher: RecordingWatcher) -> None:
@@ -42,12 +50,16 @@ class RecordingWatcher:
         extensions: list[str],
         on_new_recording: RecordingCallback,
         date_filter: str = "",
+        min_file_size: int = MIN_FILE_SIZE,
+        min_duration_sec: float = MIN_DURATION_SEC,
     ) -> None:
         self._watch_dir = Path(watch_dir)
         self._extensions = {ext.lower() for ext in extensions}
         self._on_new_recording = on_new_recording
         # YYYYMMDD — 비어있으면 현재일 기준
         self._date_filter = date_filter or datetime.now().strftime("%Y%m%d")
+        self._min_file_size = min_file_size
+        self._min_duration_sec = min_duration_sec
 
         self._observer = Observer()
         self._processed: set[str] = set()
@@ -108,23 +120,48 @@ class RecordingWatcher:
             filepath = await self._event_queue.get()
             if filepath in self._processed:
                 continue
-            # Brief delay for file write to complete
-            await asyncio.sleep(0.5)
+            fname = Path(filepath).name
             try:
+                # ── Step 1: 파일 쓰기 완료 대기 ──
+                file_size = await self._wait_for_stable(filepath)
+                if file_size == 0:
+                    self._logger.debug("file removed during stabilization: %s", fname)
+                    continue
+
+                # ── Step 2: 최소 파일 크기 필터 ──
+                if file_size < self._min_file_size:
+                    self._logger.debug(
+                        "skip (too small): %s size=%d min=%d",
+                        fname,
+                        file_size,
+                        self._min_file_size,
+                    )
+                    self._processed.add(filepath)
+                    continue
+
+                # ── Step 3: 분석 실행 ──
                 rec_no = self._extract_rec_no(filepath)
-                file_size = (
-                    Path(filepath).stat().st_size if Path(filepath).exists() else 0
-                )
                 self._logger.info(
                     "analyzing: rec_no=%d file=%s size=%d",
                     rec_no,
-                    Path(filepath).name,
+                    fname,
                     file_size,
                 )
                 result = await asyncio.to_thread(
                     analyze_recording, rec_no, filepath, 0.0
                 )
                 self._processed.add(filepath)
+
+                # ── Step 4: 최소 duration 필터 ──
+                if result.duration_wav < self._min_duration_sec:
+                    self._logger.debug(
+                        "skip (too short): %s dur=%.1fs min=%.1fs",
+                        fname,
+                        result.duration_wav,
+                        self._min_duration_sec,
+                    )
+                    continue
+
                 self._logger.info(
                     "analyzed: rec_no=%d status=%s L=%.1fdB R=%.1fdB dur=%.1fs",
                     rec_no,
@@ -135,14 +172,45 @@ class RecordingWatcher:
                 )
                 await self._on_new_recording(rec_no, filepath, result)
             except Exception:
-                file_size = (
-                    Path(filepath).stat().st_size if Path(filepath).exists() else -1
-                )
+                try:
+                    sz = Path(filepath).stat().st_size
+                except OSError:
+                    sz = -1
                 self._logger.exception(
                     "Failed to analyze: %s (size=%d)",
                     filepath,
-                    file_size,
+                    sz,
                 )
+
+    async def _wait_for_stable(self, filepath: str) -> int:
+        """파일 쓰기 완료 대기: 크기가 연속으로 동일하면 안정화로 판단.
+
+        Returns:
+            최종 파일 크기 (바이트). 파일이 삭제되었으면 0.
+        """
+        last_size = -1
+        consecutive = 0
+        max_checks = int(STABLE_MAX_WAIT / STABLE_CHECK_SEC)
+        for _ in range(max_checks):
+            try:
+                current_size = Path(filepath).stat().st_size
+            except OSError:
+                return 0
+            if current_size == last_size:
+                consecutive += 1
+                if consecutive >= STABLE_COUNT:
+                    return current_size
+            else:
+                consecutive = 0
+                last_size = current_size
+            await asyncio.sleep(STABLE_CHECK_SEC)
+        self._logger.warning(
+            "file stabilization timeout (%ds): %s size=%d",
+            STABLE_MAX_WAIT,
+            Path(filepath).name,
+            last_size,
+        )
+        return last_size if last_size >= 0 else 0
 
     @staticmethod
     def _extract_rec_no(filepath: str) -> int:
