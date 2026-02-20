@@ -44,6 +44,10 @@ def create_app(
         APIRouter,
         importlib.import_module("server.dashboard.routes.recordings").router,
     )
+    deploy_api_router = cast(
+        APIRouter,
+        importlib.import_module("server.dashboard.routes.deploy_api").router,
+    )
 
     templates_dir = Path(__file__).parent / "templates"
     static_dir = Path(__file__).parent / "static"
@@ -95,8 +99,10 @@ def create_app(
         request: Request,
         call_next: Callable[[Request], Awaitable[FastAPIResponse]],
     ) -> FastAPIResponse:
-        if request.url.path in ("/login", "/logout") or request.url.path.startswith(
-            "/static"
+        if (
+            request.url.path in ("/login", "/logout")
+            or request.url.path.startswith("/static")
+            or request.url.path.startswith("/api/deploy/")
         ):
             return await call_next(request)
 
@@ -122,5 +128,6 @@ def create_app(
     app.include_router(reports_router)
     app.include_router(deploys_router)
     app.include_router(recordings_router)
+    app.include_router(deploy_api_router)
 
     return app

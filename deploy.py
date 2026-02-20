@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""빌드 → 직접 업데이트 → Telegram 알림 자동 배포 스크립트.
+"""빌드 → 배포 자동화 스크립트.
 
 사용법:
-    python deploy.py --target-dir PATH                  # 빌드 + 직접 업데이트
+    python deploy.py --server http://서버:8080            # 빌드 + 서버 경유 자동 배포 (권장)
+    python deploy.py --server http://서버:8080 --agent-id PC-01  # 특정 에이전트 지정
+    python deploy.py --target-dir PATH                  # 빌드 + 직접 업데이트 (로컬)
     python deploy.py --target-dir PATH --bot-token ...  # 빌드 + 직접 업데이트 + Telegram 알림
     python deploy.py --skip-build --target-dir PATH     # 빌드 생략, 직접 업데이트만
     python deploy.py --bot-token TOKEN --chat-id ID     # Telegram 전송만 (수동 업데이트)
 
-주의 - Telegram 전송 방식:
-    Bot API(sendDocument)를 사용하므로 파일이 "봇이 보낸 메시지"로 표시된다.
-    에이전트는 사용자→봇 방향 메시지만 처리하므로, 이 스크립트로 전송된 zip은
-    에이전트가 자동 수신하지 않는다.
-    관리자가 Telegram에서 수신한 zip을 봇 채팅에 직접 전달(포워딩)해야
-    에이전트가 파일을 처리하고 /update 를 실행할 수 있다.
+서버 경유 배포 (--server):
+    deploy.py가 빌드한 zip을 서버 HTTP API로 업로드하면,
+    서버가 TCP로 에이전트에 자동 전송하여 업데이트를 실행한다.
+    원격 에이전트에 배포할 때 이 방식을 사용한다.
 """
 
 from __future__ import annotations
@@ -259,6 +259,109 @@ def _start_agent(target_dir: Path) -> bool:
     return True
 
 
+def server_deploy(
+    server_url: str,
+    zip_path: Path,
+    auth_token: str,
+    agent_id: str = "",
+) -> bool:
+    """서버 HTTP API로 zip 업로드 → 서버가 TCP로 에이전트에 자동 배포.
+
+    Args:
+        server_url: 서버 대시보드 URL (예: http://192.168.1.100:8080)
+        zip_path: 업로드할 zip 파일 경로
+        auth_token: TCP 인증 토큰 (서버 설정과 동일해야 함)
+        agent_id: 대상 에이전트 ID (비어있으면 첫 번째 연결된 에이전트)
+    """
+    url = f"{server_url.rstrip('/')}/api/deploy/upload"
+    print(f"=== 서버 배포: {url} ===")
+
+    if not zip_path.exists():
+        print(f"ERROR: zip 파일 없음: {zip_path}", file=sys.stderr)
+        return False
+
+    size_mb = zip_path.stat().st_size / (1024 * 1024)
+    print(f"  파일: {zip_path.name} ({size_mb:.1f} MB)")
+
+    # 연결 상태 먼저 확인
+    try:
+        status_url = f"{server_url.rstrip('/')}/api/deploy/status"
+        status_resp = httpx.get(
+            status_url,
+            headers={"Authorization": f"Bearer {auth_token}"},
+            timeout=10.0,
+        )
+        if status_resp.status_code == 200:
+            agents = status_resp.json().get("agents", [])
+            if not agents:
+                print("WARNING: 연결된 에이전트 없음", file=sys.stderr)
+            else:
+                print(f"  연결된 에이전트: {len(agents)}개")
+                for a in agents:
+                    print(f"    - {a['agent_id']} (v{a['version']})")
+        elif status_resp.status_code == 401:
+            print("ERROR: 인증 실패 (auth_token 확인)", file=sys.stderr)
+            return False
+    except httpx.ConnectError:
+        print(f"ERROR: 서버 연결 불가: {server_url}", file=sys.stderr)
+        return False
+
+    # zip 업로드
+    print("  업로드 중...", end=" ", flush=True)
+    with zip_path.open("rb") as f:
+        files = {"file": (zip_path.name, f, "application/zip")}
+        data: dict[str, str] = {}
+        if agent_id:
+            data["agent_id"] = agent_id
+        try:
+            resp = httpx.post(
+                url,
+                files=files,
+                data=data,
+                headers={"Authorization": f"Bearer {auth_token}"},
+                timeout=300.0,
+            )
+        except httpx.ConnectError:
+            print("FAIL")
+            print(f"ERROR: 서버 연결 불가: {url}", file=sys.stderr)
+            return False
+
+    if resp.status_code == 200:
+        result = resp.json()
+        print("OK")
+        print(f"  대상: {result.get('agent_id', '?')}")
+        print(f"  상태: {result.get('message', '')}")
+        return True
+    else:
+        print(f"FAIL ({resp.status_code})")
+        try:
+            err = resp.json().get("error", resp.text[:300])
+        except Exception:
+            err = resp.text[:300]
+        print(f"  {err}", file=sys.stderr)
+        return False
+
+
+def load_auth_token() -> str:
+    """연결 토큰을 환경변수 → config.yaml 순으로 읽기."""
+    token = os.environ.get("TCP_AUTH_TOKEN", "")
+    if token:
+        return token
+
+    for cfg_path in [CONFIG_PATH, ROOT / "server" / "config.yaml"]:
+        if not cfg_path.exists():
+            continue
+        with cfg_path.open("r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        conn = cfg.get("connection", {})
+        if isinstance(conn, dict):
+            t = conn.get("token", "")
+            if t and isinstance(t, str):
+                return t
+
+    return "default-auth-token"
+
+
 def direct_update(target_dir: Path) -> bool:
     """서비스 정지 → 백업 → 파일 교체 → 시작.
 
@@ -342,6 +445,21 @@ def main() -> None:
         default="",
         help="에이전트 설치 경로 → 직접 업데이트 (예: D:\\AirSoft\\AILogOps-Agent)",
     )
+    parser.add_argument(
+        "--server",
+        default="",
+        help="서버 URL → 서버 경유 자동 배포 (예: http://192.168.1.100:8080)",
+    )
+    parser.add_argument(
+        "--agent-id",
+        default="",
+        help="대상 에이전트 ID (--server와 함께 사용, 비어있으면 첫 번째 연결된 에이전트)",
+    )
+    parser.add_argument(
+        "--auth-token",
+        default="",
+        help="서버 인증 토큰 (--server와 함께 사용, 비어있으면 config에서 읽기)",
+    )
     args = parser.parse_args()
 
     # 1. 빌드
@@ -353,7 +471,36 @@ def main() -> None:
     if not args.skip_build or AGENT_DIR.exists():
         compress()
 
-    # 3. --target-dir → 직접 업데이트 (서비스 정지 → 복사 → 시작)
+    # 3a. --server → 서버 경유 자동 배포
+    if args.server:
+        auth_token = args.auth_token or load_auth_token()
+        ok = server_deploy(
+            server_url=args.server,
+            zip_path=ZIP_PATH,
+            auth_token=auth_token,
+            agent_id=args.agent_id,
+        )
+
+        # Telegram 알림 (옵션)
+        bot_token = args.bot_token
+        chat_id = args.chat_id
+        if not bot_token or not chat_id:
+            cfg_token, cfg_chat_id = load_config()
+            bot_token = bot_token or cfg_token
+            chat_id = chat_id or cfg_chat_id
+
+        if bot_token and chat_id:
+            target = args.agent_id or "(auto)"
+            status = "성공" if ok else "실패"
+            send_message(
+                bot_token,
+                chat_id,
+                f"서버 경유 배포 {status}\n대상: {target}\n서버: {args.server}",
+            )
+
+        sys.exit(0 if ok else 1)
+
+    # 3b. --target-dir → 직접 업데이트 (서비스 정지 → 복사 → 시작)
     if args.target_dir:
         target_path = Path(args.target_dir)
         ok = direct_update(target_path)

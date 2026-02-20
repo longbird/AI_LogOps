@@ -400,6 +400,7 @@ class AgentGUI:
         )
         poller.system_monitor = system_monitor
         updater = SelfUpdater(install_dir=base_dir, is_service_mode=False)
+        deploy_handler.updater = updater
         poller.updater = updater
         poller.log_watcher = watcher
 

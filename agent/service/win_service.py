@@ -172,6 +172,7 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
             install_dir=_get_base_dir(),
             is_service_mode=self.__class__._is_service_mode,
         )
+        deploy_handler.updater = updater
         poller.updater = updater
         poller.log_watcher = watcher
 

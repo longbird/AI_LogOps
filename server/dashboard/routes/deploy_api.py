@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+import asyncio
+import uuid
+from pathlib import Path
+from typing import Any, Protocol, cast
+
+from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
+
+from shared.utils import setup_logging
+
+logger = setup_logging("dashboard.deploy_api")
+
+router = APIRouter()
+
+
+class _TCPServerLike(Protocol):
+    auth_token: str
+
+    async def send_deploy(self, agent_id: str, file_path: str) -> bool: ...
+
+
+class _SessionMgrLike(Protocol):
+    def get_all_sessions(self) -> list[Any]: ...
+
+    def get_session(self, agent_id: str) -> Any | None: ...
+
+
+class _DashState(Protocol):
+    tcp_server: _TCPServerLike | None
+    session_mgr: _SessionMgrLike | None
+
+
+def _state(request: Request) -> _DashState:
+    return cast(_DashState, request.app.state)
+
+
+def _verify_api_token(request: Request, authorization: str) -> None:
+    """API token 검증. TCP auth_token과 동일한 Bearer 토큰."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401, detail="Missing or invalid Authorization header"
+        )
+    token = authorization[7:]
+    tcp_server = getattr(request.app.state, "tcp_server", None)
+    if tcp_server is None:
+        raise HTTPException(status_code=503, detail="Server not configured")
+    if token != getattr(tcp_server, "auth_token", ""):
+        raise HTTPException(status_code=401, detail="Invalid API token")
+
+
+DEPLOY_DIR = Path("storage/deploys")
+
+
+@router.post("/api/deploy/upload")
+async def upload_deploy(
+    request: Request,
+    file: UploadFile = File(...),
+    agent_id: str = "",
+    authorization: str = Header(""),
+) -> JSONResponse:
+    """deploy.py에서 zip 업로드 → TCP로 에이전트에 배포.
+
+    Headers:
+        Authorization: Bearer <tcp_auth_token>
+    Form:
+        file: zip 파일
+        agent_id: 대상 에이전트 (비어있으면 첫 번째 연결된 에이전트)
+    """
+    _verify_api_token(request, authorization)
+
+    state = _state(request)
+    tcp_server = state.tcp_server
+    session_mgr = state.session_mgr
+
+    if tcp_server is None or session_mgr is None:
+        return JSONResponse({"error": "server not configured"}, status_code=503)
+
+    # 대상 에이전트 결정
+    if not agent_id:
+        sessions = session_mgr.get_all_sessions()
+        if not sessions:
+            return JSONResponse({"error": "no agent connected"}, status_code=503)
+        agent_id = sessions[0].agent_info.agent_id  # type: ignore[union-attr]
+    else:
+        if session_mgr.get_session(agent_id) is None:
+            return JSONResponse(
+                {"error": f"agent '{agent_id}' not connected"}, status_code=404
+            )
+
+    # 임시 파일 저장
+    DEPLOY_DIR.mkdir(parents=True, exist_ok=True)
+    deploy_id = uuid.uuid4().hex[:12]
+    filename = file.filename or "AILogOps-Agent.zip"
+    temp_path = DEPLOY_DIR / f"{deploy_id}_{filename}"
+
+    content = await file.read()
+    temp_path.write_bytes(content)
+    size_mb = len(content) / (1024 * 1024)
+    logger.info(
+        "deploy uploaded: deploy_id=%s agent_id=%s file=%s size=%.1f MB",
+        deploy_id,
+        agent_id,
+        filename,
+        size_mb,
+    )
+
+    # TCP로 에이전트에 전송 (기존 CMD_DEPLOY + FILE_CHUNK 프로토콜 사용)
+    ok = await tcp_server.send_deploy(agent_id, str(temp_path))
+    if not ok:
+        temp_path.unlink(missing_ok=True)
+        return JSONResponse(
+            {"error": "failed to push deploy to agent"}, status_code=502
+        )
+
+    # 임시 파일 비동기 정리 (60초 후)
+    async def _cleanup() -> None:
+        await asyncio.sleep(60)
+        temp_path.unlink(missing_ok=True)
+
+    _ = asyncio.create_task(_cleanup())
+
+    return JSONResponse(
+        {
+            "status": "ok",
+            "deploy_id": deploy_id,
+            "agent_id": agent_id,
+            "file": filename,
+            "size_mb": round(size_mb, 1),
+            "message": f"Deploy pushed to agent '{agent_id}'. Agent will restart automatically.",
+        }
+    )
+
+
+@router.get("/api/deploy/status")
+async def deploy_status(
+    request: Request,
+    authorization: str = Header(""),
+) -> JSONResponse:
+    """연결된 에이전트 목록 및 배포 가능 상태 확인."""
+    _verify_api_token(request, authorization)
+
+    state = _state(request)
+    session_mgr = state.session_mgr
+    if session_mgr is None:
+        return JSONResponse({"error": "server not configured"}, status_code=503)
+
+    sessions = session_mgr.get_all_sessions()
+    agents = []
+    for s in sessions:
+        info = s.agent_info  # type: ignore[union-attr]
+        agents.append(
+            {
+                "agent_id": info.agent_id,
+                "version": info.version,
+                "connected": True,
+            }
+        )
+
+    return JSONResponse({"agents": agents})
