@@ -133,9 +133,12 @@ def compress() -> Path:
         print(f"ERROR: {AGENT_DIR} 없음", file=sys.stderr)
         sys.exit(1)
 
+    # config.yaml은 사용자 설정이므로 zip에 포함하지 않는다.
+    # updater.bat도 config.yaml을 건너뛰지만, 수동 해제 시 덮어쓰기 방지.
+    _EXCLUDE = {"config.yaml"}
     with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as zf:
         for file in AGENT_DIR.rglob("*"):
-            if file.is_file():
+            if file.is_file() and file.name not in _EXCLUDE:
                 zf.write(file, file.relative_to(AGENT_DIR))
 
     size_mb = ZIP_PATH.stat().st_size / (1024 * 1024)
@@ -259,6 +262,61 @@ def _start_agent(target_dir: Path) -> bool:
     return True
 
 
+def _fetch_agents(server_url: str, auth_token: str) -> list[dict[str, str]] | None:
+    """서버에 연결된 에이전트 목록 조회. 실패 시 None."""
+    try:
+        status_url = f"{server_url.rstrip('/')}/api/deploy/status"
+        resp = httpx.get(
+            status_url,
+            headers={"Authorization": f"Bearer {auth_token}"},
+            timeout=10.0,
+        )
+        if resp.status_code == 401:
+            print("ERROR: 인증 실패 (auth_token 확인)", file=sys.stderr)
+            return None
+        if resp.status_code == 200:
+            return resp.json().get("agents", [])
+    except httpx.ConnectError:
+        print(f"ERROR: 서버 연결 불가: {server_url}", file=sys.stderr)
+    return None
+
+
+def _upload_to_agent(
+    server_url: str, zip_path: Path, auth_token: str, agent_id: str
+) -> bool:
+    """단일 에이전트에 zip 업로드."""
+    url = f"{server_url.rstrip('/')}/api/deploy/upload"
+    print(f"  [{agent_id}] 업로드 중...", end=" ", flush=True)
+    with zip_path.open("rb") as f:
+        files = {"file": (zip_path.name, f, "application/zip")}
+        data: dict[str, str] = {"agent_id": agent_id}
+        try:
+            resp = httpx.post(
+                url,
+                files=files,
+                data=data,
+                headers={"Authorization": f"Bearer {auth_token}"},
+                timeout=300.0,
+            )
+        except httpx.ConnectError:
+            print("FAIL (연결 불가)")
+            return False
+
+    if resp.status_code == 200:
+        result = resp.json()
+        print("OK")
+        print(f"    상태: {result.get('message', '')}")
+        return True
+    else:
+        print(f"FAIL ({resp.status_code})")
+        try:
+            err = resp.json().get("error", resp.text[:200])
+        except Exception:
+            err = resp.text[:200]
+        print(f"    {err}", file=sys.stderr)
+        return False
+
+
 def server_deploy(
     server_url: str,
     zip_path: Path,
@@ -271,10 +329,9 @@ def server_deploy(
         server_url: 서버 대시보드 URL (예: http://192.168.1.100:8080)
         zip_path: 업로드할 zip 파일 경로
         auth_token: TCP 인증 토큰 (서버 설정과 동일해야 함)
-        agent_id: 대상 에이전트 ID (비어있으면 첫 번째 연결된 에이전트)
+        agent_id: 대상 에이전트 ID. 'all'=전체 배포, 비어있으면 대화형 선택
     """
-    url = f"{server_url.rstrip('/')}/api/deploy/upload"
-    print(f"=== 서버 배포: {url} ===")
+    print(f"=== 서버 배포: {server_url} ===")
 
     if not zip_path.exists():
         print(f"ERROR: zip 파일 없음: {zip_path}", file=sys.stderr)
@@ -283,63 +340,74 @@ def server_deploy(
     size_mb = zip_path.stat().st_size / (1024 * 1024)
     print(f"  파일: {zip_path.name} ({size_mb:.1f} MB)")
 
-    # 연결 상태 먼저 확인
-    try:
-        status_url = f"{server_url.rstrip('/')}/api/deploy/status"
-        status_resp = httpx.get(
-            status_url,
-            headers={"Authorization": f"Bearer {auth_token}"},
-            timeout=10.0,
-        )
-        if status_resp.status_code == 200:
-            agents = status_resp.json().get("agents", [])
-            if not agents:
-                print("WARNING: 연결된 에이전트 없음", file=sys.stderr)
-            else:
-                print(f"  연결된 에이전트: {len(agents)}개")
-                for a in agents:
-                    print(f"    - {a['agent_id']} (v{a['version']})")
-        elif status_resp.status_code == 401:
-            print("ERROR: 인증 실패 (auth_token 확인)", file=sys.stderr)
-            return False
-    except httpx.ConnectError:
-        print(f"ERROR: 서버 연결 불가: {server_url}", file=sys.stderr)
+    # 연결된 에이전트 조회
+    agents = _fetch_agents(server_url, auth_token)
+    if agents is None:
         return False
 
-    # zip 업로드
-    print("  업로드 중...", end=" ", flush=True)
-    with zip_path.open("rb") as f:
-        files = {"file": (zip_path.name, f, "application/zip")}
-        data: dict[str, str] = {}
-        if agent_id:
-            data["agent_id"] = agent_id
-        try:
-            resp = httpx.post(
-                url,
-                files=files,
-                data=data,
-                headers={"Authorization": f"Bearer {auth_token}"},
-                timeout=300.0,
-            )
-        except httpx.ConnectError:
-            print("FAIL")
-            print(f"ERROR: 서버 연결 불가: {url}", file=sys.stderr)
-            return False
+    if not agents:
+        print("ERROR: 연결된 에이전트 없음", file=sys.stderr)
+        return False
 
-    if resp.status_code == 200:
-        result = resp.json()
-        print("OK")
-        print(f"  대상: {result.get('agent_id', '?')}")
-        print(f"  상태: {result.get('message', '')}")
-        return True
+    print(f"  연결된 에이전트: {len(agents)}개")
+    for i, a in enumerate(agents, 1):
+        print(f"    {i}. {a['agent_id']} (v{a.get('version', '?')})")
+
+    # 대상 결정
+    targets: list[str] = []
+
+    if agent_id.lower() == "all":
+        targets = [a["agent_id"] for a in agents]
+        print(f"\n  >>> 전체 배포: {len(targets)}개 에이전트")
+    elif agent_id:
+        # 명시적 지정
+        targets = [agent_id]
     else:
-        print(f"FAIL ({resp.status_code})")
+        # 대화형 선택
+        print()
+        print("  배포 대상 선택:")
+        print(f"    0. 전체 배포 ({len(agents)}개)")
+        for i, a in enumerate(agents, 1):
+            print(f"    {i}. {a['agent_id']}")
+        print()
         try:
-            err = resp.json().get("error", resp.text[:300])
-        except Exception:
-            err = resp.text[:300]
-        print(f"  {err}", file=sys.stderr)
-        return False
+            choice = input("  번호 입력 (0=전체, Enter=취소): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  취소됨.")
+            return False
+
+        if not choice:
+            print("  취소됨.")
+            return False
+
+        try:
+            idx = int(choice)
+        except ValueError:
+            print(f"  ERROR: 잘못된 입력: {choice}", file=sys.stderr)
+            return False
+
+        if idx == 0:
+            targets = [a["agent_id"] for a in agents]
+            print(f"  >>> 전체 배포: {len(targets)}개 에이전트")
+        elif 1 <= idx <= len(agents):
+            targets = [agents[idx - 1]["agent_id"]]
+        else:
+            print(f"  ERROR: 범위 초과: {idx}", file=sys.stderr)
+            return False
+
+    # 배포 실행
+    print()
+    success = 0
+    fail = 0
+    for target in targets:
+        ok = _upload_to_agent(server_url, zip_path, auth_token, target)
+        if ok:
+            success += 1
+        else:
+            fail += 1
+
+    print(f"\n=== 배포 결과: 성공 {success}, 실패 {fail} / 총 {len(targets)} ===")
+    return fail == 0
 
 
 def load_auth_token() -> str:
@@ -453,7 +521,7 @@ def main() -> None:
     parser.add_argument(
         "--agent-id",
         default="",
-        help="대상 에이전트 ID (--server와 함께 사용, 비어있으면 첫 번째 연결된 에이전트)",
+        help="대상 에이전트 ID (--server와 함께 사용, 'all'=전체 배포, 비어있으면 대화형 선택)",
     )
     parser.add_argument(
         "--auth-token",

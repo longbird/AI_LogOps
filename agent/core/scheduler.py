@@ -87,7 +87,7 @@ class ProcessScheduler:
         max_attempts = 2
         for attempt in range(1, max_attempts + 1):
             try:
-                self._mgr.kill()
+                self._mgr.kill_all()
                 await asyncio.sleep(3)
                 new_pid = self._mgr.start(args=self._args)
 

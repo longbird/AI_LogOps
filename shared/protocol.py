@@ -8,7 +8,7 @@ from typing import Any, ClassVar, cast
 
 HEADER_SIZE = 5
 MAX_PAYLOAD_SIZE = 10 * 1024 * 1024
-CHUNK_SIZE = 4096
+CHUNK_SIZE = 65535  # max value for 2-byte (H) chunk-size field
 
 
 class PacketType(IntEnum):
@@ -293,7 +293,7 @@ class CmdDeployPayload:
 
 @dataclass(slots=True)
 class FileChunkPayload:
-    """FILE_CHUNK: [SeqNum(4B)] [ChunkSize(2B)] [Data(variable, max 4096B)]."""
+    """FILE_CHUNK: [SeqNum(4B)] [ChunkSize(2B)] [Data(variable, max 65535B)]."""
 
     seq_num: int
     data: bytes

@@ -11,13 +11,28 @@ from pathlib import Path
 from shared.utils import setup_logging
 
 _SERVICE_TEMPLATE = r"""@echo off
-setlocal
+setlocal enabledelayedexpansion
 
 :: === AI-LogOps Agent Updater (Service Mode) ===
 
 :: Step 1: 서비스 정지
 net stop {service_name}
-timeout /t 3 >nul
+
+:: Step 1b: 서비스 종료 확인 (최대 30초 대기)
+set WAIT_COUNT=0
+:WAIT_SVC
+sc query {service_name} | find "STOPPED" >nul
+if not errorlevel 1 goto SVC_STOPPED
+set /a WAIT_COUNT+=1
+if !WAIT_COUNT! GEQ 30 (
+    echo [WARN] Service still running after 30s, forcing kill...
+    taskkill /IM {exe_name} /F >nul 2>&1
+    timeout /t 3 >nul
+    goto SVC_STOPPED
+)
+timeout /t 1 >nul
+goto WAIT_SVC
+:SVC_STOPPED
 
 :: Step 2: 현재 폴더 백업
 if exist "{backup_dir}" rmdir /S /Q "{backup_dir}"
@@ -51,13 +66,28 @@ endlocal
 """
 
 _DEBUG_TEMPLATE = r"""@echo off
-setlocal
+setlocal enabledelayedexpansion
 
 :: === AI-LogOps Agent Updater (Debug Mode) ===
 
 :: Step 1: 프로세스 종료 (동일 이름의 모든 프로세스)
 taskkill /IM {exe_name} /F >nul 2>&1
-timeout /t 5 >nul
+
+:: Step 1b: 프로세스 종료 확인 (최대 30초 대기)
+set WAIT_COUNT=0
+:WAIT_KILL
+tasklist /FI "IMAGENAME eq {exe_name}" 2>nul | find /I "{exe_name}" >nul
+if errorlevel 1 goto KILL_DONE
+set /a WAIT_COUNT+=1
+if !WAIT_COUNT! GEQ 30 (
+    echo [WARN] Process still alive after 30s, retrying force kill...
+    taskkill /IM {exe_name} /F >nul 2>&1
+    timeout /t 3 >nul
+    goto KILL_DONE
+)
+timeout /t 1 >nul
+goto WAIT_KILL
+:KILL_DONE
 
 :: Step 2: 현재 폴더 백업
 if exist "{backup_dir}" rmdir /S /Q "{backup_dir}"
@@ -238,25 +268,28 @@ class SelfUpdater:
         """updater.bat 생성. 실행 모드에 따라 service/debug 템플릿 선택."""
         self.backup_dir.mkdir(parents=True, exist_ok=True)
 
+        exe_path = (
+            str(Path(sys.executable).resolve())
+            if getattr(sys, "frozen", False)
+            else str(self.install_dir / "AILogOps-Agent.exe")
+        )
+        exe_name = Path(exe_path).name
+
         if self.is_service_mode:
             content = _SERVICE_TEMPLATE.format(
                 service_name=self.service_name,
                 install_dir=str(self.install_dir),
                 backup_dir=str(self.backup_dir),
                 update_dir=str(self.update_dir),
+                exe_name=exe_name,
             )
         else:
-            exe_path = (
-                str(Path(sys.executable).resolve())
-                if getattr(sys, "frozen", False)
-                else str(self.install_dir / "AILogOps-Agent.exe")
-            )
             content = _DEBUG_TEMPLATE.format(
                 install_dir=str(self.install_dir),
                 backup_dir=str(self.backup_dir),
                 update_dir=str(self.update_dir),
                 exe_path=exe_path,
-                exe_name=Path(exe_path).name,
+                exe_name=exe_name,
             )
 
         _ = self.updater_bat_path.write_text(content, encoding="utf-8")

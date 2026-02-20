@@ -37,7 +37,7 @@ class TestProcessSchedulerParsing:
 class TestProcessSchedulerRestart:
     async def test_triggers_restart_at_scheduled_time(self):
         mock_mgr = MagicMock()
-        mock_mgr.kill.return_value = True
+        mock_mgr.kill_all.return_value = True
         mock_mgr.start.return_value = 9999
         mock_mgr.process_name = "target.exe"
 
@@ -55,7 +55,7 @@ class TestProcessSchedulerRestart:
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             await sched.check_and_restart()
 
-        mock_mgr.kill.assert_called_once()
+        mock_mgr.kill_all.assert_called_once()
         mock_mgr.start.assert_called_once_with(args=["--verbose"])
         notify.assert_called()
         call_text = notify.call_args[0][0]
@@ -75,11 +75,11 @@ class TestProcessSchedulerRestart:
             mock_dt.now.return_value = fake_now
             await sched.check_and_restart()
 
-        mock_mgr.kill.assert_not_called()
+        mock_mgr.kill_all.assert_not_called()
 
     async def test_does_not_trigger_twice_same_minute(self):
         mock_mgr = MagicMock()
-        mock_mgr.kill.return_value = True
+        mock_mgr.kill_all.return_value = True
         mock_mgr.start.return_value = 1111
         mock_mgr.process_name = "app.exe"
 
@@ -95,8 +95,8 @@ class TestProcessSchedulerRestart:
             await sched.check_and_restart()
             await sched.check_and_restart()  # second call same minute
 
-        # kill and start should be called only once
-        assert mock_mgr.kill.call_count == 1
+        # kill_all and start should be called only once
+        assert mock_mgr.kill_all.call_count == 1
         assert mock_mgr.start.call_count == 1
 
     async def test_run_with_empty_times_returns_immediately(self):
@@ -111,7 +111,7 @@ class TestProcessSchedulerRestart:
 
     async def test_no_notify_callback(self):
         mock_mgr = MagicMock()
-        mock_mgr.kill.return_value = True
+        mock_mgr.kill_all.return_value = True
         mock_mgr.start.return_value = 2222
         mock_mgr.process_name = "app.exe"
 
@@ -127,4 +127,4 @@ class TestProcessSchedulerRestart:
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             await sched.check_and_restart()
 
-        mock_mgr.kill.assert_called_once()
+        mock_mgr.kill_all.assert_called_once()

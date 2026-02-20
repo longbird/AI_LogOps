@@ -248,7 +248,7 @@ class TestFeatureC_Scheduling:
     async def test_scheduled_restart_at_configured_time(self) -> None:
         """ProcessScheduler restarts at scheduled HH:MM."""
         mock_mgr = MagicMock()
-        mock_mgr.kill.return_value = True
+        mock_mgr.kill_all.return_value = True
         mock_mgr.start.return_value = 8888
         mock_mgr.process_name = "ScheduledApp.exe"
 
@@ -271,7 +271,7 @@ class TestFeatureC_Scheduling:
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             await sched.check_and_restart()
 
-        mock_mgr.kill.assert_called_once()
+        mock_mgr.kill_all.assert_called_once()
         mock_mgr.start.assert_called_once_with(args=["--daemon"])
         assert len(notifications) == 1
         assert "ScheduledApp.exe" in notifications[0]
@@ -290,12 +290,12 @@ class TestFeatureC_Scheduling:
             mock_dt.now.return_value = fake_now
             await sched.check_and_restart()
 
-        mock_mgr.kill.assert_not_called()
+        mock_mgr.kill_all.assert_not_called()
 
     async def test_no_duplicate_restart_same_minute(self) -> None:
         """Scheduler does not restart twice in the same minute."""
         mock_mgr = MagicMock()
-        mock_mgr.kill.return_value = True
+        mock_mgr.kill_all.return_value = True
         mock_mgr.start.return_value = 3333
         mock_mgr.process_name = "app.exe"
 
@@ -311,13 +311,13 @@ class TestFeatureC_Scheduling:
             await sched.check_and_restart()
             await sched.check_and_restart()  # second call same minute
 
-        assert mock_mgr.kill.call_count == 1
+        assert mock_mgr.kill_all.call_count == 1
         assert mock_mgr.start.call_count == 1
 
     async def test_multiple_scheduled_times(self) -> None:
         """Scheduler supports multiple HH:MM entries."""
         mock_mgr = MagicMock()
-        mock_mgr.kill.return_value = True
+        mock_mgr.kill_all.return_value = True
         mock_mgr.start.return_value = 1111
         mock_mgr.process_name = "multi.exe"
 
@@ -338,7 +338,7 @@ class TestFeatureC_Scheduling:
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             await sched.check_and_restart()
 
-        assert mock_mgr.kill.call_count == 1
+        assert mock_mgr.kill_all.call_count == 1
         assert "06:00" in notifications[0]
 
 
@@ -488,7 +488,7 @@ class TestFeaturesCombined:
 
         # No restarts should have happened
         mock_mgr.start.assert_not_called()
-        mock_mgr.kill.assert_not_called()
+        mock_mgr.kill_all.assert_not_called()
 
     async def test_monitor_restart_triggers_notification(self) -> None:
         """Monitor auto-restart sends notification that could go to Telegram."""
@@ -521,7 +521,7 @@ class TestFeaturesCombined:
     async def test_scheduler_restart_with_system_metrics(self) -> None:
         """Scheduler restart + system monitor report can be generated."""
         mock_mgr = MagicMock()
-        mock_mgr.kill.return_value = True
+        mock_mgr.kill_all.return_value = True
         mock_mgr.start.return_value = 7777
         mock_mgr.process_name = "combined.exe"
 
@@ -543,7 +543,7 @@ class TestFeaturesCombined:
             await sched.check_and_restart()
 
         # Scheduler triggered
-        assert mock_mgr.kill.call_count == 1
+        assert mock_mgr.kill_all.call_count == 1
         assert "combined.exe" in notifications[0]
         assert "08:00" in notifications[0]
 

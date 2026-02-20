@@ -38,24 +38,18 @@ AI-LogOps는 에이전트와 서버 간의 전용 바이너리 프로토콜을 �
 - **복구 기능:** 서비스 충돌 시 자동으로 재시작되도록 sc failure 설정이 적용되어 있습니다.
 - **로그 기록:** `log/YYYYMMDD_NN.txt` 파일에 기록되며, 10MB 단위로 로테이션됩니다.
 
-### 2.2 텔레그램 봇 명령어
-에이전트의 모든 명령어는 `agent/telegram/poller.py`에서 처리하며, `admin_chat_id`에 등록된 관리자만 접근할 수 있습니다.
+### 2.2 텔레그램 (send-only)
+에이전트의 텔레그램은 **알림 전송 전용(send-only)**으로 동작합니다. 폴링(getUpdates)은 수행하지 않으며, 다중 에이전트 환경에서 동일 봇 토큰 충돌을 방지합니다.
 
-| 명령어 | 설명 | 사용 예시 |
-| :--- | :--- | :--- |
-| /status | 시스템 및 대상 프로세스의 상태 지표(CPU, 메모리, 핸들, GDI) 확인 | /status |
-| /connect | 명령 서버에 수동 연결 시도 | /connect [IP] [PORT] |
-| /disconnect | 서버와의 연결 종료 | /disconnect |
-| /update | 전송된 업데이트 파일을 적용 (updater.bat 실행) | /update |
-| /deploy | 스테이징된 파일을 대상 프로세스 경로로 배포 | /deploy |
-| /last | 감시 중인 폴더에서 최근 로그 확인 | /last [N] (기본 10, 최대 100) |
-| /analyze | 최근 로그를 AI로 분석 | /analyze [N] (기본 50, 최대 200) |
-| /model | LLM 제공자 변경 | /model [openai, claude, openrouter] |
-| /subscribe | 구독 인증을 위한 OAuth 디바이스 플로우 시작 | /subscribe |
-| /unsubscribe | 활성화된 구독 해지 | /unsubscribe |
-| /subscription | 현재 구독 상태 확인 | /subscription |
+- **알림 전송**: 에이전트 시작, 상태 변경, 이상 감지 시 관리자에게 자동 알림
+- **명령 수신**: 서버 봇이 텔레그램 명령을 수신하고 TCP로 에이전트에 라우팅
+- **다중 에이전트**: 동일 봇 토큰으로 여러 에이전트가 `sendMessage`를 사용해도 충돌 없음
 
-업데이트나 배포를 위한 파일은 봇 채팅창에 직접 zip 또는 exe 파일을 전송하면 에이전트가 이를 임시 경로에 저장합니다. 이후 /update나 /deploy 명령어를 통해 적용합니다.
+```
+Admin ──명령──▶ 서버 봇 ──TCP──▶ Agent1, Agent2, ...
+Admin ◀──알림── Agent1 (sendMessage, 공유 봇 토큰)
+Admin ◀──알림── Agent2 (sendMessage, 공유 봇 토큰)
+```
 
 ### 2.3 로그 감시 (LogWatcher)
 watchdog 라이브러리를 사용하여 지정된 폴더의 파일 변화를 실시간으로 감지합니다.
@@ -68,7 +62,8 @@ watchdog 라이브러리를 사용하여 지정된 폴더의 파일 변화를 �
 대상 프로세스의 생명 주기를 관리하며, psutil 라이브러리를 활용합니다.
 
 - **설정 항목:** `target_process.name`, `target_process.path`, `target_process.backup_dir`, `target_process.args`
-- **종료 프로세스:** 일반 종료 시도 후 10초간 대기하며, 이후에도 종료되지 않으면 강제 종료(kill)합니다.
+- **다중 인스턴스 종료:** `find_all_pids()` + `kill_all()`로 동일 이름의 모든 프로세스를 일괄 종료합니다. terminate → wait → force kill 순서.
+- **싱글톤 잠금:** PID 파일 기반 `acquire_instance_lock()` / `release_instance_lock()`으로 에이전트 중복 실행을 방지합니다.
 - **백업 및 복구:** 배포 시 현재 파일을 타임스탬프가 포함된 이름으로 백업하여 문제가 발생할 경우 롤백할 수 있도록 지원합니다.
 
 ### 2.5 프로세스 자동 재시작 (ProcessMonitorLoop)
@@ -95,6 +90,8 @@ watchdog 라이브러리를 사용하여 지정된 폴더의 파일 변화를 �
 서버와의 바이너리 통신을 담당합니다.
 
 - **연결 설정:** `connection.host`, `connection.port`, `connection.token`, `connection.heartbeat_interval` 등
+- **자동 접속:** 시작 시 `host`/`port`가 설정되어 있으면 자동으로 서버에 접속합니다.
+- **자동 재접속:** 연결 끊김 시 `connection.reconnect_delay` (기본 60초) 간격으로 자동 재접속을 시도합니다. 최소 10초.
 - **인증:** AUTH 패킷을 통한 토큰 기반 인증을 수행합니다.
 - **로그 전송:** 2단계 선택적 전송 방식을 사용합니다. 에이전트가 파일 목록을 보내면 서버가 필요한 파일만 요청하고, 에이전트는 해당 파일만 전송합니다.
 
@@ -175,21 +172,32 @@ Python 3.10 이상의 환경에서 PyInstaller를 사용하여 빌드합니다.
 다양한 시나리오에 맞게 deploy.py를 활용할 수 있습니다.
 
 ```bash
-# 빌드 후 압축 파일 생성
-python deploy.py
+# 빌드 후 압축 파일 생성만
+python deploy.py --skip-send
+
+# 서버 경유 자동 배포 — 대화형 에이전트 선택
+python deploy.py --server http://서버IP:8080
+
+# 서버 경유 — 특정 에이전트 지정
+python deploy.py --server http://서버IP:8080 --agent-id PC-DAERIGO
+
+# 서버 경유 — 전체 에이전트 동시 배포
+python deploy.py --server http://서버IP:8080 --agent-id all
+
+# 빌드 생략 + 서버 배포 (이미 빌드된 경우)
+python deploy.py --skip-build --server http://서버IP:8080
 
 # 빌드 후 특정 경로로 직접 업데이트 적용 (서비스 중지, 복사, 시작 포함)
 python deploy.py --target-dir D:\Agent
 
-# 빌드 과정을 건너뛰고 기존 파일을 압축하여 텔레그램으로 전송
-python deploy.py --skip-build
-
-# 텔레그램 전송 정보 직접 지정
+# 텔레그램 전송 (수동 업데이트)
 python deploy.py --bot-token [TOKEN] --chat-id [ID]
 ```
 
+- **서버 경유 배포 (권장):** 서버 API로 zip 업로드 후 TCP로 에이전트에 자동 전송. 에이전트 선택 옵션: 번호 선택(대화형), `--agent-id` 지정, `all` 전체 배포.
 - **직접 업데이트:** 에이전트와 같은 네트워크에 있을 때 유용하며, 설정 파일(config.yaml)을 보존하면서 파일을 교체합니다.
-- **텔레그램 전송:** 원격지 에이전트 업데이트 시 사용하며, 파일이 20MB를 초과하면 자동으로 분할하여 전송합니다.
+- **텔레그램 전송:** 원격지 에이전트 수동 업데이트 시 사용하며, 파일이 20MB를 초과하면 자동으로 분할하여 전송합니다.
+- **zip 보호:** config.yaml은 zip에 포함되지 않아 수동 압축 해제 시에도 사용자 설정이 보호됩니다.
 
 ### 4.3 설치 절차
 1. `build_agent.bat`를 실행하여 에이전트를 빌드합니다.
@@ -233,12 +241,12 @@ schedule:
   restart_times: []         # 예: ["08:00", "18:00"] 정기 재시작 시간
 
 connection:
-  host: "127.0.0.1"         # 명령 서버 IP
+  host: "127.0.0.1"         # 명령 서버 IP (설정 시 자동 접속)
   port: 9500                # 명령 서버 포트
   token: ""                 # 인증 토큰
   heartbeat_interval: 30    # 하트비트 주기(초)
   reconnect_attempts: 5     # 재연결 시도 횟수
-  reconnect_delay: 10       # 재연결 대기 시간(초)
+  reconnect_delay: 60       # 재연결 대기 시간(초, 기본 60초=1분, 최소 10초)
 
 llm:
   auth_mode: "apikey"       # apikey 또는 subscription
@@ -271,7 +279,7 @@ llm:
 | 0x03 | LOG_HIST | C -> S | 260B + 가변 | 과거 로그 파일 데이터 전송 |
 | 0x04 | LOG_REAL | C -> S | 258B + 가변 | 실시간 발생 로그 데이터 전송 |
 | 0x10 | CMD_DEPLOY | S -> C | 292B | 배포 명령 하사 |
-| 0x11 | FILE_CHUNK | S -> C | 6B + 가변 | 배포용 파일 조각 전송 (최대 4KB) |
+| 0x11 | FILE_CHUNK | S -> C | 6B + 가변 | 배포용 파일 조각 전송 (최대 64KB) |
 | 0x12 | FILE_ACK | C -> S | 5B | 파일 조각 수신 확인 |
 | 0x13 | CMD_CTRL | S -> C | 1B | 프로세스 제어 (시작, 종료, 재시작) |
 | 0x14 | CMD_CTRL_ACK | C -> S | 6B | 제어 결과 응답 |

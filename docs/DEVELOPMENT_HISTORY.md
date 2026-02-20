@@ -2,12 +2,72 @@
 
 **프로젝트:** AI-LogOps Auto-Deployer  
 **설명:** 다중 에이전트 원격 로그 분석 및 자동 배포 시스템  
-**개발 기간:** 2026-02-16 ~ 2026-02-17  
+**개발 기간:** 2026-02-16 ~ 현재  
 **브랜치:** `develop`  
-**최신 커밋:** `29610a4`  
-**테스트:** 406개 전체 통과  
+**최신 버전:** v1.4.3  
+**테스트:** 434+ 전체 통과  
 
 ---
+
+## 0. v1.4.0 ~ v1.4.3 (2026-02-20)
+
+### 주요 변경 사항
+
+#### 프로세스 관리 강화 (3계층 방어)
+- `ProcessManager`에 `find_all_pids()` + `kill_all()` 추가 — 다중 인스턴스 일괄 종료
+- `updater.bat`에 종료 확인 루프 추가 — taskkill 후 최대 30초 폴링
+- PID 파일 기반 싱글톤 잠금 (`acquire_instance_lock()` / `release_instance_lock()`)
+- 모든 호출부 `kill()` → `kill_all()` 변경 (deploy_handler, scheduler, process_deploy)
+
+#### 에이전트 안정성 향상
+- Telegram poller graceful degradation — 토큰 플레이스홀더/빈값 검사
+- GUI `_quit_app()` — `os._exit(0)` 3초 타이머로 좀비 프로세스 방지
+- GUI/서비스 모드 자동 TCP 접속 + 재접속 (config.yaml `reconnect_delay` 설정 가능, 기본 60초)
+
+#### 텔레그램 아키텍처 변경 (v1.4.3)
+- **에이전트 텔레그램: send-only로 전환** — 폴링(getUpdates) 완전 제거
+- 다중 에이전트 환경에서 동일 봇 토큰 폴링 충돌 방지
+- 명령 수신은 서버 봇 → TCP 경유로 라우팅
+- 에이전트는 알림 전송(`sendMessage`)만 수행
+
+#### 배포 시스템 개선
+- `deploy.py` 대화형 에이전트 선택 지원
+- `--agent-id all` 전체 배포, `--agent-id PC-01` 특정 배포, 미지정 시 번호 선택
+- zip에서 `config.yaml` 제외 (수동 압축 해제 시 사용자 설정 덮어쓰기 방지)
+- `CHUNK_SIZE` 4096 → 65535 (프로토콜 H 필드 최대값). 서버 전송은 4096 유지 (하위 호환)
+
+### 수정 파일
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `agent/__init__.py` | v1.4.3 |
+| `agent/core/process_mgr.py` | find_all_pids, kill_all, 싱글톤 잠금 |
+| `agent/updater/self_update.py` | bat 템플릿 종료 확인 루프 |
+| `agent/core/deploy_handler.py` | kill → kill_all |
+| `agent/core/scheduler.py` | kill → kill_all |
+| `agent/updater/process_deploy.py` | kill → kill_all |
+| `agent/service/win_service.py` | 싱글톤 잠금 + 자동 TCP 접속/재접속 |
+| `agent/gui/app.py` | 싱글톤 잠금 + quit 강제종료 + 자동 TCP 접속/재접속 |
+| `agent/telegram/poller.py` | send-only (폴링 제거) |
+| `agent/config.yaml` | reconnect_delay 60초 기본값 |
+| `deploy.py` | 대화형 에이전트 선택 + 전체 배포 |
+| `server/core/tcp_server.py` | deploy_chunk_size 4096 (하위 호환) |
+| `shared/protocol.py` | CHUNK_SIZE 65535 |
+| `tests/test_protocol.py` | CHUNK_SIZE assert 업데이트 |
+| `tests/test_scheduler.py` | kill → kill_all 테스트 |
+| `tests/test_integration_features.py` | kill → kill_all 테스트 |
+
+### 발견 사항
+
+- 에이전트 프로세스 다중 인스턴스 문제: `find_pid()`가 첫 매치만 반환
+- `updater.bat`이 taskkill 후 종료 확인 없이 진행
+- `TCPClient`에 자동 접속/재접속 로직 부재 (필드만 존재)
+- Telegram `getUpdates` 단일 소비자 제약 → 다중 에이전트 시 send-only 필수
+- PyInstaller 6.x는 `_internal/`에 데이터 파일 배치 → config.yaml root 복사 주의
+- 서버 공인 IP 끝자리 불일치 (51 vs 61) — 현장 확인 필요
+
+---
+
 
 ## 1. 프로젝트 개요
 

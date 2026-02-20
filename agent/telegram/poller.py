@@ -6,8 +6,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol
 
-from telegram import BotCommand
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application
 
 from shared.utils import setup_logging
 
@@ -93,64 +92,47 @@ class AgentTelegramPoller:
         self.rec_watcher: object | None = None  # RecordingWatcher (optional)
 
     async def start(self) -> None:
-        """python-telegram-bot Application 초기화 + polling 시작."""
+        """Telegram 봇 초기화 (send-only).
+
+        명령 수신(폴링)은 하지 않고 알림 전송만 수행한다.
+        다중 에이전트 환경에서 동일 봇 토큰으로 폴링 충돌을 방지하기 위함.
+        명령 라우팅은 서버 봇 → TCP 경유로 처리된다.
+
+        봇 토큰이 유효하지 않으면 경고만 남기고 에이전트는 계속 실행된다.
+        Telegram 없이도 TCP 서버 접속, 로그 감시 등 핵심 기능은 정상 동작한다.
+        """
         if self.application is not None:
             return
 
-        self._logger.info(">>> poller: building Application...")
-        application = Application.builder().token(self.bot_token).build()
-        application.add_handler(CommandHandler("status", self._cmd_status))
-        application.add_handler(CommandHandler("connect", self._cmd_connect))
-        application.add_handler(CommandHandler("disconnect", self._cmd_disconnect))
-        application.add_handler(CommandHandler("update", self._cmd_update))
-        application.add_handler(CommandHandler("deploy", self._cmd_deploy))
-        application.add_handler(CommandHandler("last", self._cmd_last))
-        application.add_handler(CommandHandler("analyze", self._cmd_analyze))
-        application.add_handler(CommandHandler("model", self._cmd_model))
-        application.add_handler(CommandHandler("subscribe", self._cmd_subscribe))
-        application.add_handler(CommandHandler("unsubscribe", self._cmd_unsubscribe))
-        application.add_handler(CommandHandler("subscription", self._cmd_subscription))
-        application.add_handler(CommandHandler("claude_auth", self._cmd_claude_auth))
-        application.add_handler(CommandHandler("claude_reset", self._cmd_claude_reset))
-        application.add_handler(CommandHandler("rec_status", self._cmd_rec_status))
-        application.add_handler(
-            MessageHandler(filters.Document.ALL, self._handle_document)
-        )
-        application.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text)
-        )
+        # 토큰 유효성 사전 검사 — 플레이스홀더나 빈 값이면 즉시 반환
+        _placeholders = {"", "YOUR_BOT_TOKEN", "YOUR_AGENT_BOT_TOKEN"}
+        if not self.bot_token or self.bot_token in _placeholders:
+            self._logger.warning(
+                "telegram bot token not configured ('%s'), "
+                "telegram disabled — agent will run without Telegram",
+                self.bot_token if self.bot_token else "(empty)",
+            )
+            return
 
-        self._logger.info(">>> poller: application.initialize()...")
-        await application.initialize()
-        self._logger.info(">>> poller: application.start()...")
-        await application.start()
-        self._logger.info(
-            ">>> poller: start_polling() (updater=%s)...",
-            application.updater is not None,
-        )
-        if application.updater is not None:
-            _ = await application.updater.start_polling()
-        await application.bot.set_my_commands(
-            [
-                BotCommand("status", "시스템 상태 확인"),
-                BotCommand("connect", "서버 연결 (IP PORT)"),
-                BotCommand("disconnect", "서버 연결 해제"),
-                BotCommand("update", "에이전트 업데이트 실행"),
-                BotCommand("deploy", "대상 프로세스 업데이트 배포"),
-                BotCommand("last", "마지막 N줄 로그 조회 (/last 20)"),
-                BotCommand("analyze", "최근 로그 AI 분석 (/analyze 50)"),
-                BotCommand("model", "LLM 전환 (/model claude)"),
-                BotCommand("subscribe", "구독 인증 (OAuth 로그인)"),
-                BotCommand("unsubscribe", "구독 인증 해제"),
-                BotCommand("subscription", "구독 상태 확인"),
-                BotCommand("claude_auth", "Claude CLI 인증 상태 확인"),
-                BotCommand("claude_reset", "Claude CLI 대화 세션 초기화"),
-                BotCommand("rec_status", "녹취 감시 상태 확인"),
-            ]
-        )
-        self._logger.info(">>> poller: commands registered, started successfully")
+        self._logger.info(">>> telegram: building Application (send-only)...")
+        application = Application.builder().token(self.bot_token).build()
+
+        # send-only: 폴링/커맨드 핸들러 등록하지 않음
+        self._logger.info(">>> telegram: application.initialize()...")
+        try:
+            await application.initialize()
+        except Exception as exc:
+            self._logger.warning(
+                "telegram initialization failed: %s — "
+                "telegram disabled, agent will run without Telegram",
+                exc,
+            )
+            return
+
+        self._logger.info(">>> telegram: initialized (send-only, no polling)")
         self.application = application
-        # 서버봇 초기화 (결과 전송용, 폴링 안 함)
+
+        # 서버봇 초기화 (결과 전송용)
         if self.server_bot_token and self.server_chat_id:
             try:
                 from telegram import Bot
@@ -161,22 +143,19 @@ class AgentTelegramPoller:
                 self._logger.exception("서버봇 초기화 실패")
 
     async def stop(self) -> None:
-        """polling 정지 + shutdown."""
+        """Telegram 봇 종료."""
         application = self.application
         if application is None:
             return
 
-        if application.updater is not None:
-            _ = await application.updater.stop()
-        _ = await application.stop()
         _ = await application.shutdown()
         self.application = None
 
     async def send_message(self, text: str) -> None:
-        """관리자에게 메시지 전송."""
+        """관리자에게 메시지 전송. Telegram 미설정 시 무시."""
         application = self.application
         if application is None:
-            raise RuntimeError("telegram poller is not started")
+            return
 
         _ = await application.bot.send_message(chat_id=self.admin_chat_id, text=text)
 

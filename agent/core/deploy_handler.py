@@ -82,7 +82,7 @@ class DeployHandler:
         except FileNotFoundError:
             self._logger.warning("no existing file to backup, proceeding")
 
-        _ = self.process_mgr.kill()
+        _ = self.process_mgr.kill_all()
         _ = shutil.copy2(str(file_path), str(self.process_mgr.process_path))
         pid = self.process_mgr.start()
         self._logger.info("process restarted: pid=%d", pid)
@@ -94,7 +94,7 @@ class DeployHandler:
             return
 
         self._logger.warning("health check failed, rolling back")
-        _ = self.process_mgr.kill()
+        _ = self.process_mgr.kill_all()
         _ = self.process_mgr.rollback()
         rollback_pid = self.process_mgr.start()
         self._logger.info("rollback complete: pid=%d", rollback_pid)

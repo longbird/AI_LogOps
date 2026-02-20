@@ -485,7 +485,7 @@ class TCPServer:
         writer.write(Packet.build(PacketType.CMD_DEPLOY, cmd.pack()))
         await writer.drain()
 
-        deploy_chunk_size = 64 * 1024  # 64KB (vs 기본 4KB)
+        deploy_chunk_size = 4096  # keep small for backward compat with older agents
         drain_interval = 16  # 16청크마다 flush (≈1MB 단위)
         seq = 0
         for offset in range(0, len(data), deploy_chunk_size):

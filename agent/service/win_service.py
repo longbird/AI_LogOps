@@ -102,8 +102,17 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
 
     async def _run_agent(self) -> None:
         logger = self._logger
+
+        # 중복 인스턴스 방지
+        from agent.core.process_mgr import acquire_instance_lock
+
+        base_dir = _get_base_dir()
+        if not acquire_instance_lock(base_dir):
+            logger.error("another agent instance is already running. exiting.")
+            return
+
         logger.info(">>> _run_agent: loading .env + config...")
-        load_dotenv(_get_base_dir() / ".env")
+        load_dotenv(base_dir / ".env")
         config = _load_agent_config()
         logger.info(">>> config loaded: %s", list(config.keys()))
 
@@ -655,6 +664,10 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                 await watcher.stop()
             with contextlib.suppress(Exception):
                 await tcp_client.disconnect()
+
+            from agent.core.process_mgr import release_instance_lock
+
+            release_instance_lock(base_dir)
             logger.info("agent service loop ended")
 
     def _build_log_sender(
@@ -718,6 +731,23 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
         loop = asyncio.get_running_loop()
         iteration = 0
 
+        # ── 자동 접속 / 재접속 ──
+        _auto_connect = bool(tcp_client.host and tcp_client.port)
+        _reconnect_delay = max(
+            tcp_client.reconnect_delay, 10
+        )  # config.yaml 값 사용, 최소 10초
+        _reconnect_counter = 0
+
+        if _auto_connect:
+            self._logger.info(
+                "auto-connect: %s:%s ...", tcp_client.host, tcp_client.port
+            )
+            connected = await tcp_client.connect()
+            if connected:
+                self._logger.info("auto-connect: success")
+            else:
+                self._logger.warning("auto-connect: failed, will retry")
+
         while not self._stop_requested.is_set():
             iteration += 1
             wait_result = await asyncio.to_thread(
@@ -735,8 +765,21 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
             next_heartbeat = now + interval
 
             if tcp_client.is_connected:
+                _reconnect_counter = 0
                 with contextlib.suppress(ConnectionError, OSError):
                     await tcp_client.send_heartbeat()
+            elif _auto_connect:
+                _reconnect_counter += 1
+                if _reconnect_counter >= _reconnect_delay:
+                    _reconnect_counter = 0
+                    self._logger.info(
+                        "reconnecting to %s:%s ...",
+                        tcp_client.host,
+                        tcp_client.port,
+                    )
+                    connected = await tcp_client.connect()
+                    if connected:
+                        self._logger.info("reconnected successfully")
 
 
 def _read_last_line_of(filepath: str) -> str:

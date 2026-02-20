@@ -94,8 +94,8 @@ class ProcessDeployer:
         except FileNotFoundError:
             self._logger.info("no existing file to backup (new deploy)")
 
-        # 2. Kill process
-        killed = self.process_mgr.kill()
+        # 2. Kill all matching processes
+        killed = self.process_mgr.kill_all()
         self._logger.info("process kill result: %s", killed)
 
         # 3. Clear log folders
@@ -228,7 +228,7 @@ class ProcessDeployer:
 
     def _rollback_and_start(self, process_args: list[str] | None = None) -> bool:
         """롤백 후 프로세스 재시작 시도."""
-        _ = self.process_mgr.kill()
+        _ = self.process_mgr.kill_all()
         rolled_back = self.process_mgr.rollback()
         if rolled_back:
             try:

@@ -43,7 +43,7 @@ def test_header_size_constant() -> None:
 
 
 def test_protocol_size_constants() -> None:
-    assert CHUNK_SIZE == 4096
+    assert CHUNK_SIZE == 65535
     assert MAX_PAYLOAD_SIZE == 10 * 1024 * 1024
 
 

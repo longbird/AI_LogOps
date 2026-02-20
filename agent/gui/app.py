@@ -221,8 +221,11 @@ class AgentGUI:
             pass  # pystray 없으면 트레이 기능 비활성화
 
     def _minimize_to_tray(self) -> None:
-        """창 닫기 시 트레이로 최소화."""
-        self._root.withdraw()
+        """창 닫기 시 트레이로 최소화. 트레이 없으면 완전 종료."""
+        if self._tray_icon is not None:
+            self._root.withdraw()
+        else:
+            self._quit_app()
 
     def _show_from_tray(self) -> None:
         """트레이에서 창 복원."""
@@ -233,16 +236,36 @@ class AgentGUI:
         self._root.after(0, self._open_log_viewer)
 
     def _quit_app(self) -> None:
-        """완전 종료."""
+        """완전 종료. 백그라운드 스레드가 남아있더라도 프로세스를 확실히 종료."""
+        import os
+
         self._running = False
+
         if self._agent_loop is not None:
             self._agent_loop.call_soon_threadsafe(self._agent_loop.stop)
+
         if self._tray_icon is not None:
             try:
                 self._tray_icon.stop()  # type: ignore[union-attr]
             except Exception:
                 pass
-        self._root.after(0, self._root.destroy)
+
+        try:
+            self._root.destroy()
+        except Exception:
+            pass
+
+        # asyncio 루프/Telegram 폴링 등 데몬 스레드가 남아있을 수 있으므로
+        # 일정 시간 후 강제 종료하여 좀비 프로세스를 방지한다.
+        def _force_exit() -> None:
+            import time
+
+            time.sleep(3)
+            os._exit(0)
+
+        import threading
+
+        threading.Thread(target=_force_exit, daemon=True).start()
 
     # ── 에이전트 실행 ──
 
@@ -303,6 +326,18 @@ class AgentGUI:
         """에이전트 코어 로직을 실행한다. win_service._run_agent()를 GUI용으로 재사용."""
         import contextlib
         import os as _os
+
+        from agent.core.process_mgr import acquire_instance_lock
+
+        base_dir = self._get_base_dir()
+        if not acquire_instance_lock(base_dir):
+            logger = logging.getLogger("agent.gui")
+            logger.error("another agent instance is already running. exiting.")
+            self._root.after(
+                0,
+                lambda: self._status_var.set("중복 실행 감지 — 종료됨"),
+            )
+            return
 
         from agent.core.deploy_handler import DeployHandler
         from agent.core.log_cmd_handler import LogCmdHandler
@@ -837,15 +872,52 @@ class AgentGUI:
 
         logger.info("에이전트 실행 중 — 대기 루프 진입")
 
+        # config에 host/port가 설정되어 있으면 자동 접속 시도
+        _auto_connect = bool(tcp_client.host and tcp_client.port)
+        _reconnect_delay = max(
+            tcp_client.reconnect_delay, 10
+        )  # config.yaml 값 사용, 최소 10초
+        _reconnect_counter = 0
+
+        if _auto_connect:
+            logger.info("auto-connect: %s:%s ...", tcp_client.host, tcp_client.port)
+            connected = await tcp_client.connect()
+            if connected:
+                logger.info("auto-connect: success")
+                self._root.after(
+                    0,
+                    lambda: self._status_var.set("서버 접속됨"),
+                )
+            else:
+                logger.warning("auto-connect: failed, will retry")
+
         # 에이전트 대기 루프
         try:
             while self._running:
                 await asyncio.sleep(1)
 
-                # heartbeat
                 if tcp_client.is_connected:
+                    _reconnect_counter = 0
+                    # heartbeat
                     with contextlib.suppress(ConnectionError, OSError):
                         await tcp_client.send_heartbeat()
+                elif _auto_connect:
+                    # 자동 재접속 (reconnect_delay 간격으로 시도)
+                    _reconnect_counter += 1
+                    if _reconnect_counter >= _reconnect_delay:
+                        _reconnect_counter = 0
+                        logger.info(
+                            "reconnecting to %s:%s ...",
+                            tcp_client.host,
+                            tcp_client.port,
+                        )
+                        connected = await tcp_client.connect()
+                        if connected:
+                            logger.info("reconnected successfully")
+                            self._root.after(
+                                0,
+                                lambda: self._status_var.set("서버 재접속됨"),
+                            )
         finally:
             if monitor_task is not None:
                 monitor_task.cancel()
@@ -866,6 +938,10 @@ class AgentGUI:
                 await watcher.stop()
             with contextlib.suppress(Exception):
                 await tcp_client.disconnect()
+
+            from agent.core.process_mgr import release_instance_lock
+
+            release_instance_lock(base_dir)
             logger.info("에이전트 종료 완료")
 
     def _on_agent_stopped(self) -> None:
