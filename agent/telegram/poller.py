@@ -65,10 +65,19 @@ class _ApplicationLike(Protocol):
 class AgentTelegramPoller:
     """Agent 측 텔레그램 봇. 스펙 섹션 2.1 TelegramPoller."""
 
-    def __init__(self, bot_token: str, admin_chat_id: int):
+    def __init__(
+        self,
+        bot_token: str,
+        admin_chat_id: int,
+        server_bot_token: str = "",
+        server_chat_id: int = 0,
+    ):
         """admin_chat_id: 단일 관리자 ID."""
         self.bot_token: str = bot_token
         self.admin_chat_id: int = admin_chat_id
+        self.server_bot_token: str = server_bot_token
+        self.server_chat_id: int = server_chat_id
+        self._server_bot: _BotLike | None = None
         self.application: _ApplicationLike | None = None
         self.on_connect: Callable[[str, int], Awaitable[None]] | None = None
         self.on_disconnect: Callable[[], Awaitable[None]] | None = None
@@ -81,6 +90,7 @@ class AgentTelegramPoller:
         self.log_watcher: LogWatcher | None = None
         self.llm_router: LLMRouter | None = None
         self.subscription_client: SubscriptionClient | None = None
+        self.rec_watcher: object | None = None  # RecordingWatcher (optional)
 
     async def start(self) -> None:
         """python-telegram-bot Application 초기화 + polling 시작."""
@@ -100,6 +110,9 @@ class AgentTelegramPoller:
         application.add_handler(CommandHandler("subscribe", self._cmd_subscribe))
         application.add_handler(CommandHandler("unsubscribe", self._cmd_unsubscribe))
         application.add_handler(CommandHandler("subscription", self._cmd_subscription))
+        application.add_handler(CommandHandler("claude_auth", self._cmd_claude_auth))
+        application.add_handler(CommandHandler("claude_reset", self._cmd_claude_reset))
+        application.add_handler(CommandHandler("rec_status", self._cmd_rec_status))
         application.add_handler(
             MessageHandler(filters.Document.ALL, self._handle_document)
         )
@@ -130,10 +143,22 @@ class AgentTelegramPoller:
                 BotCommand("subscribe", "구독 인증 (OAuth 로그인)"),
                 BotCommand("unsubscribe", "구독 인증 해제"),
                 BotCommand("subscription", "구독 상태 확인"),
+                BotCommand("claude_auth", "Claude CLI 인증 상태 확인"),
+                BotCommand("claude_reset", "Claude CLI 대화 세션 초기화"),
+                BotCommand("rec_status", "녹취 감시 상태 확인"),
             ]
         )
         self._logger.info(">>> poller: commands registered, started successfully")
         self.application = application
+        # 서버봇 초기화 (결과 전송용, 폴링 안 함)
+        if self.server_bot_token and self.server_chat_id:
+            try:
+                from telegram import Bot
+
+                self._server_bot = Bot(token=self.server_bot_token)
+                self._logger.info("서버봇 초기화 완료 (결과 전송용)")
+            except Exception:
+                self._logger.exception("서버봇 초기화 실패")
 
     async def stop(self) -> None:
         """polling 정지 + shutdown."""
@@ -155,6 +180,20 @@ class AgentTelegramPoller:
 
         _ = await application.bot.send_message(chat_id=self.admin_chat_id, text=text)
 
+    async def send_to_server(self, text: str) -> None:
+        """서버봇을 통해 서버에 실행 결과 전송."""
+        if self._server_bot is None:
+            self._logger.debug("서버봇 미설정, 결과 전송 생략")
+            return
+
+        try:
+            _ = await self._server_bot.send_message(
+                chat_id=self.server_chat_id, text=text
+            )
+            self._logger.info("서버에 결과 전송 완료: %s", text[:80])
+        except Exception:
+            self._logger.exception("서버 결과 전송 실패")
+
     def _is_admin(self, update: _UpdateLike) -> bool:
         chat = update.effective_chat
         if chat is None:
@@ -175,6 +214,7 @@ class AgentTelegramPoller:
             status_text = f"Agent: {self._state}"
 
         _ = await update.effective_message.reply_text(status_text)
+        await self.send_to_server(f"[STATUS] {status_text}")
 
     async def _cmd_connect(self, update: _UpdateLike, context: _ContextLike) -> None:
         if not self._is_admin(update):
@@ -203,6 +243,7 @@ class AgentTelegramPoller:
         await self.on_connect(ip, port)
         self._state = "CONNECTED"
         _ = await message.reply_text(f"Connecting to {ip}:{port}")
+        await self.send_to_server(f"[CONNECT] {ip}:{port}")
 
     async def _cmd_disconnect(self, update: _UpdateLike, context: _ContextLike) -> None:
         del context
@@ -220,6 +261,7 @@ class AgentTelegramPoller:
         await self.on_disconnect()
         self._state = "STANDBY"
         _ = await message.reply_text("Disconnected.")
+        await self.send_to_server("[DISCONNECT] 연결 해제됨")
         self._logger.info("disconnect command handled")
 
     async def _cmd_last(self, update: _UpdateLike, context: _ContextLike) -> None:
@@ -259,6 +301,7 @@ class AgentTelegramPoller:
             if len(text) > 4000:
                 text = text[:4000] + "\n...(truncated)"
             _ = await message.reply_text(text)
+            await self.send_to_server(f"[LOG] {text}")
 
     async def _handle_document(
         self, update: _UpdateLike, context: _ContextLike
@@ -348,6 +391,7 @@ class AgentTelegramPoller:
             return
 
         _ = await message.reply_text("업데이트를 시작합니다.\n서비스가 재시작됩니다...")
+        await self.send_to_server("[UPDATE] 에이전트 업데이트 시작")
         self._logger.info("executing self-update via /update command")
         self.updater.execute_update()
 
@@ -396,8 +440,12 @@ class AgentTelegramPoller:
                 f"교체 파일: {files_text}\n"
                 f"백업: {result.backup_path or '(신규 배포)'}"
             )
+            await self.send_to_server(
+                f"[DEPLOY SUCCESS] PID: {result.pid}, 파일: {files_text}"
+            )
         else:
             _ = await message.reply_text(f"배포 실패: {result.error}")
+            await self.send_to_server(f"[DEPLOY FAIL] {result.error}")
 
     def _staged_ready_message(self, size: int) -> str:
         """스테이징 완료 후 안내 메시지 생성."""
@@ -437,11 +485,15 @@ class AgentTelegramPoller:
                 )
             return
 
+        chat = update.effective_chat
+        current_chat_id = chat.id if chat is not None else None
+
         _ = await message.reply_text(
             f"[{self.llm_router.current_provider}] 응답 생성 중..."
         )
-        response = await self.llm_router.chat(text)
+        response = await self.llm_router.chat(text, chat_id=current_chat_id)
         await self._send_long_message(message, response)
+        await self.send_to_server(f"[LLM] Q: {text[:50]}... A: {response[:200]}...")
 
     async def _cmd_analyze(self, update: _UpdateLike, context: _ContextLike) -> None:
         """최근 로그를 LLM에 전달하여 분석. Usage: /analyze [N]"""
@@ -496,6 +548,7 @@ class AgentTelegramPoller:
         )
         response = await self.llm_router.chat(analysis_prompt)
         await self._send_long_message(message, response)
+        await self.send_to_server(f"[ANALYZE] {response[:500]}...")
 
     async def _cmd_model(self, update: _UpdateLike, context: _ContextLike) -> None:
         """LLM provider 전환. Usage: /model [openai|claude]"""
@@ -666,6 +719,145 @@ class AgentTelegramPoller:
             f"Provider: {providers}\n"
             f"현재: {current}\n"
             f"만료: {r.expires_at or '무제한'}"
+        )
+
+    # ── Claude CLI 핸들러 ────────────────────────────────
+
+    async def _cmd_claude_auth(
+        self, update: _UpdateLike, context: _ContextLike
+    ) -> None:
+        """Claude CLI 인증 상태 확인. 미감지 시 자동 감지 시도."""
+        del context
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        if self.llm_router is None:
+            _ = await message.reply_text("LLM 라우터가 설정되지 않았습니다.")
+            return
+
+        # 아직 claude-cli provider가 없으면 자동 감지 시도
+        if "claude-cli" not in self.llm_router.available_providers:
+            _ = await message.reply_text("Claude CLI 감지 중...")
+            detected = await self.llm_router.auto_detect_claude_cli()
+            if not detected:
+                _ = await message.reply_text(
+                    "Claude CLI를 사용할 수 없습니다.\n\n"
+                    "확인 사항:\n"
+                    "1. claude CLI 설치: npm install -g @anthropic-ai/claude-code\n"
+                    "2. 로그인: claude login\n"
+                    "3. PATH에 claude 명령이 있는지 확인"
+                )
+                return
+
+        # 상태 표시
+        from agent.llm.claude_cli_provider import ClaudeCLIProvider
+
+        cli_provider = self.llm_router.claude_cli_provider
+        if not isinstance(cli_provider, ClaudeCLIProvider):
+            _ = await message.reply_text("Claude CLI provider 내부 오류.")
+            return
+
+        status = await cli_provider.get_auth_status()
+        chat = update.effective_chat
+        current_chat_id = chat.id if chat is not None else None
+        session_id = (
+            cli_provider.get_session_info(current_chat_id)
+            if current_chat_id is not None
+            else None
+        )
+
+        lines = [
+            "Claude CLI 상태",
+            f"  설치: {'✅' if status['installed'] else '❌'}",
+            f"  경로: {status['cli_path']}",
+            f"  버전: {status['version']}",
+            f"  인증: {'✅' if status['authenticated'] else '❌'}",
+            f"  모델: {status['model']}",
+            f"  활성 세션: {status['active_sessions']}개",
+        ]
+
+        if session_id:
+            lines.append(f"  현재 세션: {session_id[:12]}...")
+        else:
+            lines.append("  현재 세션: 없음 (새 대화 시 자동 생성)")
+
+        providers = ", ".join(self.llm_router.available_providers)
+        current = self.llm_router.current_provider
+        lines.append(f"\n사용 가능 Provider: {providers}")
+        lines.append(f"현재 Provider: {current}")
+
+        if current != "claude-cli":
+            lines.append("\n/model claude-cli 로 전환할 수 있습니다.")
+
+        _ = await message.reply_text("\n".join(lines))
+
+    async def _cmd_claude_reset(
+        self, update: _UpdateLike, context: _ContextLike
+    ) -> None:
+        """현재 채팅의 Claude CLI 세션을 초기화한다."""
+        del context
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        if self.llm_router is None:
+            _ = await message.reply_text("LLM 라우터가 설정되지 않았습니다.")
+            return
+
+        from agent.llm.claude_cli_provider import ClaudeCLIProvider
+
+        cli_provider = self.llm_router.claude_cli_provider
+        if not isinstance(cli_provider, ClaudeCLIProvider):
+            _ = await message.reply_text(
+                "Claude CLI provider가 활성화되지 않았습니다.\n"
+                "/claude_auth 로 먼저 상태를 확인하세요."
+            )
+            return
+
+        chat = update.effective_chat
+        current_chat_id = chat.id if chat is not None else None
+        if current_chat_id is None:
+            _ = await message.reply_text("채팅 ID를 확인할 수 없습니다.")
+            return
+
+        had_session = cli_provider.reset_session(current_chat_id)
+        if had_session:
+            _ = await message.reply_text(
+                "Claude CLI 대화 세션이 초기화되었습니다.\n"
+                "다음 메시지부터 새 대화가 시작됩니다."
+            )
+        else:
+            _ = await message.reply_text(
+                "초기화할 세션이 없습니다.\n다음 메시지에서 새 대화가 시작됩니다."
+            )
+
+    async def _cmd_rec_status(self, update: _UpdateLike, context: _ContextLike) -> None:
+        """녹취 감시 상태를 보여준다."""
+        del context
+        if not self._is_admin(update):
+            return
+        message = update.effective_message
+        if message is None:
+            return
+
+        watcher = self.rec_watcher
+        if watcher is None:
+            _ = await message.reply_text(
+                "녹취 감시가 설정되지 않았습니다.\n"
+                "config.yaml의 recording 섹션을 확인하세요."
+            )
+            return
+
+        # RecordingWatcher has processed_count property
+        count = getattr(watcher, "processed_count", 0)
+        watch_dir = getattr(watcher, "_watch_dir", "?")
+        _ = await message.reply_text(
+            f"녹취 감시 상태: 실행 중\n감시 폴더: {watch_dir}\n분석 완료: {count}건"
         )
 
     @staticmethod

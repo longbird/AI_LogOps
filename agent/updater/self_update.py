@@ -55,9 +55,9 @@ setlocal
 
 :: === AI-LogOps Agent Updater (Debug Mode) ===
 
-:: Step 1: 프로세스 종료
-taskkill /PID {pid} /F >nul 2>&1
-timeout /t 3 >nul
+:: Step 1: 프로세스 종료 (동일 이름의 모든 프로세스)
+taskkill /IM {exe_name} /F >nul 2>&1
+timeout /t 5 >nul
 
 :: Step 2: 현재 폴더 백업
 if exist "{backup_dir}" rmdir /S /Q "{backup_dir}"
@@ -252,7 +252,6 @@ class SelfUpdater:
                 else str(self.install_dir / "AILogOps-Agent.exe")
             )
             content = _DEBUG_TEMPLATE.format(
-                pid=os.getpid(),
                 install_dir=str(self.install_dir),
                 backup_dir=str(self.backup_dir),
                 update_dir=str(self.update_dir),
@@ -268,8 +267,66 @@ class SelfUpdater:
         )
         return str(self.updater_bat_path)
 
+    def _merge_config_version(self) -> None:
+        """update_dir의 config.yaml에서 version을 읽어 설치된 config.yaml에 반영한다.
+
+        updater.bat는 config.yaml을 덮어쓰지 않으므로(사용자 설정 보호),
+        version 필드만 선택적으로 갱신한다.
+        """
+        # PyInstaller 6.x는 config.yaml을 _internal/에 배치하므로 양쪽 확인
+        new_config = self.update_dir / "config.yaml"
+        if not new_config.exists():
+            new_config = self.update_dir / "_internal" / "config.yaml"
+        installed_config = self.install_dir / "config.yaml"
+
+        if not new_config.exists() or not installed_config.exists():
+            self._logger.warning(
+                "config merge skipped: new=%s(%s) installed=%s(%s)",
+                new_config,
+                new_config.exists(),
+                installed_config,
+                installed_config.exists(),
+            )
+            return
+
+        try:
+            import yaml  # noqa: PLC0415
+
+            with new_config.open("r", encoding="utf-8") as f:
+                new_cfg: dict[str, object] = yaml.safe_load(f) or {}
+            agent_section = new_cfg.get("agent")
+            new_version: str = ""
+            if isinstance(agent_section, dict):
+                v = agent_section.get("version", "")
+                if isinstance(v, str):
+                    new_version = v
+            if not new_version:
+                return
+
+            with installed_config.open("r", encoding="utf-8") as f:
+                installed_text = f.read()
+
+            # 정규식으로 version 필드만 교체 (YAML 구조 보존)
+            import re  # noqa: PLC0415
+
+            updated_text, count = re.subn(
+                r'(^\s*version:\s*)"[^"]*"',
+                rf'\g<1>"{new_version}"',
+                installed_text,
+                count=1,
+                flags=re.MULTILINE,
+            )
+            if count > 0:
+                _ = installed_config.write_text(updated_text, encoding="utf-8")
+                self._logger.info("config.yaml version updated to %s", new_version)
+            else:
+                self._logger.warning("config.yaml version field not found")
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("failed to merge config version: %s", exc)
+
     def execute_update(self) -> None:
         """bat 실행 후 프로세스 종료."""
+        self._merge_config_version()
         _ = self.generate_updater_bat()
 
         command = ["cmd", "/c", str(self.updater_bat_path)]

@@ -9,3 +9,5 @@ build/
 *.log
 .venv/
 venv/
+nul
+%TEMP%/

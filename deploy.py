@@ -6,12 +6,20 @@
     python deploy.py --target-dir PATH --bot-token ...  # 빌드 + 직접 업데이트 + Telegram 알림
     python deploy.py --skip-build --target-dir PATH     # 빌드 생략, 직접 업데이트만
     python deploy.py --bot-token TOKEN --chat-id ID     # Telegram 전송만 (수동 업데이트)
+
+주의 - Telegram 전송 방식:
+    Bot API(sendDocument)를 사용하므로 파일이 "봇이 보낸 메시지"로 표시된다.
+    에이전트는 사용자→봇 방향 메시지만 처리하므로, 이 스크립트로 전송된 zip은
+    에이전트가 자동 수신하지 않는다.
+    관리자가 Telegram에서 수신한 zip을 봇 채팅에 직접 전달(포워딩)해야
+    에이전트가 파일을 처리하고 /update 를 실행할 수 있다.
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -41,13 +49,57 @@ EXE_NAME = "AILogOps-Agent.exe"
 
 
 def load_config() -> tuple[str, int]:
-    """config.yaml에서 bot_token, admin_chat_id 읽기."""
-    if not CONFIG_PATH.exists():
-        return "", 0
-    with CONFIG_PATH.open("r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
-    tg = cfg.get("telegram", {})
-    return str(tg.get("bot_token", "")), int(tg.get("admin_chat_id", 0))
+    """환경변수 → config.yaml 순으로 bot_token, admin_chat_id 읽기."""
+    # .env 로드
+    env_path = ROOT / ".env"
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, val = line.partition("=")
+                os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+
+    # 환경변수 우선
+    bot_token = os.environ.get("TELEGRAM_AGENT_BOT_TOKEN", "")
+    chat_id_str = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "")
+
+    # config.yaml 폴백 (agent → server 순으로 탐색)
+    placeholders = {
+        "YOUR_BOT_TOKEN",
+        "YOUR_AGENT_BOT_TOKEN",
+        "YOUR_SERVER_BOT_TOKEN",
+        "",
+    }
+    for cfg_path in [CONFIG_PATH, ROOT / "server" / "config.yaml"]:
+        if not cfg_path.exists():
+            continue
+        with cfg_path.open("r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        tg = cfg.get("telegram", {})
+        if not bot_token:
+            # 배포 알림은 관리자에게 전송 → 서버봇 우선, 에이전트봇 폴백
+            candidate = str(
+                tg.get("server_bot_token", "")
+                or tg.get("agent_bot_token", "")
+                or tg.get("bot_token", "")
+            )
+            if candidate not in placeholders:
+                bot_token = candidate
+        if not chat_id_str or chat_id_str == "0":
+            admin_ids = tg.get("admin_chat_ids", [])
+            cid = tg.get("admin_chat_id", admin_ids[0] if admin_ids else 0)
+            try:
+                if int(cid):
+                    chat_id_str = str(int(cid))
+            except (ValueError, TypeError):
+                pass
+
+    try:
+        return bot_token, int(chat_id_str) if chat_id_str else 0
+    except (ValueError, TypeError):
+        return bot_token, 0
 
 
 def build() -> bool:
@@ -60,6 +112,14 @@ def build() -> bool:
     if result.returncode != 0:
         print("ERROR: 빌드 실패", file=sys.stderr)
         return False
+
+    # PyInstaller 6.x는 datas를 _internal/에 배치하므로,
+    # config.yaml을 배포 루트(exe 옆)에도 복사한다.
+    config_dst = AGENT_DIR / "config.yaml"
+    if not config_dst.exists() and CONFIG_PATH.exists():
+        shutil.copy2(str(CONFIG_PATH), str(config_dst))
+        print(f"  config.yaml → {config_dst}")
+
     print("=== 빌드 완료 ===")
     return True
 
