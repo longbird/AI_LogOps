@@ -2,11 +2,35 @@
 {% block content %}
 <h1 class="text-2xl font-bold mb-6">Recordings</h1>
 
-<!-- Filters -->
+<!-- Analysis Control -->
+<div class="bg-white rounded-lg shadow p-4 mb-6">
+    <h2 class="text-sm font-semibold text-gray-600 uppercase mb-3">Recording Analysis Control</h2>
+    <div class="flex items-end gap-4 flex-wrap">
+        <div>
+            <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Agent ID</label>
+            <input id="ctrl-agent" type="text" placeholder="(auto: first connected)"
+                   class="border border-gray-300 rounded px-3 py-2 text-sm w-48 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+        </div>
+        <div>
+            <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Date (YYYYMMDD)</label>
+            <input id="ctrl-date" type="text" placeholder="(auto: today)" maxlength="8"
+                   class="border border-gray-300 rounded px-3 py-2 text-sm w-40 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+        </div>
+        <button id="btn-start" class="bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded text-sm font-semibold">
+            Start Analysis
+        </button>
+        <button id="btn-stop" class="bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded text-sm font-semibold">
+            Stop Analysis
+        </button>
+        <div id="ctrl-status" class="ml-2 text-sm text-gray-500"></div>
+    </div>
+</div>
+
+<!-- Search Filters -->
 <div class="bg-white rounded-lg shadow p-4 mb-6 flex items-end gap-4">
     <div>
         <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Date (YYYYMMDD)</label>
-        <input id="rec-date" type="text" placeholder="20260220" maxlength="8"
+        <input id="rec-date" type="text" placeholder="20260221" maxlength="8"
                class="border border-gray-300 rounded px-3 py-2 text-sm w-40 focus:ring-2 focus:ring-blue-400 focus:outline-none">
     </div>
     <div>
@@ -39,6 +63,53 @@
 
 <script>
 (function() {
+    /* ── Analysis Control ── */
+    const btnStart = document.getElementById('btn-start');
+    const btnStop = document.getElementById('btn-stop');
+    const ctrlAgent = document.getElementById('ctrl-agent');
+    const ctrlDate = document.getElementById('ctrl-date');
+    const ctrlStatus = document.getElementById('ctrl-status');
+
+    async function sendAnalyzeCmd(action) {
+        const agent = ctrlAgent.value.trim();
+        const date = ctrlDate.value.trim();
+        const body = { action: action };
+        if (agent) body.agent_id = agent;
+        if (date) body.date = date;
+
+        ctrlStatus.textContent = action === 'start' ? 'Starting...' : 'Stopping...';
+        ctrlStatus.className = 'ml-2 text-sm text-yellow-600';
+
+        try {
+            const resp = await fetch('/api/rec/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            if (resp.ok) {
+                const dateMsg = data.date ? ' (' + data.date + ')' : ' (today)';
+                if (action === 'start') {
+                    ctrlStatus.textContent = 'Running: ' + data.agent_id + dateMsg;
+                    ctrlStatus.className = 'ml-2 text-sm text-green-600 font-semibold';
+                } else {
+                    ctrlStatus.textContent = 'Stopped: ' + data.agent_id;
+                    ctrlStatus.className = 'ml-2 text-sm text-gray-500';
+                }
+            } else {
+                ctrlStatus.textContent = 'Error: ' + (data.error || resp.statusText);
+                ctrlStatus.className = 'ml-2 text-sm text-red-600';
+            }
+        } catch (err) {
+            ctrlStatus.textContent = 'Network error: ' + err.message;
+            ctrlStatus.className = 'ml-2 text-sm text-red-600';
+        }
+    }
+
+    btnStart.addEventListener('click', function() { sendAnalyzeCmd('start'); });
+    btnStop.addEventListener('click', function() { sendAnalyzeCmd('stop'); });
+
+    /* ── Recording List / Detail ── */
     const searchBtn = document.getElementById('rec-search');
     const dateInput = document.getElementById('rec-date');
     const agentInput = document.getElementById('rec-agent');
@@ -79,7 +150,7 @@
 
             let html = '<table class="min-w-full divide-y divide-gray-200">';
             html += '<thead class="bg-gray-50"><tr>';
-            html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Rec No</th>';
+            html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Filename</th>';
             html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Agent</th>';
             html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Status</th>';
             html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Score</th>';
@@ -87,8 +158,9 @@
             html += '</tr></thead><tbody class="bg-white divide-y divide-gray-100">';
 
             for (const r of records) {
-                html += '<tr class="hover:bg-gray-50 cursor-pointer" data-recno="' + (r.rec_no || '') + '">';
-                html += '<td class="px-4 py-3 text-sm font-mono text-gray-800">' + (r.rec_no || '-') + '</td>';
+                const fname = r.filename || '';
+                html += '<tr class="hover:bg-gray-50 cursor-pointer" data-filename="' + fname + '">';
+                html += '<td class="px-4 py-3 text-sm font-mono text-gray-800">' + (fname || '-') + '</td>';
                 html += '<td class="px-4 py-3 text-sm text-gray-700">' + (r.agent_id || '-') + '</td>';
                 html += '<td class="px-4 py-3 text-sm text-gray-700">' + (r.status || '-') + '</td>';
                 html += '<td class="px-4 py-3 text-sm text-gray-700">' + (r.score_total != null ? r.score_total : '-') + '</td>';
@@ -98,9 +170,9 @@
             html += '</tbody></table>';
             resultsDiv.innerHTML = html;
 
-            resultsDiv.querySelectorAll('tr[data-recno]').forEach(function(row) {
+            resultsDiv.querySelectorAll('tr[data-filename]').forEach(function(row) {
                 row.addEventListener('click', function() {
-                    loadDetail(row.getAttribute('data-recno'));
+                    loadDetail(row.getAttribute('data-filename'));
                 });
             });
         } catch (err) {
@@ -108,7 +180,7 @@
         }
     }
 
-    async function loadDetail(recNo) {
+    async function loadDetail(filename) {
         modal.classList.remove('hidden');
         modalBody.innerHTML = '<div class="text-gray-500">Loading...</div>';
 
@@ -117,7 +189,7 @@
         if (agent) params.set('agent_id', agent);
 
         try {
-            const resp = await fetch('/api/rec/detail/' + recNo + '?' + params.toString());
+            const resp = await fetch('/api/rec/detail/' + encodeURIComponent(filename) + '?' + params.toString());
             const data = await resp.json();
 
             if (!resp.ok) {
