@@ -60,6 +60,7 @@ class AgentGUI:
         # 상태
         self._agent_thread: threading.Thread | None = None
         self._agent_loop: asyncio.AbstractEventLoop | None = None
+        self._tcp_client: Any | None = None  # TCPClient (set in _run_agent_async)
         self._log_viewer: LogViewer | None = None
         self._tray_icon: Any | None = None  # pystray.Icon (optional dep)
         self._running: bool = False
@@ -172,6 +173,23 @@ class AgentGUI:
             cursor="hand2",
         )
         self._log_btn.pack(fill=tk.X, pady=(0, 6))
+
+        self._reconnect_btn = tk.Button(
+            btn_frame,
+            text="🔄 강제 재접속",
+            command=self._force_reconnect,
+            bg="#3c3c3c",
+            fg="#cccccc",
+            activebackground="#4c4c4c",
+            activeforeground="white",
+            relief=tk.FLAT,
+            font=("Segoe UI", 10),
+            padx=12,
+            pady=4,
+            cursor="hand2",
+            state=tk.DISABLED,
+        )
+        self._reconnect_btn.pack(fill=tk.X, pady=(0, 6))
 
         # ── 하단 바 ──
         footer = tk.Frame(root, bg="#1e1e1e", height=24)
@@ -299,6 +317,47 @@ class AgentGUI:
         # 상태 폴링
         self._root.after(2000, self._update_agent_status)
 
+    def _force_reconnect(self) -> None:
+        """GUI에서 강제 재접속 트리거. asyncio 루프에 재접속 코루틴을 스케줄링."""
+        loop = self._agent_loop
+        client = self._tcp_client
+        if loop is None or client is None or not self._running:
+            return
+
+        self._reconnect_btn.configure(state=tk.DISABLED)
+        self._status_var.set("재접속 중...")
+
+        async def _do_reconnect() -> None:
+            logger = logging.getLogger("agent.gui")
+            try:
+                await client.disconnect()
+                connected = await client.connect()
+                if connected:
+                    logger.info("force reconnect: success")
+                    self._root.after(
+                        0,
+                        lambda: self._status_var.set("서버 재접속됨"),
+                    )
+                else:
+                    logger.warning("force reconnect: failed")
+                    self._root.after(
+                        0,
+                        lambda: self._status_var.set("재접속 실패"),
+                    )
+            except Exception:
+                logger.exception("force reconnect error")
+                self._root.after(
+                    0,
+                    lambda: self._status_var.set("재접속 오류"),
+                )
+            finally:
+                self._root.after(
+                    0,
+                    lambda: self._reconnect_btn.configure(state=tk.NORMAL),
+                )
+
+        loop.call_soon_threadsafe(asyncio.ensure_future, _do_reconnect())
+
     def _agent_thread_main(self) -> None:
         """백그라운드 스레드: asyncio 루프 + 에이전트 실행."""
         loop = asyncio.new_event_loop()
@@ -391,6 +450,8 @@ class AgentGUI:
             reconnect_attempts=_i(connection_cfg.get("reconnect_attempts"), 5),
             reconnect_delay=_i(connection_cfg.get("reconnect_delay"), 10),
         )
+        self._tcp_client = tcp_client
+        self._root.after(0, lambda: self._reconnect_btn.configure(state=tk.NORMAL))
         process_mgr = ProcessManager(
             process_name=_s(process_cfg.get("name"), ""),
             process_path=_s(process_cfg.get("path"), ""),
