@@ -190,6 +190,7 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
             update_dir=updater.update_dir,
             log_folders=_to_list_str(monitoring_cfg.get("log_folders"), []),
         )
+        deploy_handler.process_deployer = process_deployer
         poller.process_deployer = process_deployer
         poller.process_args = process_args or None
 

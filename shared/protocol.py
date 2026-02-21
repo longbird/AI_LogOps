@@ -68,6 +68,11 @@ class LogAckStatus(IntEnum):
     FAILED = 0x01
 
 
+class DeployTarget(IntEnum):
+    AGENT = 0x00
+    PROCESS = 0x01
+
+
 class RecAction(IntEnum):
     START = 0x01
     STOP = 0x02
@@ -251,14 +256,15 @@ class LogRealPayload:
 
 @dataclass(slots=True)
 class CmdDeployPayload:
-    """CMD_DEPLOY: [FileSize(4B)] [SHA256(32B)] [FileName(256B)] = 292B."""
+    """CMD_DEPLOY: [FileSize(4B)] [SHA256(32B)] [FileName(256B)] [DeployTarget(1B)] = 293B."""
 
     file_size: int
     sha256: str
     filename: str
+    deploy_target: DeployTarget = DeployTarget.AGENT
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!I32s256s")
-    _SIZE: ClassVar[int] = 292
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!I32s256sB")
+    _SIZE: ClassVar[int] = 293
 
     def pack(self) -> bytes:
         if not 0 <= self.file_size <= 0xFFFFFFFF:
@@ -275,19 +281,21 @@ class CmdDeployPayload:
             self.file_size,
             sha256_bytes,
             _encode_fixed(self.filename, 256, "filename"),
+            DeployTarget(self.deploy_target),
         )
 
     @classmethod
     def unpack(cls, data: bytes) -> CmdDeployPayload:
         if len(data) != cls._SIZE:
-            raise ValueError("cmd deploy payload must be exactly 292 bytes")
-        file_size, sha256_raw, filename_raw = cast(
-            tuple[int, bytes, bytes], cls._STRUCT.unpack(data)
+            raise ValueError("cmd deploy payload must be exactly 293 bytes")
+        file_size, sha256_raw, filename_raw, deploy_target_raw = cast(
+            tuple[int, bytes, bytes, int], cls._STRUCT.unpack(data)
         )
         return cls(
             file_size=file_size,
             sha256=sha256_raw.hex(),
             filename=_decode_fixed(filename_raw),
+            deploy_target=DeployTarget(deploy_target_raw),
         )
 
 

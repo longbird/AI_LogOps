@@ -146,6 +146,24 @@ def compress() -> Path:
     return ZIP_PATH
 
 
+def compress_process_dir(process_dir: Path) -> Path:
+    """프로세스 디렉토리 → zip 압축 (config.yaml 포함)."""
+    print("=== 프로세스 디렉토리 압축 중 ===")
+    if not process_dir.exists():
+        print(f"ERROR: {process_dir} 없음", file=sys.stderr)
+        sys.exit(1)
+
+    process_zip = DIST_DIR / "ProcessDeploy.zip"
+    with zipfile.ZipFile(process_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file in process_dir.rglob("*"):
+            if file.is_file():
+                zf.write(file, file.relative_to(process_dir))
+
+    size_mb = process_zip.stat().st_size / (1024 * 1024)
+    print(f"=== 프로세스 압축 완료: {process_zip.name} ({size_mb:.1f} MB) ===")
+    return process_zip
+
+
 def split_zip(zip_path: Path) -> list[Path]:
     """20MB 초과 시 분할."""
     data = zip_path.read_bytes()
@@ -282,14 +300,18 @@ def _fetch_agents(server_url: str, auth_token: str) -> list[dict[str, str]] | No
 
 
 def _upload_to_agent(
-    server_url: str, zip_path: Path, auth_token: str, agent_id: str
+    server_url: str,
+    zip_path: Path,
+    auth_token: str,
+    agent_id: str,
+    target: str = "agent",
 ) -> bool:
     """단일 에이전트에 zip 업로드."""
     url = f"{server_url.rstrip('/')}/api/deploy/upload"
     print(f"  [{agent_id}] 업로드 중...", end=" ", flush=True)
     with zip_path.open("rb") as f:
         files = {"file": (zip_path.name, f, "application/zip")}
-        data: dict[str, str] = {"agent_id": agent_id}
+        data: dict[str, str] = {"agent_id": agent_id, "target": target}
         try:
             resp = httpx.post(
                 url,
@@ -322,6 +344,7 @@ def server_deploy(
     zip_path: Path,
     auth_token: str,
     agent_id: str = "",
+    target: str = "agent",
 ) -> bool:
     """서버 HTTP API로 zip 업로드 → 서버가 TCP로 에이전트에 자동 배포.
 
@@ -330,6 +353,7 @@ def server_deploy(
         zip_path: 업로드할 zip 파일 경로
         auth_token: TCP 인증 토큰 (서버 설정과 동일해야 함)
         agent_id: 대상 에이전트 ID. 'all'=전체 배포, 비어있으면 대화형 선택
+        target: 배포 대상 ("agent"=에이전트 자체 업데이트, "process"=대상 프로세스 배포)
     """
     print(f"=== 서버 배포: {server_url} ===")
 
@@ -399,8 +423,10 @@ def server_deploy(
     print()
     success = 0
     fail = 0
-    for target in targets:
-        ok = _upload_to_agent(server_url, zip_path, auth_token, target)
+    for target_agent in targets:
+        ok = _upload_to_agent(
+            server_url, zip_path, auth_token, target_agent, target=target
+        )
         if ok:
             success += 1
         else:
@@ -528,7 +554,69 @@ def main() -> None:
         default="",
         help="서버 인증 토큰 (--server와 함께 사용, 비어있으면 config에서 읽기)",
     )
+    parser.add_argument(
+        "--target",
+        choices=["agent", "process"],
+        default="agent",
+        help="배포 대상 (agent=에이전트 자체 업데이트, process=대상 프로세스 배포)",
+    )
+    parser.add_argument(
+        "--process-dir",
+        default="",
+        help="프로세스 배포 시 소스 디렉토리 (예: D:\\Work\\Setup\\AirREC\\Server)",
+    )
     args = parser.parse_args()
+
+    # 프로세스 배포는 빌드/압축 불필요 — 바로 서버 경유 배포로 이동
+    if args.target == "process":
+        if not args.server:
+            print(
+                "ERROR: 프로세스 배포는 --server 모드에서만 지원됩니다",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not args.process_dir:
+            print(
+                "ERROR: --target process 사용 시 --process-dir 필수",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        process_path = Path(args.process_dir)
+        if not process_path.exists():
+            print(f"ERROR: 프로세스 디렉토리 없음: {process_path}", file=sys.stderr)
+            sys.exit(1)
+        DIST_DIR.mkdir(parents=True, exist_ok=True)
+        zip_path = compress_process_dir(process_path)
+
+        auth_token = args.auth_token or load_auth_token()
+        ok = server_deploy(
+            server_url=args.server,
+            zip_path=zip_path,
+            auth_token=auth_token,
+            agent_id=args.agent_id,
+            target="process",
+        )
+
+        # Telegram 알림 (옵션)
+        bot_token = args.bot_token
+        chat_id = args.chat_id
+        if not bot_token or not chat_id:
+            cfg_token, cfg_chat_id = load_config()
+            bot_token = bot_token or cfg_token
+            chat_id = chat_id or cfg_chat_id
+
+        if bot_token and chat_id:
+            target_desc = args.agent_id or "(auto)"
+            status = "성공" if ok else "실패"
+            send_message(
+                bot_token,
+                chat_id,
+                f"프로세스 배포 {status}\n대상: {target_desc}\n서버: {args.server}",
+            )
+
+        sys.exit(0 if ok else 1)
+
+    # === 에이전트 배포 (기존 로직) ===
 
     # 1. 빌드
     if not args.skip_build:
@@ -541,12 +629,15 @@ def main() -> None:
 
     # 3a. --server → 서버 경유 자동 배포
     if args.server:
+        zip_path = ZIP_PATH
+
         auth_token = args.auth_token or load_auth_token()
         ok = server_deploy(
             server_url=args.server,
-            zip_path=ZIP_PATH,
+            zip_path=zip_path,
             auth_token=auth_token,
             agent_id=args.agent_id,
+            target=args.target,
         )
 
         # Telegram 알림 (옵션)
@@ -558,12 +649,12 @@ def main() -> None:
             chat_id = chat_id or cfg_chat_id
 
         if bot_token and chat_id:
-            target = args.agent_id or "(auto)"
+            target_desc = args.agent_id or "(auto)"
             status = "성공" if ok else "실패"
             send_message(
                 bot_token,
                 chat_id,
-                f"서버 경유 배포 {status}\n대상: {target}\n서버: {args.server}",
+                f"서버 경유 배포 {status}\n대상: {target_desc}\n서버: {args.server}",
             )
 
         sys.exit(0 if ok else 1)

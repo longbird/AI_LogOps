@@ -18,7 +18,9 @@ router = APIRouter()
 class _TCPServerLike(Protocol):
     auth_token: str
 
-    async def send_deploy(self, agent_id: str, file_path: str) -> bool: ...
+    async def send_deploy(
+        self, agent_id: str, file_path: str, deploy_target: str = "agent"
+    ) -> bool: ...
 
 
 class _SessionMgrLike(Protocol):
@@ -58,6 +60,7 @@ async def upload_deploy(
     request: Request,
     file: UploadFile = File(...),
     agent_id: str = "",
+    target: str = "",
     authorization: str = Header(""),
 ) -> JSONResponse:
     """deploy.py에서 zip 업로드 → TCP로 에이전트에 배포.
@@ -67,8 +70,16 @@ async def upload_deploy(
     Form:
         file: zip 파일
         agent_id: 대상 에이전트 (비어있으면 첫 번째 연결된 에이전트)
+        target: 배포 대상 ("agent"|"process", 기본값: "agent")
     """
     _verify_api_token(request, authorization)
+
+    if target not in ("", "agent", "process"):
+        return JSONResponse(
+            {"error": "invalid target, must be 'agent' or 'process'"}, status_code=400
+        )
+
+    deploy_target = target if target else "agent"
 
     state = _state(request)
     tcp_server = state.tcp_server
@@ -109,7 +120,9 @@ async def upload_deploy(
     # TCP로 에이전트에 비동기 전송 (대용량 zip은 전송에 수십 초 소요)
     async def _push_and_cleanup() -> None:
         try:
-            ok = await tcp_server.send_deploy(agent_id, str(temp_path))
+            ok = await tcp_server.send_deploy(
+                agent_id, str(temp_path), deploy_target=deploy_target
+            )
             if ok:
                 logger.info(
                     "deploy push complete: deploy_id=%s agent_id=%s",
@@ -134,6 +147,7 @@ async def upload_deploy(
             "status": "ok",
             "deploy_id": deploy_id,
             "agent_id": agent_id,
+            "target": deploy_target,
             "file": filename,
             "size_mb": round(size_mb, 1),
             "message": f"Deploy started for agent '{agent_id}'. Transfer in progress.",

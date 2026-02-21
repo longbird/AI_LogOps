@@ -27,6 +27,7 @@ from shared.protocol import (
     CmdCtrlAckPayload,
     CmdDeployPayload,
     CtrlAckStatus,
+    DeployTarget,
     FileAckPayload,
     FileChunkPayload,
     LogHistPayload,
@@ -483,7 +484,9 @@ class TCPServer:
         writer.write(Packet.build(PacketType.LOG_FILE_SELECT, select.pack()))
         await writer.drain()
 
-    async def send_deploy(self, agent_id: str, file_path: str) -> bool:
+    async def send_deploy(
+        self, agent_id: str, file_path: str, deploy_target: str = "agent"
+    ) -> bool:
         """에이전트에 파일 배포. CMD_DEPLOY + FILE_CHUNKs 전송.
 
         대용량 파일(zip 등)을 위해 64KB 청크와 배치 drain을 사용한다.
@@ -503,8 +506,15 @@ class TCPServer:
         loop = asyncio.get_running_loop()
         self._deploy_results[agent_id] = loop.create_future()
 
+        target = (
+            DeployTarget.PROCESS if deploy_target == "process" else DeployTarget.AGENT
+        )
+
         cmd = CmdDeployPayload(
-            file_size=len(data), sha256=sha256_hash, filename=path.name
+            file_size=len(data),
+            sha256=sha256_hash,
+            filename=path.name,
+            deploy_target=target,
         )
         writer.write(Packet.build(PacketType.CMD_DEPLOY, cmd.pack()))
         await writer.drain()

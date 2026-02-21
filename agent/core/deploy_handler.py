@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import zipfile
 from logging import Logger
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +14,7 @@ from shared.protocol import (
     CmdDeployPayload,
     CtrlAckStatus,
     CtrlAction,
+    DeployTarget,
     FileAckPayload,
     FileChunkPayload,
     PacketType,
@@ -21,6 +23,7 @@ from shared.utils import setup_logging
 
 if TYPE_CHECKING:
     from agent.core.tcp_client import TCPClient
+    from agent.updater.process_deploy import ProcessDeployer
     from agent.updater.self_update import SelfUpdater
 
 
@@ -36,21 +39,28 @@ class DeployHandler:
         process_mgr: ProcessManager,
         transfer_dir: str,
         updater: SelfUpdater | None = None,
+        process_deployer: ProcessDeployer | None = None,
     ):
         self.tcp_client: TCPClient = tcp_client
         self.process_mgr: ProcessManager = process_mgr
         self.updater: SelfUpdater | None = updater
+        self.process_deployer: ProcessDeployer | None = process_deployer
         self.receiver: FileTransferReceiver = FileTransferReceiver(
             target_dir=transfer_dir
         )
         self._logger: Logger = setup_logging("deploy_handler")
+        self._deploy_target: DeployTarget = DeployTarget.AGENT
 
     async def handle_cmd_deploy(self, payload_data: bytes) -> None:
         """CMD_DEPLOY 수신 처리. 수신 상태 초기화."""
         cmd = CmdDeployPayload.unpack(payload_data)
+        self._deploy_target = cmd.deploy_target
         self.receiver.start_receive(cmd)
         self._logger.info(
-            "deploy started: filename=%s size=%d", cmd.filename, cmd.file_size
+            "deploy started: filename=%s size=%d target=%s",
+            cmd.filename,
+            cmd.file_size,
+            self._deploy_target.name,
         )
 
     async def handle_file_chunk(self, payload_data: bytes) -> None:
@@ -64,14 +74,19 @@ class DeployHandler:
             await self._execute_deploy()
 
     async def _execute_deploy(self) -> None:
-        """파일 조립 → zip이면 SelfUpdater, 아니면 ProcessManager로 배포."""
+        """파일 조립 → deploy_target에 따라 라우팅."""
         file_path = self.receiver.assemble()
         if file_path is None:
             self._logger.error("file assembly failed (SHA-256 mismatch)")
             await self._send_deploy_result(success=False)
             return
 
-        # ZIP 파일이면 SelfUpdater로 전체 업데이트
+        # ProcessDeployer 라우팅
+        if self._deploy_target == DeployTarget.PROCESS:
+            await self._execute_process_deploy(file_path)
+            return
+
+        # 기본 AGENT 타겟: ZIP 파일이면 SelfUpdater로 전체 업데이트
         if file_path.suffix.lower() == ".zip" and self.updater is not None:
             await self._execute_zip_update(file_path)
             return
@@ -130,6 +145,50 @@ class DeployHandler:
         await asyncio.sleep(1)
         # updater.bat 생성 + 실행 → sys.exit(0)
         updater.execute_update()
+
+    async def _execute_process_deploy(self, file_path: Path) -> None:
+        """ProcessDeployer를 통한 프로세스 배포.
+
+        흐름: zip/exe 수신 → 스테이징 → ProcessDeployer.execute_deploy() → 결과 전송
+        """
+        deployer = self.process_deployer
+        if deployer is None:
+            self._logger.error("process_deployer not configured, cannot deploy")
+            await self._send_deploy_result(success=False)
+            return
+
+        try:
+            # ZIP 파일: 스테이징 디렉토리에 압축 해제
+            if file_path.suffix.lower() == ".zip":
+                self._logger.info("extracting zip to staging: %s", file_path)
+                deployer.update_dir.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(file_path, "r") as zf:
+                    zf.extractall(deployer.update_dir)
+                self._logger.info(
+                    "zip extracted to %s, staged files: %s",
+                    deployer.update_dir,
+                    deployer.staged_file_summary(),
+                )
+            else:
+                # EXE 파일: 스테이징 디렉토리에 복사
+                self._logger.info("copying exe to staging: %s", file_path)
+                deployer.update_dir.mkdir(parents=True, exist_ok=True)
+                dest = deployer.update_dir / file_path.name
+                _ = shutil.copy2(str(file_path), str(dest))
+                self._logger.info("exe copied to %s", dest)
+
+            # ProcessDeployer 실행
+            result = await deployer.execute_deploy()
+            if result.success:
+                self._logger.info("process deploy verified: pid=%d", result.pid)
+                await self._send_deploy_result(success=True, pid=result.pid)
+            else:
+                self._logger.error("process deploy failed: %s", result.error)
+                await self._send_deploy_result(success=False)
+
+        except Exception as exc:
+            self._logger.error("process deploy exception: %s", exc, exc_info=True)
+            await self._send_deploy_result(success=False)
 
     async def _send_deploy_result(self, success: bool, pid: int = 0) -> None:
         """CMD_CTRL_ACK로 배포 결과 전송."""

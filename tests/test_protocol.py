@@ -257,7 +257,7 @@ def test_cmd_deploy_payload_pack_unpack_roundtrip() -> None:
     packed = payload.pack()
     unpacked = CmdDeployPayload.unpack(packed)
     assert unpacked == payload
-    assert len(packed) == 292
+    assert len(packed) == 293
 
 
 def test_file_chunk_payload_pack_unpack_roundtrip() -> None:
