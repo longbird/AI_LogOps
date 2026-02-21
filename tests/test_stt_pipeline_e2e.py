@@ -221,13 +221,15 @@ class TestRecHandlerAnalysis:
         assert result.filename == "rec_100.wav"
         assert "upload" in result.upload_url
 
-    def test_mono_recording_skips_upload(self) -> None:
+    def test_mono_recording_triggers_upload(self) -> None:
+        """Mono recordings are now eligible for upload (STT handles mono)."""
         handler = RecHandler()
         payload = _make_analysis_payload(is_stereo=False)
 
         result = handler.handle_analysis_result("agent-1", payload)
 
-        assert result is None
+        assert result is not None
+        assert result.filename == payload.filename
 
     def test_short_recording_skips_upload(self) -> None:
         handler = RecHandler()

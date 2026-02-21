@@ -140,15 +140,12 @@ class RecHandler:
 
         Upload if:
         - Status is OK (not EMPTY, MUTED, etc.)
-        - Recording is stereo
         - Duration is at least 3 seconds
         - Not already uploaded
         """
         if record.uploaded:
             return False
         if record.status != "OK":
-            return False
-        if not record.is_stereo:
             return False
         if record.duration_wav < 3.0:
             return False

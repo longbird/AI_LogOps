@@ -60,7 +60,7 @@ class TestHandleAnalysisResult:
         assert result is None
 
     def test_handle_analysis_result_mono(self) -> None:
-        """OK + mono → returns None."""
+        """OK + mono + duration >= 3s → returns upload request (mono is allowed)."""
         handler = RecHandler()
         payload = _make_payload(
             filename="rec_001.wav", status="OK", is_stereo=False, duration_wav=10.0
@@ -68,10 +68,11 @@ class TestHandleAnalysisResult:
 
         result = handler.handle_analysis_result("agent1", payload)
 
-        assert result is None
+        assert result is not None
+        assert result.filename == "rec_001.wav"
 
     def test_handle_analysis_result_short(self) -> None:
-        """OK + stereo + duration < 3s → returns None."""
+        """OK + duration < 3s → returns None."""
         handler = RecHandler()
         payload = _make_payload(
             filename="rec_001.wav", status="OK", is_stereo=True, duration_wav=2.9
