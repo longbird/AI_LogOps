@@ -199,8 +199,8 @@ async def test_watcher_detects_new_wav():
         try:
             wav_path = os.path.join(date_dir, "test_001.wav")
             _create_test_wav(wav_path, duration_sec=0.5)
-            # 안정화 대기: STABLE_CHECK_SEC(2) × (STABLE_COUNT(2)+1) + 여유
-            await asyncio.sleep(8.0)
+            # 안정화 대기: STABLE_CHECK_SEC(2) × (STABLE_COUNT(5)+1) + 여유
+            await asyncio.sleep(15.0)
         finally:
             await watcher.stop()
 
@@ -258,7 +258,8 @@ async def test_watcher_processed_count():
         await watcher.start()
         try:
             _create_test_wav(os.path.join(date_dir, "rec_100.wav"), duration_sec=0.5)
-            await asyncio.sleep(8.0)
+            # 안정화 대기: STABLE_CHECK_SEC(2) × (STABLE_COUNT(5)+1) + 여유
+            await asyncio.sleep(15.0)
         finally:
             await watcher.stop()
 

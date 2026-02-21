@@ -26,7 +26,7 @@ RecordingCallback = Callable[[str, str, AnalysisResult], Awaitable[None]]
 MIN_FILE_SIZE = 16_000  # 최소 파일 크기 (약 2초 분량)
 MIN_DURATION_SEC = 3.0  # 최소 녹취 길이 (초)
 STABLE_CHECK_SEC = 2.0  # 크기 안정화 확인 간격 (초)
-STABLE_COUNT = 2  # 연속 동일 크기 횟수 (2회 × 2초 = 4초 무변동)
+STABLE_COUNT = 5  # 연속 동일 크기 횟수 (5회 × 2초 = 10초 무변동)
 STABLE_MAX_WAIT = 300  # 최대 대기 시간 (초, 5분)
 
 
@@ -83,6 +83,10 @@ class RecordingWatcher:
         self._observer.start()
         self._consumer_task = asyncio.create_task(self._consume())
         self._started = True
+
+        # ── 기존 파일을 오래된 순서대로 큐에 추가 ──
+        self._enqueue_existing_files()
+
         self._logger.info("RecordingWatcher started: %s", self._watch_dir)
 
     async def stop(self) -> None:
@@ -99,6 +103,36 @@ class RecordingWatcher:
             self._consumer_task = None
         self._started = False
         self._logger.info("RecordingWatcher stopped")
+
+    def _enqueue_existing_files(self) -> None:
+        """시작 시 날짜 폴더의 기존 WAV 파일을 수정 시간 오래된 순으로 큐에 추가."""
+        target_dir = self._watch_dir / self._date_filter
+        if not target_dir.is_dir():
+            self._logger.debug("date directory not found: %s", target_dir)
+            return
+
+        existing: list[Path] = []
+        for f in target_dir.iterdir():
+            if not f.is_file():
+                continue
+            if f.suffix.lower() not in self._extensions:
+                continue
+            existing.append(f)
+
+        # 수정 시간 기준 오래된 파일 먼저 (ascending)
+        existing.sort(key=lambda p: p.stat().st_mtime)
+
+        for f in existing:
+            fp = str(f)
+            if fp not in self._processed:
+                self._event_queue.put_nowait(fp)
+
+        if existing:
+            self._logger.info(
+                "enqueued %d existing files (oldest-first) from %s",
+                len(existing),
+                target_dir.name,
+            )
 
     def enqueue_file(self, filepath: str) -> None:
         p = Path(filepath)
