@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 
 from agent.core.config_view import ConfigView
+from agent.core.server_connection import RecordingOwnership
 from agent.core.tcp_client import TCPClient
 from agent.recording.uploader import RecordingUploader
 from agent.recording.watcher import RecordingWatcher
@@ -31,10 +32,14 @@ class RecordingController:
         tcp_client: TCPClient,
         recording_cfg: ConfigView,
         logger: logging.Logger,
+        server_name: str = "",
+        ownership: RecordingOwnership | None = None,
     ) -> None:
         self._tcp_client: TCPClient = tcp_client
         self._cfg: ConfigView = recording_cfg
         self._logger: logging.Logger = logger
+        self._server_name: str = server_name
+        self._ownership: RecordingOwnership | None = ownership
         self._rec_watcher: RecordingWatcher | None = None
         self._rec_watcher_task: asyncio.Task[None] | None = None
         self._uploader: RecordingUploader | None = RecordingUploader(
@@ -248,12 +253,31 @@ class RecordingController:
 
     async def on_connection_lost(self) -> None:
         await self._stop_watcher()
-        self._logger.info("connection lost: rec_watcher stopped")
+        if self._ownership is not None:
+            await self._ownership.release(self._server_name)
+        self._logger.info("connection lost: rec_watcher stopped, ownership released")
 
     async def cleanup(self) -> None:
         await self._stop_watcher()
+        if self._ownership is not None:
+            await self._ownership.release(self._server_name)
 
     async def _handle_cmd_rec_start(self, cmd: CmdRecPayload) -> None:
+        # Ownership check: only one server can own recording at a time
+        if self._ownership is not None:
+            acquired = await self._ownership.try_acquire(self._server_name)
+            if not acquired:
+                self._logger.info(
+                    "recording owned by %s, rejecting START from %s",
+                    self._ownership.owner,
+                    self._server_name,
+                )
+                ack = CmdRecAckPayload(
+                    action=RecAction.START, status=RecAckStatus.FAILED
+                )
+                await self._tcp_client.send_packet(PacketType.CMD_REC_ACK, ack.pack())
+                return
+
         if self._rec_watcher is not None:
             self._logger.info("RecordingWatcher already running, ignoring START")
             ack = CmdRecAckPayload(action=RecAction.START, status=RecAckStatus.SUCCESS)

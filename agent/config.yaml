@@ -28,6 +28,20 @@ target_process:
 schedule:
   restart_times: []           # HH:MM 형식 (예: ["06:00", "18:00"])
 
+# 멀티 서버 연결 (servers 설정 시 connection 섹션 무시)
+# servers:
+#   - name: "main"
+#     host: "61.42.53.61"
+#     port: 9500
+#     token: "auth-token"
+#     heartbeat_interval: 30
+#     reconnect_delay: 60
+#   - name: "rec"
+#     host: "49.247.46.86"
+#     port: 9500
+#     token: "auth-token"
+
+# 단일 서버 연결 (기본)
 connection:
   host: "127.0.0.1"
   port: 9500

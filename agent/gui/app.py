@@ -316,11 +316,10 @@ class AgentGUI:
         self._root.after(2000, self._update_agent_status)
 
     def _force_reconnect(self) -> None:
-        """GUI에서 강제 재접속 트리거. asyncio 루프에 재접속 코루틴을 스케줄링."""
+        """GUI에서 강제 재접속 트리거. 모든 서버에 재접속을 시도한다."""
         loop = self._agent_loop
         runtime = self._runtime
-        client = runtime.tcp_client if runtime is not None else None
-        if loop is None or client is None or not self._running:
+        if loop is None or runtime is None or not self._running:
             return
 
         self._reconnect_btn.configure(state=tk.DISABLED)
@@ -328,32 +327,33 @@ class AgentGUI:
 
         async def _do_reconnect() -> None:
             logger = logging.getLogger("agent.gui")
-            try:
-                await client.disconnect()
-                connected = await client.connect()
-                if connected:
-                    logger.info("force reconnect: success")
-                    self._root.after(
-                        0,
-                        lambda: self._status_var.set("서버 재접속됨"),
-                    )
-                else:
-                    logger.warning("force reconnect: failed")
-                    self._root.after(
-                        0,
-                        lambda: self._status_var.set("재접속 실패"),
-                    )
-            except Exception:
-                logger.exception("force reconnect error")
-                self._root.after(
-                    0,
-                    lambda: self._status_var.set("재접속 오류"),
-                )
-            finally:
-                self._root.after(
-                    0,
-                    lambda: self._reconnect_btn.configure(state=tk.NORMAL),
-                )
+            success_count = 0
+            total = len(runtime.connections)
+
+            for conn in runtime.connections:
+                try:
+                    await conn.tcp_client.disconnect()
+                    connected = await conn.tcp_client.connect()
+                    if connected:
+                        logger.info("force reconnect [%s]: success", conn.config.name)
+                        success_count += 1
+                    else:
+                        logger.warning("force reconnect [%s]: failed", conn.config.name)
+                except Exception:
+                    logger.exception("force reconnect error [%s]", conn.config.name)
+
+            if success_count == total and total > 0:
+                msg = "전체 서버 재접속됨"
+            elif success_count > 0:
+                msg = f"서버 {success_count}/{total} 재접속됨"
+            else:
+                msg = "재접속 실패"
+
+            self._root.after(0, lambda: self._status_var.set(msg))
+            self._root.after(
+                0,
+                lambda: self._reconnect_btn.configure(state=tk.NORMAL),
+            )
 
         loop.call_soon_threadsafe(asyncio.ensure_future, _do_reconnect())
 
