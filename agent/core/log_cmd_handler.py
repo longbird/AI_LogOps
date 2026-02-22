@@ -135,6 +135,26 @@ class LogCmdHandler:
         logger.info("realtime log transmission started")
         await self._send_ack(LogAction.REAL_START, LogAckStatus.SUCCESS, 0)
 
+        # 진단용: 감시 폴더 상태 + 테스트 라인 전송
+        watch_dirs = [str(d) for d in self._watcher._watch_dirs]
+        watchable = self._watcher.get_watchable_files()
+        latest = self._watcher.get_latest_files_by_dir()
+        diag = (
+            f"[진단] watch_dirs={watch_dirs}, "
+            f"watchable_files={len(watchable)}, "
+            f"latest_by_dir={[(d, Path(f).name) for d, f in latest]}"
+        )
+        logger.info(diag)
+        try:
+            from shared.protocol import LogRealPayload
+
+            await self._client.send_packet(
+                PacketType.LOG_REAL,
+                LogRealPayload(filename="__diag__", line=diag).pack(),
+            )
+        except Exception:
+            logger.warning("failed to send diagnostic line")
+
     async def _handle_real_stop(self) -> None:
         self._realtime_active = False
         logger.info("realtime log transmission stopped")

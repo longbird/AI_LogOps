@@ -48,6 +48,7 @@ class LogWatcher:
         self._positions: dict[str, int] = {}
         self._event_queue: asyncio.Queue[str] = asyncio.Queue()
         self._consumer_task: asyncio.Task[None] | None = None
+        self._poll_task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._started = False
 
@@ -67,6 +68,7 @@ class LogWatcher:
 
         self._observer.start()
         self._consumer_task = asyncio.create_task(self._consume_events())
+        self._poll_task = asyncio.create_task(self._poll_files())
         self._started = True
 
     async def stop(self) -> None:
@@ -78,13 +80,15 @@ class LogWatcher:
         self._observer.stop()
         await asyncio.to_thread(self._observer.join)
 
-        if self._consumer_task is not None:
-            self._consumer_task.cancel()
-            try:
-                await self._consumer_task
-            except asyncio.CancelledError:
-                pass
-            self._consumer_task = None
+        for task in (self._consumer_task, self._poll_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._consumer_task = None
+        self._poll_task = None
 
         self._started = False
 
@@ -173,6 +177,26 @@ class LogWatcher:
                 return [line.rstrip("\n\r") for line in lines[-n:]]
         except OSError:
             return ["(read error)"]
+
+    # ------------------------------------------------------------------
+    # 폴링 폴백 — watchdog 이벤트 누락 시 주기적으로 파일 변경 확인
+    # ------------------------------------------------------------------
+
+    async def _poll_files(self) -> None:
+        """3초 간격으로 감시 파일 크기를 확인하여 watchdog 누락분을 보완한다."""
+        while True:
+            await asyncio.sleep(3)
+            try:
+                for filepath in self.get_watchable_files():
+                    try:
+                        file_size = Path(filepath).stat().st_size
+                    except OSError:
+                        continue
+                    last_pos = self._positions.get(filepath, 0)
+                    if file_size > last_pos:
+                        self._event_queue.put_nowait(filepath)
+            except Exception:
+                pass  # 폴링 실패해도 watchdog은 계속 동작
 
     def enqueue_file(self, filepath: str) -> None:
         if self._loop is None:
