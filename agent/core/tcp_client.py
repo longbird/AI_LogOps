@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import socket
 import time
 from collections.abc import Awaitable, Callable
 from typing import cast
@@ -87,6 +88,19 @@ class TCPClient:
                 "connect failed: host=%s port=%s err=%s", self.host, self.port, exc
             )
             return False
+
+        # TCP keepalive 설정 — NAT/방화벽의 유휴 연결 종료 방지
+        sock: socket.socket | None = writer.get_extra_info("socket")
+        if sock is not None:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                # Windows: SIO_KEEPALIVE_VALS (onoff, keepalivetime_ms, keepaliveinterval_ms)
+                sock.ioctl(  # type: ignore[attr-defined]
+                    socket.SIO_KEEPALIVE_VALS,  # type: ignore[attr-defined]
+                    (1, 30_000, 10_000),  # 30초 유휴 후 10초 간격 probe
+                )
+            except (AttributeError, OSError):
+                self._logger.debug("TCP keepalive setup skipped (unsupported)")
 
         self._reader = reader
         self._writer = writer
