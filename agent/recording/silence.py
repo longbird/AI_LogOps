@@ -11,7 +11,7 @@ from .energy import load_wav, rms_dbfs
 
 SILENCE_THRESHOLD_DB = -48.0
 FRAME_MS = 20
-MIN_DROPOUT_SEC = 0.5
+MIN_DROPOUT_SEC = 2.0  # 2초 이상 연속 침묵만 dropout으로 간주
 
 
 @dataclass

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 EMPTY_THRESHOLD_DB: float = -60.0
 MUTED_THRESHOLD_RATIO: float = 0.95
-DROPOUT_WARN_COUNT: int = 3
+DROPOUT_WARN_COUNT: int = 5  # dropout 5건 초과 시 DROPOUT 상태
 DURATION_MISMATCH_SEC: float = 5.0
 
 
@@ -89,25 +89,79 @@ def analyze_recording(
 
     if left_rms_db < EMPTY_THRESHOLD_DB and right_rms_db < EMPTY_THRESHOLD_DB:
         status = AnalysisStatus.EMPTY
+        logger.info(
+            "status=EMPTY: filename=%s L_rms=%.1fdB R_rms=%.1fdB (threshold=%.1fdB)",
+            filename,
+            left_rms_db,
+            right_rms_db,
+            EMPTY_THRESHOLD_DB,
+        )
     elif (
         left_silence.silence_ratio > MUTED_THRESHOLD_RATIO
         and right_silence.silence_ratio <= MUTED_THRESHOLD_RATIO
     ):
         status = AnalysisStatus.MUTED_L
+        logger.info(
+            "status=MUTED_L: filename=%s L_silence=%.1f%% R_silence=%.1f%% "
+            "(mute_threshold=%.0f%%)",
+            filename,
+            left_silence.silence_ratio * 100,
+            right_silence.silence_ratio * 100,
+            MUTED_THRESHOLD_RATIO * 100,
+        )
     elif (
         right_silence.silence_ratio > MUTED_THRESHOLD_RATIO
         and left_silence.silence_ratio <= MUTED_THRESHOLD_RATIO
     ):
         status = AnalysisStatus.MUTED_R
+        logger.info(
+            "status=MUTED_R: filename=%s L_silence=%.1f%% R_silence=%.1f%% "
+            "(mute_threshold=%.0f%%)",
+            filename,
+            left_silence.silence_ratio * 100,
+            right_silence.silence_ratio * 100,
+            MUTED_THRESHOLD_RATIO * 100,
+        )
     elif (
         smdr_duration > 0.0
         and abs(wav_duration - smdr_duration) > DURATION_MISMATCH_SEC
     ):
         status = AnalysisStatus.MISMATCH
+        logger.info(
+            "status=MISMATCH: filename=%s wav=%.1fs smdr=%.1fs diff=%.1fs "
+            "(threshold=%.1fs)",
+            filename,
+            wav_duration,
+            smdr_duration,
+            abs(wav_duration - smdr_duration),
+            DURATION_MISMATCH_SEC,
+        )
     elif dropout_count > DROPOUT_WARN_COUNT:
         status = AnalysisStatus.DROPOUT
+        logger.warning(
+            "status=DROPOUT: filename=%s dropout_count=%d > threshold=%d "
+            "dropout_total=%.1fs L_silence=%.1f%% R_silence=%.1f%% "
+            "L_rms=%.1fdB R_rms=%.1fdB duration=%.1fs",
+            filename,
+            dropout_count,
+            DROPOUT_WARN_COUNT,
+            dropout_total_sec,
+            left_silence.silence_ratio * 100,
+            right_silence.silence_ratio * 100,
+            left_rms_db,
+            right_rms_db,
+            wav_duration,
+        )
     else:
         status = AnalysisStatus.OK
+        logger.debug(
+            "status=OK: filename=%s dropout=%d/%d L_silence=%.1f%% R_silence=%.1f%%",
+            filename,
+            dropout_count,
+            DROPOUT_WARN_COUNT,
+            left_silence.silence_ratio * 100,
+            right_silence.silence_ratio * 100,
+        )
 
     duration_diff = abs(wav_duration - smdr_duration) if smdr_duration > 0.0 else 0.0
 

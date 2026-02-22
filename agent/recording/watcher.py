@@ -1,47 +1,32 @@
-"""Recording folder watcher - detects new WAV files, runs audio quality analysis.
+"""DB-driven recording analyzer.
 
-Based on agent/core/log_watcher.py pattern (watchdog Observer + asyncio queue).
-Analysis engine from AirREC: agent/recording/audio_quality.py.
+rec_his / rec_his_YYYYMM 테이블에서 미분석 녹취를 조회하여
+음질 분석(audio quality)을 실행한다.
+Analysis engine: agent/recording/audio_quality.py.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
-from os import fsdecode
+from collections.abc import Awaitable, Callable, Mapping
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from watchdog.events import FileSystemEvent, FileSystemEventHandler
-from watchdog.observers import Observer
+from agent.recording.audio_quality import get_wav_duration
 
-from agent.recording.audio_quality import analyze_recording
-from agent.recording.models import AnalysisResult
+# callback: (rec_no, filename, filepath, duration, in_out)
+RecordingCallback = Callable[[int, str, str, float, int], Awaitable[None]]
 
-RecordingCallback = Callable[[str, str, AnalysisResult], Awaitable[None]]
-
-# ── 파일 완성 대기 상수 ──
-# μ-law mono 8kHz = 8,000 bytes/sec → 3초 = 24KB
+# ── 상수 ──
 MIN_FILE_SIZE = 16_000  # 최소 파일 크기 (약 2초 분량)
-MIN_DURATION_SEC = 3.0  # 최소 녹취 길이 (초)
-STABLE_CHECK_SEC = 2.0  # 크기 안정화 확인 간격 (초)
-STABLE_COUNT = 5  # 연속 동일 크기 횟수 (5회 × 2초 = 10초 무변동)
-STABLE_MAX_WAIT = 300  # 최대 대기 시간 (초, 5분)
-
-
-class _RecEventHandler(FileSystemEventHandler):
-    def __init__(self, watcher: RecordingWatcher) -> None:
-        self._watcher = watcher
-
-    def on_created(self, event: FileSystemEvent) -> None:
-        if event.is_directory:
-            return
-        self._watcher.enqueue_file(fsdecode(event.src_path))
+MIN_DURATION_SEC = 5.0  # 최소 녹취 길이 (초) — 5초 이상만 서버 분석
+DB_POLL_INTERVAL = 30.0  # DB 재조회 간격 (초)
 
 
 class RecordingWatcher:
-    """Watch a recording directory for new WAV files, analyze on arrival."""
+    """DB 기반 녹취 분석. rec_his에서 미분석 건을 조회하여 분석 진행."""
 
     def __init__(
         self,
@@ -49,198 +34,238 @@ class RecordingWatcher:
         extensions: list[str],
         on_new_recording: RecordingCallback,
         date_filter: str = "",
+        db_config: Mapping[str, Any] | None = None,
         min_file_size: int = MIN_FILE_SIZE,
         min_duration_sec: float = MIN_DURATION_SEC,
+        poll_interval: float = DB_POLL_INTERVAL,
     ) -> None:
         self._watch_dir = Path(watch_dir)
         self._extensions = {ext.lower() for ext in extensions}
         self._on_new_recording = on_new_recording
-        # YYYYMMDD — 비어있으면 현재일 기준
         self._date_filter = date_filter or datetime.now().strftime("%Y%m%d")
+        self._db_config = db_config
         self._min_file_size = min_file_size
         self._min_duration_sec = min_duration_sec
+        self._poll_interval = poll_interval
 
-        self._observer = Observer()
-        self._processed: set[str] = set()
-        self._event_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._processed: set[int] = set()  # 처리된 rec_no 집합
+        self._event_queue: asyncio.Queue[tuple[int, str, int]] = asyncio.Queue()
         self._consumer_task: asyncio.Task[None] | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._poll_task: asyncio.Task[None] | None = None
         self._started = False
         self._logger = logging.getLogger(self.__class__.__name__)
 
+        # ── Flow control: 서버 제어 기반 1건씩 처리 ──
+        self._next_event = asyncio.Event()
+        self._first_done = False  # 첫 건은 자동 처리
+        self._next_timeout: float = 90.0  # NEXT 대기 타임아웃 (초)
+
     @property
     def processed_count(self) -> int:
-        """Return the number of WAV files processed so far."""
+        """분석 완료된 녹취 건수."""
         return len(self._processed)
+
+    # ------------------------------------------------------------------
+    # start / stop
+    # ------------------------------------------------------------------
 
     async def start(self) -> None:
         if self._started:
             return
-        self._loop = asyncio.get_running_loop()
-        handler = _RecEventHandler(self)
-        if self._watch_dir.is_dir():
-            self._observer.schedule(handler, str(self._watch_dir), recursive=True)
-        self._observer.start()
         self._consumer_task = asyncio.create_task(self._consume())
+        self._poll_task = asyncio.create_task(self._poll_db())
         self._started = True
 
-        # ── 기존 파일을 오래된 순서대로 큐에 추가 ──
-        self._enqueue_existing_files()
+        # 초기 DB 조회
+        await self._fetch_and_enqueue()
 
-        self._logger.info("RecordingWatcher started: %s", self._watch_dir)
+        self._logger.info(
+            "RecordingWatcher started (DB mode): watch_dir=%s date=%s",
+            self._watch_dir,
+            self._date_filter,
+        )
+
+    def resume_next(self) -> None:
+        """서버 NEXT 명령 수신 시 호출 — 다음 1건 분석 재개."""
+        self._next_event.set()
 
     async def stop(self) -> None:
         if not self._started:
             return
-        self._observer.stop()
-        await asyncio.to_thread(self._observer.join, timeout=5)
-        if self._consumer_task is not None:
-            self._consumer_task.cancel()
-            try:
-                await self._consumer_task
-            except asyncio.CancelledError:
-                pass
-            self._consumer_task = None
+        for task in (self._consumer_task, self._poll_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._consumer_task = None
+        self._poll_task = None
         self._started = False
         self._logger.info("RecordingWatcher stopped")
 
-    def _enqueue_existing_files(self) -> None:
-        """시작 시 날짜 폴더의 기존 WAV 파일을 수정 시간 오래된 순으로 큐에 추가."""
-        target_dir = self._watch_dir / self._date_filter
-        if not target_dir.is_dir():
-            self._logger.debug("date directory not found: %s", target_dir)
+    # ------------------------------------------------------------------
+    # DB 폴링 — 미분석 녹취 조회
+    # ------------------------------------------------------------------
+
+    async def _poll_db(self) -> None:
+        """주기적으로 DB에서 미분석 녹취를 재조회."""
+        while True:
+            await asyncio.sleep(self._poll_interval)
+            try:
+                await self._fetch_and_enqueue()
+            except Exception:
+                self._logger.exception("DB poll failed")
+
+    async def _fetch_and_enqueue(self) -> None:
+        """DB에서 미분석 녹취 조회 후 큐에 추가."""
+        if not self._db_config:
+            self._logger.warning("DB config not set — skipping fetch")
             return
+        try:
+            from agent.db.connection import get_connection
+            from agent.db.helpers import fetch_unanalyzed_recordings
 
-        existing: list[Path] = []
-        for f in target_dir.iterdir():
-            if not f.is_file():
-                continue
-            if f.suffix.lower() not in self._extensions:
-                continue
-            existing.append(f)
-
-        # 수정 시간 기준 오래된 파일 먼저 (ascending)
-        existing.sort(key=lambda p: p.stat().st_mtime)
-
-        for f in existing:
-            fp = str(f)
-            if fp not in self._processed:
-                self._event_queue.put_nowait(fp)
-
-        if existing:
-            self._logger.info(
-                "enqueued %d existing files (oldest-first) from %s",
-                len(existing),
-                target_dir.name,
+            db_cfg: dict[str, object] = dict(self._db_config)
+            conn = await asyncio.to_thread(get_connection, db_cfg)
+            recordings = await asyncio.to_thread(
+                fetch_unanalyzed_recordings, conn, self._date_filter
             )
 
-    def enqueue_file(self, filepath: str) -> None:
-        p = Path(filepath)
-        if p.suffix.lower() not in self._extensions:
-            return
-        if filepath in self._processed:
-            return
-        # 날짜 필터: watch_dir/YYYYMMDD/ 하위 파일만 허용
-        if self._date_filter:
-            if p.parent.name != self._date_filter:
-                return
-        loop = self._loop
-        if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(self._event_queue.put_nowait, filepath)
+            new_count = 0
+            skipped = 0
+            for rec_no, filename, in_out in recordings:
+                if rec_no in self._processed:
+                    continue
+                # 실제 파일이 존재하는 경우에만 분석 대상으로 추가
+                filepath = self._locate_file(filename)
+                if not filepath:
+                    skipped += 1
+                    continue
+                self._event_queue.put_nowait((rec_no, filename, in_out))
+                new_count += 1
+
+            if new_count or skipped:
+                self._logger.info(
+                    "DB poll: %d enqueued, %d skipped (file not found) — date=%s",
+                    new_count,
+                    skipped,
+                    self._date_filter,
+                )
+        except Exception:
+            self._logger.exception("Failed to fetch unanalyzed recordings")
+
+    # ------------------------------------------------------------------
+    # 파일 위치 탐색
+    # ------------------------------------------------------------------
+
+    def _locate_file(self, filename: str) -> str | None:
+        """watch_dir 에서 녹취 파일을 찾는다.
+
+        1) watch_dir/YYYYMMDD/filename (가장 일반적)
+        2) watch_dir 하위 재귀 검색
+        """
+        target = self._watch_dir / self._date_filter / filename
+        if target.is_file():
+            return str(target)
+        for f in self._watch_dir.rglob(filename):
+            if f.is_file():
+                return str(f)
+        return None
+
+    # ------------------------------------------------------------------
+    # 분석 실행
+    # ------------------------------------------------------------------
 
     async def _consume(self) -> None:
         while True:
-            filepath = await self._event_queue.get()
-            if filepath in self._processed:
+            rec_no, filename, in_out = await self._event_queue.get()
+            if rec_no in self._processed:
                 continue
-            fname = Path(filepath).name
+
+            # ── Flow control: 첫 건 이후에는 서버 NEXT 명령 대기 ──
+            if self._first_done:
+                self._logger.info(
+                    "waiting for server NEXT: rec_no=%d filename=%s",
+                    rec_no,
+                    filename,
+                )
+                self._next_event.clear()
+                try:
+                    await asyncio.wait_for(
+                        self._next_event.wait(), timeout=self._next_timeout
+                    )
+                except asyncio.TimeoutError:
+                    self._logger.warning(
+                        "NEXT timeout (%.0fs), resuming automatically: "
+                        "rec_no=%d filename=%s",
+                        self._next_timeout,
+                        rec_no,
+                        filename,
+                    )
+                self._logger.info(
+                    "server NEXT received, resuming: rec_no=%d filename=%s",
+                    rec_no,
+                    filename,
+                )
+
             try:
-                # ── Step 1: 파일 쓰기 완료 대기 ──
-                file_size = await self._wait_for_stable(filepath)
-                if file_size == 0:
-                    self._logger.debug("file removed during stabilization: %s", fname)
+                # ── Step 1: 파일 위치 확인 ──
+                filepath = await asyncio.to_thread(self._locate_file, filename)
+                if not filepath:
+                    self._logger.debug(
+                        "file not found: rec_no=%d filename=%s", rec_no, filename
+                    )
                     continue
 
                 # ── Step 2: 최소 파일 크기 필터 ──
+                try:
+                    file_size = Path(filepath).stat().st_size
+                except OSError:
+                    continue
                 if file_size < self._min_file_size:
                     self._logger.debug(
-                        "skip (too small): %s size=%d min=%d",
-                        fname,
+                        "skip (too small): rec_no=%d filename=%s size=%d",
+                        rec_no,
+                        filename,
                         file_size,
-                        self._min_file_size,
                     )
-                    self._processed.add(filepath)
+                    self._processed.add(rec_no)
                     continue
 
-                # ── Step 3: 분석 실행 ──
-                filename = Path(filepath).name
+                # ── Step 3: WAV 길이 확인 (음질 분석은 서버에서 수행) ──
                 self._logger.info(
-                    "analyzing: filename=%s file=%s size=%d",
+                    "checking duration: rec_no=%d filename=%s size=%d",
+                    rec_no,
                     filename,
-                    fname,
                     file_size,
                 )
-                result = await asyncio.to_thread(
-                    analyze_recording, filename, filepath, 0.0
-                )
-                self._processed.add(filepath)
+                duration = await asyncio.to_thread(get_wav_duration, filepath)
+                self._processed.add(rec_no)
 
                 # ── Step 4: 최소 duration 필터 ──
-                if result.duration_wav < self._min_duration_sec:
+                if duration < self._min_duration_sec:
                     self._logger.debug(
-                        "skip (too short): %s dur=%.1fs min=%.1fs",
-                        fname,
-                        result.duration_wav,
-                        self._min_duration_sec,
+                        "skip (too short): rec_no=%d filename=%s dur=%.1fs",
+                        rec_no,
+                        filename,
+                        duration,
                     )
                     continue
 
                 self._logger.info(
-                    "analyzed: filename=%s status=%s L=%.1fdB R=%.1fdB dur=%.1fs",
+                    "qualified: rec_no=%d filename=%s dur=%.1fs → send to server",
+                    rec_no,
                     filename,
-                    result.status.value,
-                    result.left.rms_db,
-                    result.right.rms_db,
-                    result.duration_wav,
+                    duration,
                 )
-                await self._on_new_recording(filename, filepath, result)
+                await self._on_new_recording(
+                    rec_no, filename, filepath, duration, in_out
+                )
+                self._first_done = True  # 이후부터는 NEXT 대기
             except Exception:
-                try:
-                    sz = Path(filepath).stat().st_size
-                except OSError:
-                    sz = -1
                 self._logger.exception(
-                    "Failed to analyze: %s (size=%d)",
-                    filepath,
-                    sz,
+                    "Failed to analyze: rec_no=%d filename=%s",
+                    rec_no,
+                    filename,
                 )
-
-    async def _wait_for_stable(self, filepath: str) -> int:
-        """파일 쓰기 완료 대기: 크기가 연속으로 동일하면 안정화로 판단.
-
-        Returns:
-            최종 파일 크기 (바이트). 파일이 삭제되었으면 0.
-        """
-        last_size = -1
-        consecutive = 0
-        max_checks = int(STABLE_MAX_WAIT / STABLE_CHECK_SEC)
-        for _ in range(max_checks):
-            try:
-                current_size = Path(filepath).stat().st_size
-            except OSError:
-                return 0
-            if current_size == last_size:
-                consecutive += 1
-                if consecutive >= STABLE_COUNT:
-                    return current_size
-            else:
-                consecutive = 0
-                last_size = current_size
-            await asyncio.sleep(STABLE_CHECK_SEC)
-        self._logger.warning(
-            "file stabilization timeout (%ds): %s size=%d",
-            STABLE_MAX_WAIT,
-            Path(filepath).name,
-            last_size,
-        )
-        return last_size if last_size >= 0 else 0
