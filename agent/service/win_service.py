@@ -385,18 +385,24 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                     return
 
                 from agent.recording.watcher import RecordingWatcher
-                from agent.recording.models import AnalysisResult
 
                 date_filter = cmd.date  # YYYYMMDD or ""
 
                 async def _on_new_recording(
-                    filename: str, filepath: str, result: AnalysisResult
+                    rec_no: int,
+                    filename: str,
+                    filepath: str,
+                    duration: float,
+                    in_out: int = 0,
                 ) -> None:
+                    """녹취 대상 서버 전송 (duration ≥ 5초 통과한 건)."""
                     self._logger.info(
-                        "recording callback: filename=%s status=%s file=%s",
+                        "recording callback: rec_no=%d filename=%s dur=%.1fs file=%s in_out=%d",
+                        rec_no,
                         filename,
-                        getattr(getattr(result, "status", None), "value", "?"),
+                        duration,
                         filepath,
+                        in_out,
                     )
                     if not tcp_client.is_connected:
                         self._logger.warning(
@@ -405,49 +411,31 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                         return
                     from shared.protocol import RecAnalysisPayload
 
+                    # 에이전트는 duration + in_out 전송, 음질 분석은 서버에서 수행
                     payload = RecAnalysisPayload(
                         filename=filename,
-                        status=getattr(
-                            getattr(result, "status", None), "value", "EMPTY"
-                        ),
-                        left_rms_db=getattr(
-                            getattr(result, "left", None), "rms_db", -96.0
-                        ),
-                        right_rms_db=getattr(
-                            getattr(result, "right", None), "rms_db", -96.0
-                        ),
-                        left_silence_ratio=getattr(
-                            getattr(result, "left", None), "silence_ratio", 1.0
-                        ),
-                        right_silence_ratio=getattr(
-                            getattr(result, "right", None), "silence_ratio", 1.0
-                        ),
-                        dropout_count=getattr(result, "dropout_count", 0),
-                        duration_wav=getattr(result, "duration_wav", 0.0),
-                        duration_smdr=getattr(result, "duration_smdr", 0.0),
-                        is_stereo=getattr(result, "is_stereo", False),
+                        status="OK",
+                        left_rms_db=0.0,
+                        right_rms_db=0.0,
+                        left_silence_ratio=0.0,
+                        right_silence_ratio=0.0,
+                        dropout_count=0,
+                        duration_wav=duration,
+                        duration_smdr=0.0,
+                        is_stereo=False,
+                        in_out=in_out,
                     )
                     with contextlib.suppress(ConnectionError, OSError):
                         await tcp_client.send_packet(
                             PacketType.REC_ANALYSIS_RESULT, payload.pack()
                         )
-                    if _to_bool(recording_cfg.get("alert_on_anomaly"), True):
-                        anomaly_count = getattr(result, "anomalies", 0)
-                        if anomaly_count > 0:
-                            msg = (
-                                f"Recording anomaly detected\n"
-                                f"filename={filename}\n"
-                                f"anomalies={anomaly_count}\n"
-                                f"file={filepath}"
-                            )
-                            with contextlib.suppress(Exception):
-                                await poller.send_message(msg)
 
                 _rec_watcher = RecordingWatcher(
                     watch_dir=watch_dir,
                     extensions=_to_list_str(recording_cfg.get("extensions"), [".wav"]),
                     on_new_recording=_on_new_recording,
                     date_filter=date_filter,
+                    db_config=_as_mapping(recording_cfg.get("db")),
                 )
                 _rec_watcher_task = asyncio.create_task(_rec_watcher.start())
                 logger.info(
@@ -460,6 +448,13 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                     action=RecAction.START, status=RecAckStatus.SUCCESS
                 )
                 await tcp_client.send_packet(PacketType.CMD_REC_ACK, ack.pack())
+
+            elif cmd.action == RecAction.NEXT:
+                if _rec_watcher is not None:
+                    _rec_watcher.resume_next()
+                    logger.info("RecordingWatcher: server NEXT received")
+                else:
+                    logger.warning("RecordingWatcher not running, ignoring NEXT")
 
             elif cmd.action == RecAction.STOP:
                 if _rec_watcher is not None:
@@ -500,6 +495,14 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                     break
             if target is None:
                 logger.warning("filename=%s not found in %s", req.filename, watch_dir)
+                # 파일 미발견 시에도 실패 ACK 전송 → 서버 flow control 차단 방지
+                fail_ack = RecUploadAckPayload(
+                    filename=req.filename, status=-1, file_size=0
+                )
+                with contextlib.suppress(ConnectionError, OSError):
+                    await tcp_client.send_packet(
+                        PacketType.REC_UPLOAD_ACK, fail_ack.pack()
+                    )
                 return
             filename_out, status, file_size = await _uploader.upload(
                 filename=req.filename,
@@ -523,6 +526,22 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                 logger.warning("invalid STT_RESULT payload")
                 return
 
+            logger.info(
+                "STT result received: filename=%s dur=%.1fs words=%d "
+                "score=%.1f talk_agent=%.0f%% talk_cust=%.0f%% silence=%.0f%% "
+                "first_resp=%.1fs phrase=%d forbidden=%d",
+                stt.filename,
+                stt.duration_sec,
+                stt.word_count,
+                stt.score_total,
+                stt.agent_talk_ratio * 100,
+                stt.customer_talk_ratio * 100,
+                stt.silence_ratio * 100,
+                stt.first_response_sec,
+                stt.required_phrase_hit,
+                stt.forbidden_word_hit,
+            )
+
             db_cfg = _as_mapping(recording_cfg.get("db"))
             if not db_cfg:
                 logger.warning("recording.db not configured, cannot save STT result")
@@ -530,11 +549,39 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
 
             try:
                 from agent.db.connection import get_connection
-                from agent.db.helpers import insert_transcript, insert_call_quality
+                from agent.db.helpers import (
+                    upsert_transcript,
+                    upsert_call_quality,
+                    upsert_audio_quality,
+                )
 
                 conn = await asyncio.to_thread(get_connection, db_cfg)
+
+                # 음질 분석 결과 저장
+                if stt.aq_status:
+                    await asyncio.to_thread(
+                        upsert_audio_quality,
+                        conn,
+                        stt.filename,
+                        stt.agent_id,
+                        stt.aq_status,
+                        stt.aq_left_rms_db,
+                        stt.aq_right_rms_db,
+                        stt.aq_left_silence,
+                        stt.aq_right_silence,
+                        stt.aq_dropout_count,
+                        stt.aq_duration_wav,
+                        None,  # duration_smdr — 서버에서 미제공
+                        stt.aq_is_stereo,
+                    )
+                    logger.info(
+                        "Audio quality saved to DB: filename=%s status=%s",
+                        stt.filename,
+                        stt.aq_status,
+                    )
+
                 tid = await asyncio.to_thread(
-                    insert_transcript,
+                    upsert_transcript,
                     conn,
                     stt.filename,
                     stt.full_text,
@@ -545,7 +592,7 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                     stt.word_count,
                 )
                 await asyncio.to_thread(
-                    insert_call_quality,
+                    upsert_call_quality,
                     conn,
                     stt.filename,
                     tid,
@@ -594,22 +641,18 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                     query_recordings_list,
                     query_recording_detail,
                 )
-
-                conn = await asyncio.to_thread(get_connection, db_cfg)
-
-                if req.query_type == "detail":
-                    row = await asyncio.to_thread(
-                        query_recording_detail, conn, req.filename
-                    )
-                    records: list[dict[str, object]] = [row] if row else []
-                else:
-                    records = await asyncio.to_thread(
-                        query_recordings_list, conn, req.date_str
-                    )
-
-                # Convert datetime objects to ISO string for JSON serialization
                 import datetime as _dt
 
+                def _db_query() -> list[dict[str, object]]:
+                    conn = get_connection(db_cfg)
+                    if req.query_type == "detail":
+                        row = query_recording_detail(conn, req.filename)
+                        return [row] if row else []
+                    return query_recordings_list(conn, req.date_str)
+
+                records: list[dict[str, object]] = await asyncio.to_thread(_db_query)
+
+                # Convert datetime objects to ISO string for JSON serialization
                 serializable: list[dict[str, object]] = []
                 for rec in records:
                     row_dict: dict[str, object] = {}
@@ -637,12 +680,28 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
 
         tcp_client.on_rec_data_req = _handle_rec_data_req
 
+        async def _on_connection_lost() -> None:
+            """TCP 연결 해제 시 녹취 분석/로그 전송 상태 초기화."""
+            nonlocal _rec_watcher, _rec_watcher_task
+            if _rec_watcher is not None:
+                await _rec_watcher.stop()
+                _rec_watcher = None
+            if _rec_watcher_task is not None:
+                _rec_watcher_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await _rec_watcher_task
+                _rec_watcher_task = None
+            _lch = log_cmd_handler_ref[0]
+            if _lch is not None:
+                _lch._realtime_active = False
+            logger.info("connection lost: rec_watcher stopped, realtime log disabled")
+
         logger.info(
             ">>> entering heartbeat_loop (stop_requested=%s)",
             self._stop_requested.is_set(),
         )
         try:
-            await self._heartbeat_loop(tcp_client)
+            await self._heartbeat_loop(tcp_client, _on_connection_lost)
             logger.info(">>> heartbeat_loop exited normally")
         except Exception:
             logger.exception(">>> heartbeat_loop crashed")
@@ -734,7 +793,11 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                     f"[Process Watch] {process_mgr.process_name} is NOT running."
                 )
 
-    async def _heartbeat_loop(self, tcp_client: TCPClient) -> None:
+    async def _heartbeat_loop(
+        self,
+        tcp_client: TCPClient,
+        _on_connection_lost: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         interval = max(1, tcp_client.heartbeat_interval)
         next_heartbeat = 0.0
         loop = asyncio.get_running_loop()
@@ -783,6 +846,8 @@ class AILogOpsAgentService(win32serviceutil.ServiceFramework):
                 except (ConnectionError, OSError, asyncio.TimeoutError):
                     self._logger.warning("heartbeat failed — closing connection")
                     await tcp_client.close_on_error()
+                    if _on_connection_lost is not None:
+                        await _on_connection_lost()
             elif _auto_connect:
                 # 자동 재접속: 첫 시도는 빠르게(5초), 이후 reconnect_delay 간격
                 _reconnect_counter += 1
