@@ -2,9 +2,10 @@
 
 from agent.db.connection import get_connection, close_pool
 from agent.db.helpers import (
-    insert_audio_quality,
-    insert_transcript,
-    insert_call_quality,
+    fetch_unanalyzed_recordings,
+    upsert_audio_quality,
+    upsert_transcript,
+    upsert_call_quality,
     query_recordings_list,
     query_recording_detail,
 )
@@ -12,9 +13,10 @@ from agent.db.helpers import (
 __all__ = [
     "get_connection",
     "close_pool",
-    "insert_audio_quality",
-    "insert_transcript",
-    "insert_call_quality",
+    "fetch_unanalyzed_recordings",
+    "upsert_audio_quality",
+    "upsert_transcript",
+    "upsert_call_quality",
     "query_recordings_list",
     "query_recording_detail",
 ]
