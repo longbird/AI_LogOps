@@ -56,13 +56,16 @@ class PipelineResult:
     forbidden_word_list: str = ""
 
 
-def run_pipeline(filename: str, wav_path: str, language: str = "ko") -> PipelineResult:
+def run_pipeline(
+    filename: str, wav_path: str, language: str = "ko", in_out: int = 0
+) -> PipelineResult:
     """Run full STT + quality analysis pipeline on a WAV file.
 
     Args:
         filename: Recording filename identifier.
         wav_path: Path to the WAV file.
         language: BCP-47 language code for STT.
+        in_out: 1=수신, 2=발신, 0=알수없음 — 스테레오 채널 매핑에 사용.
 
     Returns:
         PipelineResult with transcript and quality data.
@@ -74,12 +77,14 @@ def run_pipeline(filename: str, wav_path: str, language: str = "ko") -> Pipeline
     from .stt import transcribe_file
     from .call_quality import CallQualityResult, analyze_call_quality
 
-    transcribe = cast(Callable[[str, str], _TranscriptLike], transcribe_file)
+    transcribe = cast(Callable[[str, str, int], _TranscriptLike], transcribe_file)
 
-    _logger.info("Pipeline start: filename=%s path=%s", filename, wav_path)
+    _logger.info(
+        "Pipeline start: filename=%s path=%s in_out=%d", filename, wav_path, in_out
+    )
 
     # Step 1: STT
-    transcript = transcribe(wav_path, language)
+    transcript = transcribe(wav_path, language, in_out)
     _logger.info(
         "STT done: filename=%s segments=%d words=%d",
         filename,
@@ -89,22 +94,33 @@ def run_pipeline(filename: str, wav_path: str, language: str = "ko") -> Pipeline
 
     # Step 2: Call quality
     quality: CallQualityResult = analyze_call_quality(transcript)
+    is_mono = quality.customer_talk_ratio == 0.0 and quality.agent_talk_ratio > 0.0
     _logger.info(
-        "Quality done: filename=%s score=%.1f",
+        "Quality done: filename=%s mode=%s score=%.1f "
+        "resp=%.1f phrase=%.1f silence=%.1f "
+        "talk=%.0f%% silence_r=%.0f%% pace=%.0fWPM",
         filename,
+        "mono" if is_mono else "stereo",
         quality.score_total,
+        quality.score_response,
+        quality.score_phrase,
+        quality.score_silence,
+        quality.agent_talk_ratio * 100,
+        quality.silence_ratio * 100,
+        quality.first_response_sec if is_mono else 0.0,
     )
 
-    # Build segments JSON
+    # Build segments JSON (order 필드로 생성 시점의 정렬 순서를 확정)
     segments_json = json.dumps(
         [
             {
+                "order": idx,
                 "time": s.time,
                 "end": s.end,
                 "speaker": s.speaker,
                 "text": s.text,
             }
-            for s in transcript.segments
+            for idx, s in enumerate(transcript.segments)
         ],
         ensure_ascii=False,
     )

@@ -253,15 +253,33 @@ def transcribe(
     return results
 
 
-def transcribe_stereo(wav_path: str, language: str = "ko") -> TranscriptResult:
+def transcribe_stereo(
+    wav_path: str, language: str = "ko", in_out: int = 0
+) -> TranscriptResult:
+    """스테레오 WAV를 채널별 분리 후 STT.
+
+    *in_out* 에 따라 채널 매핑이 달라진다:
+    - 2(발신) 또는 0(기본): Left=상담원, Right=고객
+    - 1(수신): Left=고객, Right=상담원 (채널 반전)
+    """
     l_wav = extract_channel_wav(wav_path, 0)
     r_wav = extract_channel_wav(wav_path, 1)
     try:
-        agent_segs = transcribe(l_wav, language)
-        cust_segs = transcribe(r_wav, language)
+        l_segs = transcribe(l_wav, language)
+        r_segs = transcribe(r_wav, language)
     finally:
         os.unlink(l_wav)
         os.unlink(r_wav)
+
+    # 수신(in_out=1): Left=고객, Right=상담원 → 스왑
+    if in_out == 1:
+        agent_segs = r_segs
+        cust_segs = l_segs
+        logger.info("channel mapping: in_out=%d → Right=Agent, Left=Customer", in_out)
+    else:
+        agent_segs = l_segs
+        cust_segs = r_segs
+        logger.info("channel mapping: in_out=%d → Left=Agent, Right=Customer", in_out)
 
     combined: list[SpeakerSegment] = []
     for s in agent_segs:
@@ -305,11 +323,13 @@ def transcribe_mono(wav_path: str, language: str = "ko") -> TranscriptResult:
     duration = max(s.end for s in segs) if segs else 0.0
     word_count = len(full_text.split()) if full_text else 0
 
+    # 모노: agent/customer 구분 불가 → 전체 세그먼트를 agent_segments에
+    # 넣어 talk_ratio / silence_ratio 산출이 가능하도록 함.
     return TranscriptResult(
         segments=combined,
-        agent_segments=[],
+        agent_segments=list(segs),
         customer_segments=[],
-        agent_text="",
+        agent_text=full_text,
         customer_text="",
         full_text=full_text,
         duration_sec=round(duration, 3),
@@ -317,7 +337,13 @@ def transcribe_mono(wav_path: str, language: str = "ko") -> TranscriptResult:
     )
 
 
-def transcribe_file(wav_path: str, language: str = "ko") -> TranscriptResult:
+def transcribe_file(
+    wav_path: str, language: str = "ko", in_out: int = 0
+) -> TranscriptResult:
+    """WAV 파일을 채널 수에 따라 모노/스테레오 STT 수행.
+
+    *in_out* 1=수신, 2=발신 — 스테레오 채널 매핑에 사용.
+    """
     # Try standard wave.open() first
     try:
         with wave.open(wav_path, "rb") as wf:
@@ -327,6 +353,6 @@ def transcribe_file(wav_path: str, language: str = "ko") -> TranscriptResult:
         _, _, n_channels, _, _ = _read_wav_raw(wav_path)
 
     if n_channels >= 2:
-        return transcribe_stereo(wav_path, language)
+        return transcribe_stereo(wav_path, language, in_out=in_out)
     else:
         return transcribe_mono(wav_path, language)

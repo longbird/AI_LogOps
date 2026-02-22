@@ -119,21 +119,53 @@ def compute_talk_ratios(
     )
 
 
+def compute_speech_pace(word_count: int, duration_sec: float) -> float:
+    """Compute speech pace in words-per-minute (WPM).
+
+    Korean conversational speech averages 100–160 WPM.
+    Returns 0.0 if duration is too short.
+    """
+    if duration_sec < 1.0:
+        return 0.0
+    return round(word_count / (duration_sec / 60.0), 1)
+
+
 def compute_scores(
     first_response: float,
     silence_ratio: float,
     required_hit: bool,
     forbidden_hit: bool,
+    *,
+    is_mono: bool = False,
+    speech_pace: float = 0.0,
 ) -> tuple[float, float, float, float]:
-    if first_response <= 0:
-        response_score = 50.0
-    elif first_response <= 3.0:
-        response_score = 100.0
-    elif first_response >= 15.0:
-        response_score = 0.0
+    # ── 응답 속도 / 발화 속도 점수 ──
+    if is_mono:
+        # 모노: 화자 구분 불가 → 발화 속도(WPM)로 대체
+        # 한국어 정상 범위: 100–160 WPM
+        if speech_pace <= 0:
+            response_score = 50.0
+        elif 100.0 <= speech_pace <= 160.0:
+            response_score = 100.0
+        elif speech_pace < 60.0:
+            response_score = max(0.0, speech_pace / 60.0 * 50.0)
+        elif speech_pace < 100.0:
+            response_score = 50.0 + (speech_pace - 60.0) / 40.0 * 50.0
+        elif speech_pace > 200.0:
+            response_score = max(0.0, 100.0 - (speech_pace - 200.0) / 100.0 * 100.0)
+        else:  # 160–200
+            response_score = 100.0 - (speech_pace - 160.0) / 40.0 * 25.0
     else:
-        response_score = 100.0 * (15.0 - first_response) / 12.0
+        if first_response <= 0:
+            response_score = 50.0
+        elif first_response <= 3.0:
+            response_score = 100.0
+        elif first_response >= 15.0:
+            response_score = 0.0
+        else:
+            response_score = 100.0 * (15.0 - first_response) / 12.0
 
+    # ── 필수 문구 / 금지어 점수 ──
     if forbidden_hit:
         phrase_score = 0.0
     elif required_hit:
@@ -141,6 +173,7 @@ def compute_scores(
     else:
         phrase_score = 50.0
 
+    # ── 침묵 비율 점수 ──
     if silence_ratio <= 0.20:
         silence_score = 100.0
     elif silence_ratio >= 0.60:
@@ -148,7 +181,17 @@ def compute_scores(
     else:
         silence_score = 100.0 * (0.60 - silence_ratio) / 0.40
 
-    total = round(response_score * 0.3 + phrase_score * 0.4 + silence_score * 0.3, 1)
+    # ── 총점 (가중 평균) ──
+    if is_mono:
+        # 모노: 발화속도(20%) + 필수문구(50%) + 침묵(30%)
+        total = round(
+            response_score * 0.2 + phrase_score * 0.5 + silence_score * 0.3, 1
+        )
+    else:
+        # 스테레오: 응답속도(30%) + 필수문구(40%) + 침묵(30%)
+        total = round(
+            response_score * 0.3 + phrase_score * 0.4 + silence_score * 0.3, 1
+        )
 
     return (
         total,
@@ -163,18 +206,24 @@ def analyze_call_quality(
     agent_text: str = "",
     full_text: str = "",
 ) -> CallQualityResult:
+    word_count = 0
     if isinstance(transcript_result, _TranscriptLike):
         agent_segs: Sequence[object] = transcript_result.agent_segments
         cust_segs: Sequence[object] = transcript_result.customer_segments
         duration = transcript_result.duration_sec
         transcript_agent_text = transcript_result.agent_text
         transcript_full_text = transcript_result.full_text
+        if hasattr(transcript_result, "word_count"):
+            word_count = int(getattr(transcript_result, "word_count", 0))
     else:
         agent_segs = []
         cust_segs = []
         duration = 0.0
         transcript_agent_text = ""
         transcript_full_text = ""
+
+    # 모노 감지: customer_segments가 비어있고 agent_segments가 있음
+    is_mono = len(cust_segs) == 0 and len(agent_segs) > 0
 
     check_text = (
         agent_text or transcript_agent_text or full_text or transcript_full_text
@@ -184,14 +233,20 @@ def analyze_call_quality(
     agent_ratio, cust_ratio, silence_ratio = compute_talk_ratios(
         agent_segs, cust_segs, duration
     )
+    speech_pace = compute_speech_pace(word_count, duration)
     req_hit, req_list = check_required_phrases(check_text)
     forb_hit, forb_list = check_forbidden_words(check_text)
     total, resp_score, phrase_score, sil_score = compute_scores(
-        first_resp, silence_ratio, req_hit, forb_hit
+        first_resp,
+        silence_ratio,
+        req_hit,
+        forb_hit,
+        is_mono=is_mono,
+        speech_pace=speech_pace,
     )
 
     return CallQualityResult(
-        first_response_sec=first_resp,
+        first_response_sec=first_resp if not is_mono else speech_pace,
         agent_talk_ratio=agent_ratio,
         customer_talk_ratio=cust_ratio,
         silence_ratio=silence_ratio,
