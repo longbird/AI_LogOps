@@ -6,20 +6,61 @@
     <title>{{ title | default("AI-LogOps") }} - AI-LogOps Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script>
+    /* ── localStorage persistence for inputs with data-persist attribute ── */
+    /* Must be in <head> so DOMContentLoaded handler registers BEFORE page scripts */
+    (function() {
+        var KEY_PREFIX = 'ailogops_';
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('[data-persist]').forEach(function(el) {
+                var key = KEY_PREFIX + el.getAttribute('data-persist');
+                var saved = localStorage.getItem(key);
+                if (saved !== null) {
+                    if (el.tagName === 'SELECT') {
+                        el.value = saved;
+                        if (el.value !== saved) el.value = '';
+                    } else {
+                        el.value = saved;
+                    }
+                }
+                el.addEventListener('change', function() {
+                    localStorage.setItem(key, el.value);
+                });
+                el.addEventListener('input', function() {
+                    localStorage.setItem(key, el.value);
+                });
+            });
+        });
+    })();
+    </script>
 </head>
 <body class="bg-gray-100 min-h-screen">
+    {% set perms = request.state.permissions if request.state.permissions is defined else [] %}
+    {% set user_role = request.state.role if request.state.role is defined else 'user' %}
+    {% set user_name = request.state.user if request.state.user is defined else '' %}
     <nav class="bg-gray-800 text-white shadow-lg">
         <div class="max-w-7xl mx-auto px-4">
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center space-x-8">
                     <span class="text-xl font-bold">AI-LogOps</span>
-                    <a href="/dashboard" class="hover:text-gray-300">Dashboard</a>
-                    <a href="/logs" class="hover:text-gray-300">Logs</a>
-                    <a href="/reports" class="hover:text-gray-300">Reports</a>
-                    <a href="/deploys" class="hover:text-gray-300">Deploys</a>
-                    <a href="/recordings" class="hover:text-gray-300">Recordings</a>
+                    {% if 'dashboard' in perms %}<a href="/dashboard" class="hover:text-gray-300">대시보드</a>{% endif %}
+                    {% if 'logs' in perms %}<a href="/logs" class="hover:text-gray-300">로그</a>{% endif %}
+                    {% if 'deploys' in perms %}<a href="/deploys" class="hover:text-gray-300">배포</a>{% endif %}
+                    {% if 'recordings' in perms %}<a href="/recordings" class="hover:text-gray-300">녹취 분석</a>{% endif %}
+                    {% if 'rec_viewer' in perms %}<a href="/rec-viewer" class="hover:text-gray-300">녹취 조회</a>{% endif %}
+                    {% if 'admin' in perms %}<a href="/admin" class="hover:text-gray-300">계정 관리</a>{% endif %}
                 </div>
-                <a href="/logout" class="hover:text-gray-300">Logout</a>
+                <div class="flex items-center space-x-4">
+                    {% if user_name %}
+                    <span class="text-sm text-gray-400">
+                        {{ user_name }}
+                        {% if user_role == 'admin' %}
+                        <span class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-purple-600 text-white">관리자</span>
+                        {% endif %}
+                    </span>
+                    {% endif %}
+                    <a href="/logout" class="hover:text-gray-300 text-sm">로그아웃</a>
+                </div>
             </div>
         </div>
     </nav>
