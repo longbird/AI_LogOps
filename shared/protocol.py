@@ -71,11 +71,13 @@ class LogAckStatus(IntEnum):
 class DeployTarget(IntEnum):
     AGENT = 0x00
     PROCESS = 0x01
+    REC_CLIENT = 0x02
 
 
 class RecAction(IntEnum):
     START = 0x01
     STOP = 0x02
+    NEXT = 0x03  # 서버 → 에이전트: 다음 1건 분석 진행
 
 
 class RecAckStatus(IntEnum):
@@ -367,6 +369,7 @@ class RecAnalysisPayload:
     duration_wav: float
     duration_smdr: float
     is_stereo: bool
+    in_out: int = 0  # 1=수신, 2=발신, 0=알수없음
 
     def pack(self) -> bytes:
         data = {
@@ -380,6 +383,7 @@ class RecAnalysisPayload:
             "duration_wav": self.duration_wav,
             "duration_smdr": self.duration_smdr,
             "is_stereo": self.is_stereo,
+            "in_out": self.in_out,
         }
         return json.dumps(data, separators=(",", ":")).encode("utf-8")
 
@@ -399,6 +403,7 @@ class RecAnalysisPayload:
             duration_wav=float(decoded_raw["duration_wav"]),
             duration_smdr=float(decoded_raw["duration_smdr"]),
             is_stereo=bool(decoded_raw["is_stereo"]),
+            in_out=int(decoded_raw.get("in_out", 0)),
         )
 
 
@@ -781,6 +786,15 @@ class SttResultPayload:
     required_phrase_list: str = ""
     forbidden_word_hit: bool = False
     forbidden_word_list: str = ""
+    # 음질 분석 결과 (서버에서 분석 후 함께 전송)
+    aq_status: str = ""
+    aq_left_rms_db: float = 0.0
+    aq_right_rms_db: float = 0.0
+    aq_left_silence: float = 0.0
+    aq_right_silence: float = 0.0
+    aq_dropout_count: int = 0
+    aq_duration_wav: float = 0.0
+    aq_is_stereo: bool = False
 
     def pack(self) -> bytes:
         data: dict[str, object] = {
@@ -804,6 +818,14 @@ class SttResultPayload:
             "required_phrase_list": self.required_phrase_list,
             "forbidden_word_hit": self.forbidden_word_hit,
             "forbidden_word_list": self.forbidden_word_list,
+            "aq_status": self.aq_status,
+            "aq_left_rms_db": self.aq_left_rms_db,
+            "aq_right_rms_db": self.aq_right_rms_db,
+            "aq_left_silence": self.aq_left_silence,
+            "aq_right_silence": self.aq_right_silence,
+            "aq_dropout_count": self.aq_dropout_count,
+            "aq_duration_wav": self.aq_duration_wav,
+            "aq_is_stereo": self.aq_is_stereo,
         }
         return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode(
             "utf-8"
@@ -833,6 +855,14 @@ class SttResultPayload:
             required_phrase_list=str(d.get("required_phrase_list", "")),
             forbidden_word_hit=bool(d.get("forbidden_word_hit", False)),
             forbidden_word_list=str(d.get("forbidden_word_list", "")),
+            aq_status=str(d.get("aq_status", "")),
+            aq_left_rms_db=float(d.get("aq_left_rms_db", 0.0)),
+            aq_right_rms_db=float(d.get("aq_right_rms_db", 0.0)),
+            aq_left_silence=float(d.get("aq_left_silence", 0.0)),
+            aq_right_silence=float(d.get("aq_right_silence", 0.0)),
+            aq_dropout_count=int(d.get("aq_dropout_count", 0)),
+            aq_duration_wav=float(d.get("aq_duration_wav", 0.0)),
+            aq_is_stereo=bool(d.get("aq_is_stereo", False)),
         )
 
 

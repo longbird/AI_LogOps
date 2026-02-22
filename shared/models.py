@@ -30,6 +30,7 @@ class AgentSession:
     writer: object | None = None
     last_heartbeat: float = field(default_factory=time.time)
     log_buffer: list[str] = field(default_factory=list)
+    rec_log_buffer: list[str] = field(default_factory=list)
     deploy_history: list[dict[str, object]] = field(default_factory=list)
 
 
