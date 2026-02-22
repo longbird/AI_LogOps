@@ -1,43 +1,207 @@
 {% extends "base.html" %}
 {% block content %}
-<h1 class="text-2xl font-bold mb-6">Deploy History</h1>
+<h1 class="text-2xl font-bold mb-6">배포 관리</h1>
 
-{% if deploys %}
-<div class="bg-white rounded-lg shadow overflow-hidden">
-    <table class="min-w-full divide-y divide-gray-200">
-        <thead class="bg-gray-50">
-            <tr>
-                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Time</th>
-                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Agent</th>
-                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">File</th>
-                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Result</th>
-                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Rollback</th>
-                <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Detail</th>
-            </tr>
-        </thead>
-        <tbody class="bg-white divide-y divide-gray-100">
-            {% for deploy in deploys %}
-            <tr>
-                <td class="px-4 py-3 text-sm text-gray-700">{{ deploy.timestamp_str }}</td>
-                <td class="px-4 py-3 text-sm text-gray-800">{{ deploy.agent_id }}</td>
-                <td class="px-4 py-3 text-sm font-mono text-gray-700">{{ deploy.filename | default("-") }}</td>
-                <td class="px-4 py-3 text-sm">
-                    {% if deploy.success %}
-                    <span class="inline-flex rounded-full bg-green-100 px-2 py-1 text-xs font-semibold text-green-700">SUCCESS</span>
-                    {% else %}
-                    <span class="inline-flex rounded-full bg-red-100 px-2 py-1 text-xs font-semibold text-red-700">FAIL</span>
-                    {% endif %}
-                </td>
-                <td class="px-4 py-3 text-sm text-gray-700">
-                    {% if deploy.rollback %}Yes{% else %}No{% endif %}
-                </td>
-                <td class="px-4 py-3 text-sm text-gray-700">{{ deploy.detail | default("-") }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<!-- Deploy Sections -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+
+    <!-- Agent Deploy -->
+    <div class="bg-white rounded-lg shadow p-5">
+        <h2 class="text-sm font-semibold text-gray-600 uppercase mb-4">에이전트 배포</h2>
+        <div class="space-y-3">
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">Agent ID</label>
+                <input id="agent-id-1" type="text" placeholder="(auto: 첫 번째 연결된 에이전트)" data-persist="deploy_agent1"
+                       class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">배포 파일 (ZIP)</label>
+                <input id="file-1" type="file" accept=".zip" class="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+            </div>
+            <div class="flex gap-2">
+                <button onclick="deploy('1','agent')" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm font-semibold">배포</button>
+            </div>
+            <div id="status-1" class="text-xs text-gray-400 min-h-[1.25rem]"></div>
+        </div>
+    </div>
+
+    <!-- Process Deploy -->
+    <div class="bg-white rounded-lg shadow p-5">
+        <h2 class="text-sm font-semibold text-gray-600 uppercase mb-4">프로세스 배포</h2>
+        <div class="space-y-3">
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">Agent ID</label>
+                <input id="agent-id-2" type="text" placeholder="(auto)" data-persist="deploy_agent2"
+                       class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">배포 파일 (ZIP)</label>
+                <input id="file-2" type="file" accept=".zip" class="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+            </div>
+            <div class="flex gap-2">
+                <button onclick="deploy('2','process')" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm font-semibold">배포</button>
+            </div>
+            <div id="status-2" class="text-xs text-gray-400 min-h-[1.25rem]"></div>
+        </div>
+    </div>
+
+    <!-- Rec Client Deploy -->
+    <div class="bg-white rounded-lg shadow p-5">
+        <h2 class="text-sm font-semibold text-gray-600 uppercase mb-4">녹취 클라이언트 배포</h2>
+        <div class="space-y-3">
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">Agent ID</label>
+                <input id="agent-id-3" type="text" placeholder="(auto)" data-persist="deploy_agent3"
+                       class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">배포 파일 (ZIP)</label>
+                <input id="file-3" type="file" accept=".zip" class="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+            </div>
+            <div class="flex gap-2">
+                <button onclick="deploy('3','rec_client')" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm font-semibold">배포</button>
+            </div>
+            <div id="status-3" class="text-xs text-gray-400 min-h-[1.25rem]"></div>
+        </div>
+    </div>
 </div>
-{% else %}
-<div class="bg-white rounded-lg shadow p-6 text-gray-500">No deploy history yet.</div>
-{% endif %}
+
+<!-- Connected Agents -->
+<div class="bg-white rounded-lg shadow p-4 mb-6">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-600 uppercase">연결된 에이전트</h2>
+        <button onclick="loadAgents()" class="text-xs text-blue-600 hover:text-blue-800 underline">새로고침</button>
+    </div>
+    <div id="agents-list" class="text-sm text-gray-400">로딩 중...</div>
+</div>
+
+<!-- Deploy Log -->
+<div class="bg-white rounded-lg shadow p-4 mb-6">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-600 uppercase">배포 로그</h2>
+        <button onclick="document.getElementById('deploy-log').innerHTML=''" class="text-xs text-gray-400 hover:text-gray-600 underline">지우기</button>
+    </div>
+    <div id="deploy-log" class="bg-gray-900 text-gray-200 rounded font-mono text-xs leading-relaxed p-3 h-48 overflow-y-auto whitespace-pre-wrap"></div>
+</div>
+
+<!-- Deploy History -->
+<div class="bg-white rounded-lg shadow overflow-hidden">
+    <div class="px-4 py-3 border-b">
+        <h2 class="text-sm font-semibold text-gray-600 uppercase">배포 이력</h2>
+    </div>
+    <div id="history-table" class="text-sm text-gray-400 p-4">로딩 중...</div>
+</div>
+
+<script>
+(function() {
+    var logEl = document.getElementById('deploy-log');
+
+    function log(msg, type) {
+        var ts = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+        var line = document.createElement('div');
+        if (type === 'ok') line.className = 'text-green-400';
+        else if (type === 'err') line.className = 'text-red-400';
+        else if (type === 'warn') line.className = 'text-yellow-300';
+        line.textContent = '[' + ts + '] ' + msg;
+        logEl.appendChild(line);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStatus(n, msg, color) {
+        var el = document.getElementById('status-' + n);
+        el.textContent = msg;
+        el.className = 'text-xs min-h-[1.25rem] ' + (color || 'text-gray-400');
+    }
+
+    window.deploy = async function(n, target) {
+        var agentEl = document.getElementById('agent-id-' + n);
+        var fileEl = document.getElementById('file-' + n);
+        var agent = agentEl.value.trim();
+        var file = fileEl.files && fileEl.files[0];
+
+        if (!file) { setStatus(n, '파일을 선택하세요', 'text-red-500'); return; }
+
+        setStatus(n, '배포 중...', 'text-yellow-600');
+        log('[' + target + '] 배포 시작: ' + file.name, 'warn');
+
+        var formData = new FormData();
+        formData.append('file', file);
+        formData.append('target', target);
+        if (agent) formData.append('agent_id', agent);
+
+        try {
+            var resp = await fetch('/api/dashboard/deploy/upload', { method: 'POST', body: formData });
+            var data = await resp.json();
+            if (resp.ok && data.status === 'ok') {
+                setStatus(n, '배포 완료 → ' + data.agent_id + ' (' + data.size_mb + 'MB)', 'text-green-600 font-semibold');
+                log('[' + target + '] 배포 성공: agent=' + data.agent_id + ' file=' + data.file + ' id=' + data.deploy_id, 'ok');
+                setTimeout(loadHistory, 2000);
+            } else {
+                setStatus(n, '실패: ' + (data.error || resp.statusText), 'text-red-500');
+                log('[' + target + '] 배포 실패: ' + (data.error || resp.statusText), 'err');
+            }
+        } catch (err) {
+            setStatus(n, '네트워크 오류', 'text-red-500');
+            log('[' + target + '] 오류: ' + err.message, 'err');
+        }
+    };
+
+    window.loadAgents = async function() {
+        var el = document.getElementById('agents-list');
+        try {
+            var resp = await fetch('/api/dashboard/deploy/agents');
+            var data = await resp.json();
+            var agents = data.agents || [];
+            if (!agents.length) { el.innerHTML = '<span class="text-gray-400">연결된 에이전트가 없습니다.</span>'; return; }
+            var html = '<div class="flex flex-wrap gap-3">';
+            for (var i = 0; i < agents.length; i++) {
+                var a = agents[i];
+                html += '<div class="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-3 py-1.5">';
+                html += '<span class="w-2 h-2 bg-green-500 rounded-full"></span>';
+                html += '<span class="font-semibold text-gray-800">' + a.agent_id + '</span>';
+                html += '<span class="text-gray-400 text-xs">v' + (a.version || '?') + '</span>';
+                html += '</div>';
+            }
+            html += '</div>';
+            el.innerHTML = html;
+        } catch (e) { el.innerHTML = '<span class="text-red-500">조회 실패</span>'; }
+    };
+
+    window.loadHistory = async function() {
+        var el = document.getElementById('history-table');
+        try {
+            var resp = await fetch('/api/dashboard/deploy/history');
+            var data = await resp.json();
+            var deploys = data.deploys || [];
+            if (!deploys.length) { el.innerHTML = '<div class="text-gray-400 text-sm p-2">배포 이력이 없습니다.</div>'; return; }
+            var html = '<table class="min-w-full divide-y divide-gray-200">';
+            html += '<thead class="bg-gray-50"><tr>';
+            html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">시간</th>';
+            html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">에이전트</th>';
+            html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">파일</th>';
+            html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">결과</th>';
+            html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">상세</th>';
+            html += '</tr></thead><tbody class="bg-white divide-y divide-gray-100">';
+            for (var i = 0; i < deploys.length; i++) {
+                var d = deploys[i];
+                var badge = d.success
+                    ? '<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">성공</span>'
+                    : '<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">실패</span>';
+                html += '<tr>';
+                html += '<td class="px-4 py-2.5 text-sm text-gray-700">' + (d.timestamp_str || '-') + '</td>';
+                html += '<td class="px-4 py-2.5 text-sm text-gray-800">' + (d.agent_id || '-') + '</td>';
+                html += '<td class="px-4 py-2.5 text-sm font-mono text-gray-700">' + (d.filename || '-') + '</td>';
+                html += '<td class="px-4 py-2.5 text-sm">' + badge + '</td>';
+                html += '<td class="px-4 py-2.5 text-sm text-gray-500">' + (d.detail || '-') + '</td>';
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+            el.innerHTML = html;
+        } catch (e) { el.innerHTML = '<div class="text-red-500 text-sm p-2">조회 실패</div>'; }
+    };
+
+    loadAgents();
+    loadHistory();
+})();
+</script>
 {% endblock %}

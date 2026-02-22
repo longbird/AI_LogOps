@@ -22,6 +22,8 @@ class _TCPServerLike(Protocol):
         self, agent_id: str, file_path: str, deploy_target: str = "agent"
     ) -> bool: ...
 
+    def get_deploy_result_future(self, agent_id: str) -> asyncio.Future[Any] | None: ...
+
 
 class _SessionMgrLike(Protocol):
     def get_all_sessions(self) -> list[Any]: ...
@@ -117,22 +119,41 @@ async def upload_deploy(
         size_mb,
     )
 
-    # TCP로 에이전트에 비동기 전송 (대용량 zip은 전송에 수십 초 소요)
+    # TCP로 에이전트에 비동기 전송 + 에이전트 응답 대기
     async def _push_and_cleanup() -> None:
         try:
             ok = await tcp_server.send_deploy(
                 agent_id, str(temp_path), deploy_target=deploy_target
             )
-            if ok:
-                logger.info(
-                    "deploy push complete: deploy_id=%s agent_id=%s",
-                    deploy_id,
-                    agent_id,
-                )
-            else:
+            if not ok:
                 logger.error(
                     "deploy push failed: deploy_id=%s agent_id=%s", deploy_id, agent_id
                 )
+                return
+
+            logger.info(
+                "deploy transfer done, waiting for agent ack: deploy_id=%s agent_id=%s",
+                deploy_id,
+                agent_id,
+            )
+
+            # 에이전트의 DEPLOY_VERIFIED/DEPLOY_ROLLBACK 응답 대기 (최대 120초)
+            future = tcp_server.get_deploy_result_future(agent_id)
+            if future is not None:
+                try:
+                    ack = await asyncio.wait_for(future, timeout=120)
+                    logger.info(
+                        "deploy result: deploy_id=%s agent_id=%s status=%s",
+                        deploy_id,
+                        agent_id,
+                        ack.status.name,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "deploy ack timeout (120s): deploy_id=%s agent_id=%s",
+                        deploy_id,
+                        agent_id,
+                    )
         except Exception:
             logger.exception("deploy push error: deploy_id=%s", deploy_id)
         finally:
