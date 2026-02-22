@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Protocol, cast
+import logging
+from typing import Any, Protocol, cast
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from shared.models import AgentSession
+from shared.protocol import LogAction
 
+logger = logging.getLogger("logs_route")
 router = APIRouter()
 
 
@@ -18,9 +21,16 @@ class SessionManagerLike(Protocol):
     def get_session(self, agent_id: str) -> AgentSession | None: ...
 
 
+class _TCPServerLike(Protocol):
+    async def send_log_command(
+        self, agent_id: str, action: LogAction, date: str = ...
+    ) -> bool: ...
+
+
 class DashboardState(Protocol):
     templates: Jinja2Templates
     session_mgr: SessionManagerLike | None
+    tcp_server: _TCPServerLike | None
 
 
 def _state(request: Request) -> DashboardState:
@@ -69,6 +79,45 @@ async def get_agent_logs(request: Request, agent_id: str) -> HTMLResponse:
     if not lines:
         log_html = "<p class='text-gray-400'>No logs yet.</p>"
     return HTMLResponse(log_html)
+
+
+@router.post("/api/logs/{agent_id}/stream")
+async def toggle_log_stream(request: Request, agent_id: str) -> JSONResponse:
+    """에이전트 실시간 로그 스트리밍 시작/중지."""
+    state = _state(request)
+    tcp_server = state.tcp_server
+    if tcp_server is None:
+        return JSONResponse({"error": "server not configured"}, status_code=503)
+
+    try:
+        body: dict[str, Any] = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    action_str: str = body.get("action", "")
+    if action_str == "start":
+        action = LogAction.REAL_START
+    elif action_str == "stop":
+        action = LogAction.REAL_STOP
+    else:
+        return JSONResponse(
+            {"error": "action must be 'start' or 'stop'"}, status_code=400
+        )
+
+    success = await tcp_server.send_log_command(agent_id, action, "")
+    if success:
+        logger.info("log stream %s sent to agent=%s", action_str, agent_id)
+        return JSONResponse(
+            {"status": "ok", "agent_id": agent_id, "action": action_str}
+        )
+    logger.warning(
+        "log stream %s FAILED for agent=%s (not found or disconnected)",
+        action_str,
+        agent_id,
+    )
+    return JSONResponse(
+        {"error": f"failed to send command to {agent_id}"}, status_code=502
+    )
 
 
 @router.websocket("/ws/logs/{agent_id}")

@@ -4,13 +4,20 @@
 
 <div class="mb-4 flex items-center space-x-4">
     <label class="font-semibold">Agent:</label>
-    <select id="agent-select" class="border rounded p-2" onchange="switchAgent(this.value)">
+    <select id="agent-select" class="border rounded p-2" data-persist="logs_agent" onchange="switchAgent(this.value)">
         <option value="">Select agent...</option>
         {% for agent_id in agents %}
         <option value="{{ agent_id }}">{{ agent_id }}</option>
         {% endfor %}
     </select>
+    <button id="btn-stream-start" class="bg-green-600 hover:bg-green-700 text-white px-4 py-1.5 rounded text-sm font-semibold hidden">
+        Start Streaming
+    </button>
+    <button id="btn-stream-stop" class="bg-red-600 hover:bg-red-700 text-white px-4 py-1.5 rounded text-sm font-semibold hidden">
+        Stop Streaming
+    </button>
     <span id="ws-status" class="text-sm text-gray-400">Disconnected</span>
+    <span id="stream-status" class="text-sm text-gray-400"></span>
 </div>
 
 <div id="log-container" class="bg-gray-900 text-green-400 font-mono text-sm p-4 rounded-lg h-[600px] overflow-y-auto">
@@ -18,54 +25,114 @@
 </div>
 
 <script>
-let ws = null;
+var ws = null;
+var streaming = false;
+var STREAM_KEY = 'ailogops_logs_streaming';
 
 function switchAgent(agentId) {
-    if (ws) {
-        ws.close();
-        ws = null;
-    }
-    const container = document.getElementById('log-container');
-    const status = document.getElementById('ws-status');
+    if (ws) { ws.close(); ws = null; }
+    var container = document.getElementById('log-container');
+    var wsStatus = document.getElementById('ws-status');
+    var streamStatus = document.getElementById('stream-status');
+    var btnStart = document.getElementById('btn-stream-start');
+    var btnStop = document.getElementById('btn-stream-stop');
     container.innerHTML = '';
+    streaming = false;
 
     if (!agentId) {
         container.innerHTML = '<p class="text-gray-500">Select an agent to view logs...</p>';
-        status.textContent = 'Disconnected';
-        status.className = 'text-sm text-gray-400';
+        wsStatus.textContent = 'Disconnected';
+        wsStatus.className = 'text-sm text-gray-400';
+        streamStatus.textContent = '';
+        btnStart.classList.add('hidden');
+        btnStop.classList.add('hidden');
+        localStorage.removeItem(STREAM_KEY);
         return;
     }
 
-    fetch('/api/logs/' + agentId)
-        .then((r) => r.text())
-        .then((html) => {
-            container.innerHTML = html;
-            scrollToBottom();
-        });
+    btnStart.classList.remove('hidden');
+    btnStop.classList.add('hidden');
+    streamStatus.textContent = '';
 
-    const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    fetch('/api/logs/' + agentId)
+        .then(function(r) { return r.text(); })
+        .then(function(html) { container.innerHTML = html; scrollToBottom(); });
+
+    var wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(wsProto + '//' + location.host + '/ws/logs/' + agentId);
 
-    ws.onopen = () => {
-        status.textContent = 'Connected';
-        status.className = 'text-sm text-green-500';
+    ws.onopen = function() {
+        wsStatus.textContent = 'Connected';
+        wsStatus.className = 'text-sm text-green-500';
+        /* 에이전트 선택 시 자동 스트리밍 시작 */
+        toggleStream('start');
     };
-    ws.onmessage = (e) => {
-        const div = document.createElement('div');
+    ws.onmessage = function(e) {
+        var div = document.createElement('div');
         div.className = 'text-sm font-mono';
         div.textContent = e.data;
         container.appendChild(div);
+        while (container.children.length > 2000) container.removeChild(container.firstChild);
         scrollToBottom();
     };
-    ws.onclose = () => {
-        status.textContent = 'Disconnected';
-        status.className = 'text-sm text-red-400';
+    ws.onclose = function() {
+        wsStatus.textContent = 'Disconnected';
+        wsStatus.className = 'text-sm text-red-400';
     };
 }
 
+async function toggleStream(action) {
+    var agentId = document.getElementById('agent-select').value;
+    if (!agentId) return;
+    var streamStatus = document.getElementById('stream-status');
+    var btnStart = document.getElementById('btn-stream-start');
+    var btnStop = document.getElementById('btn-stream-stop');
+
+    streamStatus.textContent = action === 'start' ? 'Starting...' : 'Stopping...';
+    streamStatus.className = 'text-sm text-yellow-600';
+    try {
+        var resp = await fetch('/api/logs/' + agentId + '/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: action }),
+        });
+        var data = await resp.json();
+        if (resp.ok) {
+            if (action === 'start') {
+                streaming = true;
+                streamStatus.textContent = 'Streaming';
+                streamStatus.className = 'text-sm text-green-600 font-semibold';
+                btnStart.classList.add('hidden');
+                btnStop.classList.remove('hidden');
+            } else {
+                streaming = false;
+                streamStatus.textContent = 'Stopped';
+                streamStatus.className = 'text-sm text-gray-500';
+                btnStart.classList.remove('hidden');
+                btnStop.classList.add('hidden');
+            }
+        } else {
+            streamStatus.textContent = 'Error: ' + (data.error || resp.statusText);
+            streamStatus.className = 'text-sm text-red-600';
+        }
+    } catch (err) {
+        streamStatus.textContent = 'Network error: ' + err.message;
+        streamStatus.className = 'text-sm text-red-600';
+    }
+}
+
+document.getElementById('btn-stream-start').addEventListener('click', function() { toggleStream('start'); });
+document.getElementById('btn-stream-stop').addEventListener('click', function() { toggleStream('stop'); });
+
 function scrollToBottom() {
-    const c = document.getElementById('log-container');
+    var c = document.getElementById('log-container');
     c.scrollTop = c.scrollHeight;
 }
+
+/* Auto-connect if agent was previously selected */
+document.addEventListener('DOMContentLoaded', function() {
+    var sel = document.getElementById('agent-select');
+    if (sel.value) switchAgent(sel.value);
+});
 </script>
 {% endblock %}
