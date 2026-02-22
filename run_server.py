@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import sys
 from pathlib import Path
@@ -65,7 +66,12 @@ def _print_banner(
     telegram_enabled: bool,
     health_enabled: bool,
 ) -> None:
-    print(_BANNER)
+    try:
+        print(_BANNER)
+    except UnicodeEncodeError:
+        print("=" * 58)
+        print("  AI-LogOps Integrated Server")
+        print("=" * 58)
     print(f"  TCP Server   : {tcp_host}:{tcp_port}")
     if dashboard_enabled:
         print(f"  Dashboard    : http://{dashboard_host}:{dashboard_port}")
@@ -307,6 +313,16 @@ async def _run_telegram(
 # ---------------------------------------------------------------------------
 
 
+class _PollingAccessLogFilter(logging.Filter):
+    """고빈도 폴링 엔드포인트를 uvicorn access log에서 제외."""
+
+    _SUPPRESS = ("/api/deploy/status",)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(ep in msg for ep in self._SUPPRESS)
+
+
 async def _run_dashboard(
     fastapi_app: Any,
     host: str,
@@ -321,6 +337,9 @@ async def _run_dashboard(
             "uvicorn 패키지가 설치되지 않았습니다. pip install uvicorn 으로 설치하세요."
         )
         return
+
+    # 폴링 엔드포인트 access log 필터 적용
+    logging.getLogger("uvicorn.access").addFilter(_PollingAccessLogFilter())
 
     config = uvicorn.Config(
         app=fastapi_app,
@@ -391,6 +410,7 @@ async def _main(args: argparse.Namespace) -> None:
     dash_cfg: dict[str, Any] = cfg.get("dashboard", {})
     dash_host: str = str(dash_cfg.get("host", "0.0.0.0"))
     dash_port: int = int(dash_cfg.get("port", 8080))
+    dash_public_url: str = str(dash_cfg.get("public_url", "")).strip()
     dash_secret: str = str(dash_cfg.get("secret_key", "CHANGE_ME"))
 
     storage_cfg: dict[str, Any] = cfg.get("storage", {})
@@ -447,7 +467,18 @@ async def _main(args: argparse.Namespace) -> None:
         max_retention_days=max_retention_days,
         max_backups=max_backups,
     )
-    rec_handler = RecHandler(upload_base_url=f"http://{dash_host}:{dash_port}")
+    # upload_base_url: 에이전트가 HTTP로 접근 가능한 주소여야 함
+    if dash_public_url:
+        upload_base_url = dash_public_url.rstrip("/")
+    else:
+        upload_base_url = f"http://{dash_host}:{dash_port}"
+        if dash_host in ("0.0.0.0", "::"):
+            logger.warning(
+                "dashboard.public_url 미설정 + host=%s → 원격 에이전트가 녹취 업로드 불가. "
+                "server/config.yaml 의 dashboard.public_url 을 설정하세요.",
+                dash_host,
+            )
+    rec_handler = RecHandler(upload_base_url=upload_base_url)
     rec_storage = RecordingStorage(base_dir=str(Path(storage_base_dir) / "recordings"))
 
     # 7. AI 프로바이더 및 파이프라인 초기화
@@ -558,6 +589,7 @@ async def _main(args: argparse.Namespace) -> None:
                 storage_mgr=storage_mgr,
                 tcp_server=tcp_server,
                 secret_key=dash_secret,
+                rec_storage=rec_storage,
             )
             logger.info("대시보드 앱 생성 완료")
         except Exception:
