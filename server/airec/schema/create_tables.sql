@@ -6,6 +6,7 @@
 CREATE TABLE IF NOT EXISTS rec_audio_quality (
     id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     rec_no          INT UNSIGNED NOT NULL,
+    filename        VARCHAR(100) DEFAULT NULL COMMENT 'Recording filename for reference',
     agent_id        VARCHAR(32) NOT NULL,
     analyzed_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     status          VARCHAR(20) NOT NULL COMMENT 'OK, EMPTY, MUTED_L, MUTED_R, DROPOUT, MISMATCH',
@@ -31,6 +32,8 @@ CREATE TABLE IF NOT EXISTS rec_transcript (
                     COMMENT 'Transcript ID',
     rec_no          INT UNSIGNED NOT NULL
                     COMMENT 'rec_his.rec_no FK',
+    filename        VARCHAR(100) DEFAULT NULL
+                    COMMENT 'Recording filename for reference',
     transcribed_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                     COMMENT 'STT completion time',
     model_name      VARCHAR(50) DEFAULT 'faster-whisper-medium'
@@ -61,6 +64,8 @@ CREATE TABLE IF NOT EXISTS rec_call_quality (
                         COMMENT 'Quality analysis ID',
     rec_no              INT UNSIGNED NOT NULL
                         COMMENT 'rec_his.rec_no FK',
+    filename            VARCHAR(100) DEFAULT NULL
+                        COMMENT 'Recording filename for reference',
     transcript_id       INT UNSIGNED DEFAULT NULL
                         COMMENT 'rec_transcript.id FK',
     analyzed_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -94,3 +99,10 @@ CREATE TABLE IF NOT EXISTS rec_call_quality (
     INDEX idx_analyzed_at (analyzed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   COMMENT='Call quality analysis results';
+
+-- ---------------------------------------------------------------------------
+-- Migration: Add filename column if tables already exist without it
+-- ---------------------------------------------------------------------------
+ALTER TABLE rec_audio_quality ADD COLUMN IF NOT EXISTS filename VARCHAR(100) DEFAULT NULL COMMENT 'Recording filename for reference' AFTER rec_no;
+ALTER TABLE rec_transcript ADD COLUMN IF NOT EXISTS filename VARCHAR(100) DEFAULT NULL COMMENT 'Recording filename for reference' AFTER rec_no;
+ALTER TABLE rec_call_quality ADD COLUMN IF NOT EXISTS filename VARCHAR(100) DEFAULT NULL COMMENT 'Recording filename for reference' AFTER rec_no;

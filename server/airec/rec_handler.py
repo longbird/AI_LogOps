@@ -30,6 +30,7 @@ class AnalysisRecord:
     duration_wav: float
     duration_smdr: float
     is_stereo: bool
+    in_out: int = 0  # 1=수신, 2=발신, 0=알수없음
     received_at: datetime = field(default_factory=datetime.now)
     uploaded: bool = False
 
@@ -74,6 +75,7 @@ class RecHandler:
             duration_wav=payload.duration_wav,
             duration_smdr=payload.duration_smdr,
             is_stereo=payload.is_stereo,
+            in_out=payload.in_out,
         )
         key = (agent_id, payload.filename)
         self._records[key] = record
@@ -136,37 +138,90 @@ class RecHandler:
             )
 
     def _should_request_upload(self, record: AnalysisRecord) -> bool:
-        """Determine if a recording should be uploaded for STT.
+        """녹취 업로드 여부 결정.
 
-        Upload if:
-        - Status is OK (not EMPTY, MUTED, etc.)
-        - Duration is at least 3 seconds
-        - Not already uploaded
+        에이전트가 duration ≥ 5초를 이미 필터링했으므로 항상 업로드.
         """
         if record.uploaded:
             return False
-        if record.status != "OK":
-            return False
-        if record.duration_wav < 3.0:
-            return False
         return True
 
-    def run_stt_pipeline(
+    def run_audio_quality(
         self, agent_id: str, filename: str, wav_path: str
+    ) -> dict[str, str | float | int | bool] | None:
+        """Run audio quality analysis on uploaded WAV.
+
+        Returns dict with quality metrics, or None on failure.
+        서버에서 음질 분석을 수행 (에이전트에서 이관됨).
+        """
+        try:
+            from agent.recording.audio_quality import analyze_recording
+
+            result = analyze_recording(filename, wav_path)
+            quality = {
+                "status": result.status.value,
+                "left_rms_db": result.left.rms_db,
+                "right_rms_db": result.right.rms_db,
+                "left_silence_ratio": result.left.silence_ratio,
+                "right_silence_ratio": result.right.silence_ratio,
+                "dropout_count": result.dropout_count,
+                "duration_wav": result.duration_wav,
+                "is_stereo": result.is_stereo,
+            }
+            _logger.info(
+                "audio quality done: agent_id=%s filename=%s status=%s "
+                "L=%.1fdB R=%.1fdB dur=%.1fs",
+                agent_id,
+                filename,
+                result.status.value,
+                result.left.rms_db,
+                result.right.rms_db,
+                result.duration_wav,
+            )
+            return quality
+        except Exception:
+            _logger.exception(
+                "audio quality failed: agent_id=%s filename=%s", agent_id, filename
+            )
+            return None
+
+    def run_stt_pipeline(
+        self,
+        agent_id: str,
+        filename: str,
+        wav_path: str,
+        quality: dict[str, str | float | int | bool] | None = None,
+        in_out: int = 0,
     ) -> SttResultPayload | None:
         """Run STT pipeline on uploaded WAV and return result payload.
 
+        *quality* 가 전달되면 SttResultPayload 에 음질 분석 결과를 포함한다.
+        *in_out* 1=수신, 2=발신 — STT 채널 매핑에 사용.
         Returns None if pipeline fails.
         """
         try:
             from server.airec.analyzer.pipeline import run_pipeline
 
-            result = run_pipeline(filename, wav_path)
+            result = run_pipeline(filename, wav_path, in_out=in_out)
         except Exception:
             _logger.exception(
                 "STT pipeline failed: agent_id=%s filename=%s", agent_id, filename
             )
             return None
+
+        # 음질 분석 결과 추출 (없으면 기본값)
+        aq_status = str(quality.get("status", "")) if quality else ""
+        aq_left_rms_db = float(quality.get("left_rms_db", 0.0)) if quality else 0.0
+        aq_right_rms_db = float(quality.get("right_rms_db", 0.0)) if quality else 0.0
+        aq_left_silence = (
+            float(quality.get("left_silence_ratio", 0.0)) if quality else 0.0
+        )
+        aq_right_silence = (
+            float(quality.get("right_silence_ratio", 0.0)) if quality else 0.0
+        )
+        aq_dropout_count = int(quality.get("dropout_count", 0)) if quality else 0
+        aq_duration_wav = float(quality.get("duration_wav", 0.0)) if quality else 0.0
+        aq_is_stereo = bool(quality.get("is_stereo", False)) if quality else False
 
         return SttResultPayload(
             filename=result.filename,
@@ -189,6 +244,14 @@ class RecHandler:
             required_phrase_list=result.required_phrase_list,
             forbidden_word_hit=result.forbidden_word_hit,
             forbidden_word_list=result.forbidden_word_list,
+            aq_status=aq_status,
+            aq_left_rms_db=aq_left_rms_db,
+            aq_right_rms_db=aq_right_rms_db,
+            aq_left_silence=aq_left_silence,
+            aq_right_silence=aq_right_silence,
+            aq_dropout_count=aq_dropout_count,
+            aq_duration_wav=aq_duration_wav,
+            aq_is_stereo=aq_is_stereo,
         )
 
     def get_agent_stats(self, agent_id: str) -> dict[str, int]:
