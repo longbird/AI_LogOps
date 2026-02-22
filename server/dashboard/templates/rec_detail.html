@@ -1,0 +1,498 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mb-4">
+    <a href="/recordings" class="text-blue-600 hover:text-blue-800 text-sm font-medium">&larr; 목록으로</a>
+</div>
+<h1 class="text-2xl font-bold mb-6">녹취 분석 상세</h1>
+
+<!-- Loading -->
+<div id="loading" class="text-center py-16">
+    <svg class="animate-spin h-8 w-8 text-blue-500 mx-auto mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+    </svg>
+    <div class="text-gray-500 text-sm">데이터를 불러오는 중...</div>
+</div>
+
+<!-- Error -->
+<div id="error" class="hidden text-center py-16">
+    <div class="text-red-500 text-lg mb-2">조회 실패</div>
+    <div class="text-gray-500 text-sm" id="error-msg"></div>
+</div>
+
+<!-- Content -->
+<div id="content" class="hidden space-y-6">
+
+    <!-- Section 1: Basic Info -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">녹취 정보</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-y-4 gap-x-6">
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">파일명</div>
+                <div id="info-filename" class="text-sm font-mono font-semibold text-gray-800 break-all"></div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">에이전트</div>
+                <div id="info-agent" class="text-sm text-gray-800"></div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">음질 상태</div>
+                <div id="info-status" class="text-sm"></div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">통화 시간</div>
+                <div id="info-duration" class="text-sm font-semibold text-gray-800"></div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">채널</div>
+                <div id="info-stereo" class="text-sm text-gray-800"></div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">분석 일시</div>
+                <div id="info-analyzed" class="text-sm text-gray-800"></div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">STT 모델</div>
+                <div id="info-model" class="text-sm text-gray-800"></div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">단어 수</div>
+                <div id="info-wordcount" class="text-sm text-gray-800"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Section 1.5: Audio Player -->
+    <div class="bg-white rounded-lg shadow p-4">
+        <div class="flex items-center gap-4">
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">녹취 재생</h2>
+            <audio id="audio-player" class="w-full h-10" controls preload="none">
+                브라우저가 오디오 재생을 지원하지 않습니다.
+            </audio>
+            <span id="audio-status" class="text-xs text-gray-400 whitespace-nowrap"></span>
+        </div>
+    </div>
+
+    <!-- Section 2: Scores -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <!-- Total Score -->
+        <div class="bg-white rounded-lg shadow p-6 flex flex-col items-center justify-center">
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-5">총점</h2>
+            <div class="relative w-36 h-36 mb-2">
+                <svg class="w-full h-full -rotate-90" viewBox="0 0 36 36">
+                    <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#e5e7eb" stroke-width="2.5"/>
+                    <circle id="score-ring" cx="18" cy="18" r="15.9155" fill="none"
+                            stroke="#10b981" stroke-width="2.5"
+                            stroke-dasharray="0 100" stroke-linecap="round"
+                            style="transition: stroke-dasharray 0.8s ease"/>
+                </svg>
+                <div class="absolute inset-0 flex flex-col items-center justify-center">
+                    <span id="score-value" class="text-4xl font-bold text-gray-800">-</span>
+                    <span class="text-xs text-gray-400">/ 100</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Score Breakdown -->
+        <div class="bg-white rounded-lg shadow p-6">
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-5">항목별 점수</h2>
+            <div class="space-y-5">
+                <div>
+                    <div class="flex justify-between text-sm mb-1.5">
+                        <span class="text-gray-600">응답 속도</span>
+                        <span id="bar-response-val" class="font-semibold text-gray-800">-</span>
+                    </div>
+                    <div class="w-full bg-gray-100 rounded-full h-3">
+                        <div id="bar-response" class="h-3 rounded-full transition-all duration-700" style="width:0%; background:#3b82f6"></div>
+                    </div>
+                </div>
+                <div>
+                    <div class="flex justify-between text-sm mb-1.5">
+                        <span class="text-gray-600">필수 문구</span>
+                        <span id="bar-phrase-val" class="font-semibold text-gray-800">-</span>
+                    </div>
+                    <div class="w-full bg-gray-100 rounded-full h-3">
+                        <div id="bar-phrase" class="h-3 rounded-full transition-all duration-700" style="width:0%; background:#10b981"></div>
+                    </div>
+                </div>
+                <div>
+                    <div class="flex justify-between text-sm mb-1.5">
+                        <span class="text-gray-600">침묵 비율</span>
+                        <span id="bar-silence-val" class="font-semibold text-gray-800">-</span>
+                    </div>
+                    <div class="w-full bg-gray-100 rounded-full h-3">
+                        <div id="bar-silence" class="h-3 rounded-full transition-all duration-700" style="width:0%; background:#f59e0b"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-5 pt-4 border-t text-sm text-gray-500">
+                <span id="score-first-resp" class="block">초기 응답: -</span>
+            </div>
+        </div>
+
+        <!-- Talk Ratios + Keywords -->
+        <div class="bg-white rounded-lg shadow p-6">
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-5">통화 비율</h2>
+            <div class="flex h-7 rounded-full overflow-hidden mb-2">
+                <div id="ratio-agent" class="transition-all duration-700" style="width:0%; background:#3b82f6"></div>
+                <div id="ratio-customer" class="transition-all duration-700" style="width:0%; background:#10b981"></div>
+                <div id="ratio-silence" class="transition-all duration-700" style="width:0%; background:#d1d5db"></div>
+            </div>
+            <div class="flex justify-between text-xs text-gray-500 mb-6">
+                <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full bg-blue-500"></span> 상담원 <strong id="ratio-agent-pct">-</strong></span>
+                <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full bg-green-500"></span> 고객 <strong id="ratio-customer-pct">-</strong></span>
+                <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full bg-gray-300"></span> 침묵 <strong id="ratio-silence-pct">-</strong></span>
+            </div>
+
+            <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">키워드 분석</h3>
+            <div class="space-y-2 text-sm">
+                <div class="flex items-start gap-2">
+                    <span id="kw-req-icon" class="text-base leading-none mt-0.5">-</span>
+                    <div>
+                        <span class="text-gray-500">필수 문구</span>
+                        <div id="kw-req-list" class="text-gray-800 text-xs mt-0.5">-</div>
+                    </div>
+                </div>
+                <div class="flex items-start gap-2">
+                    <span id="kw-forb-icon" class="text-base leading-none mt-0.5">-</span>
+                    <div>
+                        <span class="text-gray-500">금지어</span>
+                        <div id="kw-forb-list" class="text-gray-800 text-xs mt-0.5">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Section 3: STT Conversation -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">STT 대화</h2>
+            <span id="conv-count" class="text-xs text-gray-400"></span>
+        </div>
+        <div id="conversation" class="space-y-3 max-h-[600px] overflow-y-auto pr-2">
+            <div class="text-gray-400 text-sm text-center py-8">로딩 중...</div>
+        </div>
+    </div>
+
+    <!-- Section 4: Audio Quality -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">음질 분석</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-y-4 gap-x-6 text-sm">
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">L채널 RMS</div>
+                <div id="aq-lrms" class="font-mono text-gray-800">-</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">R채널 RMS</div>
+                <div id="aq-rrms" class="font-mono text-gray-800">-</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">L채널 침묵</div>
+                <div id="aq-lsilence" class="font-mono text-gray-800">-</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">R채널 침묵</div>
+                <div id="aq-rsilence" class="font-mono text-gray-800">-</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">드롭아웃</div>
+                <div id="aq-dropout" class="font-mono text-gray-800">-</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">WAV 길이</div>
+                <div id="aq-dur-wav" class="font-mono text-gray-800">-</div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-400 mb-0.5">SMDR 길이</div>
+                <div id="aq-dur-smdr" class="font-mono text-gray-800">-</div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+(function() {
+    var filename = '{{ filename }}';
+    var params = new URLSearchParams(window.location.search);
+    var agentId = params.get('agent_id') || '';
+
+    var loadingEl = document.getElementById('loading');
+    var errorEl = document.getElementById('error');
+    var errorMsg = document.getElementById('error-msg');
+    var contentEl = document.getElementById('content');
+
+    /* ── Fetch detail ── */
+    fetchDetail();
+
+    async function fetchDetail() {
+        var qp = new URLSearchParams();
+        if (agentId) qp.set('agent_id', agentId);
+
+        try {
+            var resp = await fetch('/api/rec/detail/' + encodeURIComponent(filename) + '?' + qp.toString());
+            var data = await resp.json();
+
+            if (!resp.ok) {
+                showError(data.error || resp.statusText);
+                return;
+            }
+            render(data.record || {});
+        } catch (err) {
+            showError('Fetch error: ' + err.message);
+        }
+    }
+
+    function showError(msg) {
+        loadingEl.classList.add('hidden');
+        errorMsg.textContent = msg;
+        errorEl.classList.remove('hidden');
+    }
+
+    /* ── Formatters ── */
+    function fmtDur(sec) {
+        if (sec == null || sec <= 0) return '-';
+        var m = Math.floor(sec / 60);
+        var s = Math.round(sec % 60);
+        return m + ':' + String(s).padStart(2, '0');
+    }
+
+    function fmtTs(sec) {
+        if (sec == null) return '';
+        var m = Math.floor(sec / 60);
+        var s = Math.floor(sec % 60);
+        return m + ':' + String(s).padStart(2, '0');
+    }
+
+    function fmtDatetime(dt) {
+        if (!dt) return '-';
+        try {
+            return new Date(dt).toLocaleString('ko-KR', { hour12: false });
+        } catch (e) { return dt; }
+    }
+
+    function fmtPct(ratio) {
+        if (ratio == null) return '-';
+        return Math.round(ratio * 100) + '%';
+    }
+
+    function scoreColor(v) {
+        if (v >= 80) return '#10b981';
+        if (v >= 60) return '#f59e0b';
+        return '#ef4444';
+    }
+
+    function statusBadge(st) {
+        var colors = {
+            'OK': 'bg-green-100 text-green-800',
+            'EMPTY': 'bg-gray-100 text-gray-800',
+            'MUTED_L': 'bg-yellow-100 text-yellow-800',
+            'MUTED_R': 'bg-yellow-100 text-yellow-800',
+            'DROPOUT': 'bg-red-100 text-red-800',
+            'MISMATCH': 'bg-orange-100 text-orange-800'
+        };
+        var cls = colors[st] || 'bg-gray-100 text-gray-800';
+        return '<span class="px-2.5 py-1 rounded-full text-xs font-semibold ' + cls + '">' + (st || '-') + '</span>';
+    }
+
+    function escapeHtml(str) {
+        var d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+
+    /* ── Render ── */
+    function render(r) {
+        loadingEl.classList.add('hidden');
+        contentEl.classList.remove('hidden');
+
+        /* Audio player */
+        var audioEl = document.getElementById('audio-player');
+        var audioStatus = document.getElementById('audio-status');
+        if (r.filename) {
+            audioEl.src = '/api/rec/stream/' + encodeURIComponent(r.filename);
+            audioEl.addEventListener('error', function() {
+                audioStatus.textContent = '재생 불가 (브라우저 미지원 포맷)';
+                audioStatus.className = 'text-xs text-red-500 whitespace-nowrap';
+            });
+            audioEl.addEventListener('loadeddata', function() {
+                audioStatus.textContent = '';
+            });
+        }
+
+        /* Basic info */
+        document.getElementById('info-filename').textContent = r.filename || '-';
+        document.getElementById('info-agent').textContent = r.agent_id || '-';
+        document.getElementById('info-status').innerHTML = statusBadge(r.status);
+        document.getElementById('info-duration').textContent = fmtDur(r.duration_wav || r.duration_sec);
+        document.getElementById('info-stereo').textContent = r.is_stereo ? 'Stereo' : 'Mono';
+        document.getElementById('info-analyzed').textContent = fmtDatetime(r.aq_analyzed_at || r.transcribed_at);
+        document.getElementById('info-model').textContent = r.model_name || '-';
+        document.getElementById('info-wordcount').textContent = r.word_count != null ? r.word_count + ' words' : '-';
+
+        /* Total score ring */
+        var score = r.score_total != null ? Math.round(r.score_total) : null;
+        if (score != null) {
+            var ring = document.getElementById('score-ring');
+            var val = document.getElementById('score-value');
+            val.textContent = score;
+            val.style.color = scoreColor(score);
+            ring.setAttribute('stroke', scoreColor(score));
+            setTimeout(function() { ring.setAttribute('stroke-dasharray', score + ' 100'); }, 50);
+        }
+
+        /* Score bars */
+        setBar('response', r.score_response);
+        setBar('phrase', r.score_phrase);
+        setBar('silence', r.score_silence);
+
+        /* First response */
+        var frEl = document.getElementById('score-first-resp');
+        if (r.is_stereo && r.first_response_sec != null) {
+            frEl.textContent = '초기 응답: ' + r.first_response_sec.toFixed(1) + '초';
+        } else if (!r.is_stereo && r.first_response_sec != null) {
+            frEl.textContent = '발화 속도: ' + r.first_response_sec.toFixed(0) + ' WPM';
+        }
+
+        /* Talk ratios */
+        var aR = r.agent_talk_ratio || 0;
+        var cR = r.customer_talk_ratio || 0;
+        var sR = r.silence_ratio || 0;
+        setTimeout(function() {
+            document.getElementById('ratio-agent').style.width = (aR * 100) + '%';
+            document.getElementById('ratio-customer').style.width = (cR * 100) + '%';
+            document.getElementById('ratio-silence').style.width = (sR * 100) + '%';
+        }, 50);
+        document.getElementById('ratio-agent-pct').textContent = fmtPct(aR);
+        document.getElementById('ratio-customer-pct').textContent = fmtPct(cR);
+        document.getElementById('ratio-silence-pct').textContent = fmtPct(sR);
+
+        /* Keywords */
+        var reqIcon = document.getElementById('kw-req-icon');
+        var reqList = document.getElementById('kw-req-list');
+        if (r.required_phrase_hit) {
+            reqIcon.textContent = '\u2705';
+            reqList.textContent = r.required_phrase_list || '(detected)';
+            reqList.className = 'text-green-700 text-xs mt-0.5';
+        } else {
+            reqIcon.textContent = '\u274c';
+            reqList.textContent = r.required_phrase_list || '(not detected)';
+            reqList.className = 'text-gray-500 text-xs mt-0.5';
+        }
+
+        var forbIcon = document.getElementById('kw-forb-icon');
+        var forbList = document.getElementById('kw-forb-list');
+        if (r.forbidden_word_hit) {
+            forbIcon.textContent = '\u26a0\ufe0f';
+            forbList.textContent = r.forbidden_word_list || '(detected)';
+            forbList.className = 'text-red-600 font-semibold text-xs mt-0.5';
+        } else {
+            forbIcon.textContent = '\u2705';
+            forbList.textContent = '\uc5c6\uc74c';
+            forbList.className = 'text-gray-500 text-xs mt-0.5';
+        }
+
+        /* Conversation */
+        renderConversation(r.segments_json);
+
+        /* Audio quality */
+        document.getElementById('aq-lrms').textContent = r.left_rms_db != null ? r.left_rms_db.toFixed(1) + ' dB' : '-';
+        document.getElementById('aq-rrms').textContent = r.right_rms_db != null ? r.right_rms_db.toFixed(1) + ' dB' : '-';
+        document.getElementById('aq-lsilence').textContent = r.left_silence != null ? fmtPct(r.left_silence) : '-';
+        document.getElementById('aq-rsilence').textContent = r.right_silence != null ? fmtPct(r.right_silence) : '-';
+        document.getElementById('aq-dropout').textContent = r.dropout_count != null ? r.dropout_count + ' \ud68c' : '-';
+        document.getElementById('aq-dur-wav').textContent = fmtDur(r.duration_wav);
+        document.getElementById('aq-dur-smdr').textContent = fmtDur(r.duration_smdr);
+    }
+
+    function setBar(name, value) {
+        var valEl = document.getElementById('bar-' + name + '-val');
+        var barEl = document.getElementById('bar-' + name);
+        if (value != null) {
+            var v = Math.round(value);
+            valEl.textContent = v;
+            valEl.style.color = scoreColor(v);
+            setTimeout(function() {
+                barEl.style.width = v + '%';
+                barEl.style.background = scoreColor(v);
+            }, 50);
+        }
+    }
+
+    /* ── Conversation Bubbles ── */
+    function renderConversation(segmentsJson) {
+        var container = document.getElementById('conversation');
+        var countEl = document.getElementById('conv-count');
+
+        if (!segmentsJson) {
+            container.innerHTML = '<div class="text-gray-400 text-sm text-center py-8">STT \ub370\uc774\ud130 \uc5c6\uc74c</div>';
+            return;
+        }
+
+        var segments;
+        try {
+            segments = typeof segmentsJson === 'string' ? JSON.parse(segmentsJson) : segmentsJson;
+        } catch (e) {
+            container.innerHTML = '<div class="text-red-500 text-sm text-center py-4">segments_json \ud30c\uc2f1 \uc624\ub958</div>';
+            return;
+        }
+
+        if (!Array.isArray(segments) || segments.length === 0) {
+            container.innerHTML = '<div class="text-gray-400 text-sm text-center py-8">\ub300\ud654 \ub0b4\uc6a9\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.</div>';
+            return;
+        }
+
+        // order 필드 우선 정렬 (기존 데이터는 order 없음 → time 폴백)
+        segments.sort(function(a, b) {
+            var oa = a.order !== undefined ? a.order : 999999;
+            var ob = b.order !== undefined ? b.order : 999999;
+            if (oa !== ob) return oa - ob;
+            return (a.time || 0) - (b.time || 0);
+        });
+        countEl.textContent = segments.length + '\uac1c \uc138\uadf8\uba3c\ud2b8';
+
+        var html = '';
+        for (var i = 0; i < segments.length; i++) {
+            var seg = segments[i];
+            var speaker = (seg.speaker || '').toLowerCase();
+            var isAgent = speaker.indexOf('agent') >= 0 || speaker === 'left' || speaker === 'l';
+            var timeStr = fmtTs(seg.time) + ' ~ ' + fmtTs(seg.end);
+            var text = escapeHtml(seg.text || '');
+            var label = isAgent ? '\uc0c1\ub2f4\uc6d0' : '\uace0\uac1d';
+
+            if (isAgent) {
+                html += '<div class="flex items-start gap-2.5 max-w-[85%]">';
+                html += '  <div class="flex-shrink-0 w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">';
+                html += '    <span class="text-white text-xs font-bold">\uc0c1</span>';
+                html += '  </div>';
+                html += '  <div class="min-w-0">';
+                html += '    <div class="flex items-baseline gap-2 mb-0.5">';
+                html += '      <span class="text-xs font-semibold text-blue-700">' + label + '</span>';
+                html += '      <span class="text-[10px] text-gray-400">' + timeStr + '</span>';
+                html += '    </div>';
+                html += '    <div class="bg-blue-50 border border-blue-100 rounded-xl rounded-tl-sm px-3.5 py-2 text-sm text-gray-800 leading-relaxed">' + text + '</div>';
+                html += '  </div>';
+                html += '</div>';
+            } else {
+                html += '<div class="flex items-start gap-2.5 max-w-[85%] ml-auto flex-row-reverse">';
+                html += '  <div class="flex-shrink-0 w-8 h-8 bg-green-500 rounded-full flex items-center justify-center">';
+                html += '    <span class="text-white text-xs font-bold">\uace0</span>';
+                html += '  </div>';
+                html += '  <div class="min-w-0">';
+                html += '    <div class="flex items-baseline gap-2 mb-0.5 justify-end">';
+                html += '      <span class="text-[10px] text-gray-400">' + timeStr + '</span>';
+                html += '      <span class="text-xs font-semibold text-green-700">' + label + '</span>';
+                html += '    </div>';
+                html += '    <div class="bg-green-50 border border-green-100 rounded-xl rounded-tr-sm px-3.5 py-2 text-sm text-gray-800 leading-relaxed">' + text + '</div>';
+                html += '  </div>';
+                html += '</div>';
+            }
+        }
+
+        container.innerHTML = html;
+    }
+})();
+</script>
+{% endblock %}

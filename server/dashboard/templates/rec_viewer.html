@@ -1,0 +1,419 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">녹취 조회</h1>
+
+<!-- Search Bar -->
+<div class="bg-white rounded-lg shadow p-4 mb-4 flex items-end gap-4 flex-wrap">
+    <div>
+        <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">날짜 (YYYYMMDD)</label>
+        <input id="s-date" type="text" maxlength="8" data-persist="rv_date"
+               class="border border-gray-300 rounded px-3 py-2 text-sm w-40 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+    </div>
+    <div>
+        <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Agent ID</label>
+        <input id="s-agent" type="text" placeholder="(auto)" data-persist="rv_agent"
+               class="border border-gray-300 rounded px-3 py-2 text-sm w-48 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+    </div>
+    <button id="btn-search" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded text-sm font-semibold">
+        조회
+    </button>
+    <span id="search-status" class="text-sm text-gray-400 ml-2"></span>
+</div>
+
+<!-- Results Table -->
+<div id="table-wrap" class="bg-white rounded-lg shadow overflow-hidden">
+    <div class="p-6 text-gray-400 text-sm">날짜를 입력하고 조회 버튼을 클릭하세요.</div>
+</div>
+
+<!-- Detail Modal (fullscreen overlay) -->
+<div id="modal-overlay" class="fixed inset-0 bg-black/50 z-50 hidden flex items-start justify-center overflow-y-auto py-6">
+    <div class="bg-gray-100 rounded-xl shadow-2xl w-[95vw] max-w-6xl mx-4 relative" onclick="event.stopPropagation()">
+
+        <!-- Modal Header -->
+        <div class="bg-white rounded-t-xl px-6 py-4 border-b flex items-center justify-between sticky top-0 z-10">
+            <div class="flex items-center gap-3">
+                <h2 class="text-lg font-bold text-gray-800">녹취 상세</h2>
+                <span id="d-filename" class="text-sm font-mono text-gray-500 break-all"></span>
+            </div>
+            <button id="btn-close-modal" class="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2">&times;</button>
+        </div>
+
+        <!-- Audio Player -->
+        <div class="bg-white px-6 py-3 border-b">
+            <div class="flex items-center gap-4">
+                <span class="text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">녹취 재생</span>
+                <audio id="audio" class="w-full h-9" controls preload="none"></audio>
+            </div>
+        </div>
+
+        <!-- Modal Body -->
+        <div class="p-5">
+            <div class="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
+
+                <!-- Left Column: Info + Score + Audio Quality (2/5) -->
+                <div class="lg:col-span-2 space-y-4 flex flex-col">
+
+                    <!-- Info -->
+                    <div class="bg-white rounded-lg shadow-sm p-4">
+                        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">녹취 정보</h3>
+                        <div class="grid grid-cols-2 gap-y-2.5 gap-x-4 text-sm">
+                            <div><div class="text-xs text-gray-400">에이전트</div><div id="d-agent" class="text-gray-800">-</div></div>
+                            <div><div class="text-xs text-gray-400">음질 상태</div><div id="d-status" class="text-gray-800">-</div></div>
+                            <div><div class="text-xs text-gray-400">통화 시간</div><div id="d-duration" class="font-semibold text-gray-800">-</div></div>
+                            <div><div class="text-xs text-gray-400">채널</div><div id="d-channel" class="text-gray-800">-</div></div>
+                            <div><div class="text-xs text-gray-400">분석 일시</div><div id="d-analyzed" class="text-gray-800">-</div></div>
+                            <div><div class="text-xs text-gray-400">단어 수</div><div id="d-words" class="text-gray-800">-</div></div>
+                        </div>
+                    </div>
+
+                    <!-- Score -->
+                    <div class="bg-white rounded-lg shadow-sm p-4">
+                        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">점수</h3>
+                        <div class="flex items-center gap-4 mb-3">
+                            <span class="text-xs text-gray-400">총점</span>
+                            <span id="d-score-total" class="text-3xl font-bold text-gray-800">-</span>
+                            <span class="text-xs text-gray-400">/ 100</span>
+                        </div>
+                        <div class="space-y-2.5">
+                            <div>
+                                <div class="flex justify-between text-xs mb-1"><span class="text-gray-500">응답 속도</span><span id="d-score-resp-v" class="font-semibold">-</span></div>
+                                <div class="w-full bg-gray-100 rounded-full h-2"><div id="d-bar-resp" class="h-2 rounded-full bg-blue-500 transition-all duration-500" style="width:0%"></div></div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-xs mb-1"><span class="text-gray-500">필수 문구</span><span id="d-score-phrase-v" class="font-semibold">-</span></div>
+                                <div class="w-full bg-gray-100 rounded-full h-2"><div id="d-bar-phrase" class="h-2 rounded-full bg-green-500 transition-all duration-500" style="width:0%"></div></div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-xs mb-1"><span class="text-gray-500">침묵 비율</span><span id="d-score-silence-v" class="font-semibold">-</span></div>
+                                <div class="w-full bg-gray-100 rounded-full h-2"><div id="d-bar-silence" class="h-2 rounded-full bg-yellow-500 transition-all duration-500" style="width:0%"></div></div>
+                            </div>
+                        </div>
+                        <!-- Talk Ratio -->
+                        <div class="mt-3 pt-3 border-t">
+                            <div class="text-xs text-gray-400 mb-1">대화 비율 (상담원 / 고객 / 침묵)</div>
+                            <div class="flex h-5 rounded-full overflow-hidden">
+                                <div id="d-ratio-a" class="transition-all duration-500" style="width:0%; background:#3b82f6"></div>
+                                <div id="d-ratio-c" class="transition-all duration-500" style="width:0%; background:#10b981"></div>
+                                <div id="d-ratio-s" class="transition-all duration-500" style="width:0%; background:#d1d5db"></div>
+                            </div>
+                            <div class="flex justify-between text-[10px] text-gray-400 mt-1">
+                                <span><span class="inline-block w-2 h-2 rounded-full bg-blue-500 mr-0.5"></span>상담원 <b id="d-ratio-a-p">-</b></span>
+                                <span><span class="inline-block w-2 h-2 rounded-full bg-green-500 mr-0.5"></span>고객 <b id="d-ratio-c-p">-</b></span>
+                                <span><span class="inline-block w-2 h-2 rounded-full bg-gray-300 mr-0.5"></span>침묵 <b id="d-ratio-s-p">-</b></span>
+                            </div>
+                        </div>
+                        <!-- Keywords -->
+                        <div class="mt-3 pt-3 border-t text-xs">
+                            <div id="d-kw-req" class="text-gray-500">필수문구: -</div>
+                            <div id="d-kw-forb" class="text-gray-500 mt-1">금지어: -</div>
+                        </div>
+                    </div>
+
+                    <!-- Audio Quality -->
+                    <div class="bg-white rounded-lg shadow-sm p-4">
+                        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">음질 분석</h3>
+                        <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm">
+                            <div><div class="text-xs text-gray-400">L채널 RMS</div><div id="d-aq-lrms" class="font-mono text-gray-800">-</div></div>
+                            <div><div class="text-xs text-gray-400">R채널 RMS</div><div id="d-aq-rrms" class="font-mono text-gray-800">-</div></div>
+                            <div><div class="text-xs text-gray-400">L채널 침묵</div><div id="d-aq-lsil" class="font-mono text-gray-800">-</div></div>
+                            <div><div class="text-xs text-gray-400">R채널 침묵</div><div id="d-aq-rsil" class="font-mono text-gray-800">-</div></div>
+                            <div><div class="text-xs text-gray-400">드롭아웃</div><div id="d-aq-drop" class="font-mono text-gray-800">-</div></div>
+                            <div><div class="text-xs text-gray-400">WAV 길이</div><div id="d-aq-dur" class="font-mono text-gray-800">-</div></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Column: STT Conversation (3/5) -->
+                <div class="lg:col-span-3 flex flex-col">
+                    <div class="bg-white rounded-lg shadow-sm p-4 flex-1 flex flex-col min-h-0">
+                        <div class="flex items-center justify-between mb-3 flex-shrink-0">
+                            <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">STT 대화</h3>
+                            <span id="d-seg-cnt" class="text-xs text-gray-400"></span>
+                        </div>
+                        <div id="d-conv" class="space-y-2.5 overflow-y-auto pr-1 flex-1">
+                            <div class="text-gray-400 text-sm text-center py-8">로딩 중...</div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    var dateEl = document.getElementById('s-date');
+    var agentEl = document.getElementById('s-agent');
+    var btnSearch = document.getElementById('btn-search');
+    var statusEl = document.getElementById('search-status');
+    var tableWrap = document.getElementById('table-wrap');
+    var modalOverlay = document.getElementById('modal-overlay');
+    var audioEl = document.getElementById('audio');
+
+    // Default date = today
+    if (!dateEl.value) {
+        var t = new Date();
+        dateEl.value = t.getFullYear() + String(t.getMonth()+1).padStart(2,'0') + String(t.getDate()).padStart(2,'0');
+    }
+
+    btnSearch.addEventListener('click', loadList);
+    dateEl.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadList(); });
+
+    /* ── Modal Close ── */
+    function closeModal() {
+        modalOverlay.classList.add('hidden');
+        if (audioEl) { audioEl.pause(); audioEl.removeAttribute('src'); audioEl.load(); }
+    }
+    document.getElementById('btn-close-modal').addEventListener('click', closeModal);
+    modalOverlay.addEventListener('click', function(e) { if (e.target === modalOverlay) closeModal(); });
+    document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && !modalOverlay.classList.contains('hidden')) closeModal(); });
+
+    /* ── Formatters ── */
+    function fmtDur(sec) {
+        if (sec == null || sec <= 0) return '-';
+        var m = Math.floor(sec / 60), s = Math.round(sec % 60);
+        return m + ':' + String(s).padStart(2, '0');
+    }
+    function fmtTs(sec) {
+        if (sec == null) return '';
+        var m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+        return m + ':' + String(s).padStart(2, '0');
+    }
+    function fmtPct(r) { return r != null ? Math.round(r * 100) + '%' : '-'; }
+    function fmtDatetime(dt) {
+        if (!dt) return '-';
+        try { return new Date(dt).toLocaleString('ko-KR', { hour12: false }); } catch(e) { return dt; }
+    }
+    function scoreColor(v) { return v >= 80 ? '#10b981' : v >= 60 ? '#f59e0b' : '#ef4444'; }
+    function scoreClass(v) { return v >= 80 ? 'text-green-600' : v >= 60 ? 'text-yellow-600' : 'text-red-600'; }
+    function statusBadge(st) {
+        var c = { 'OK':'bg-green-100 text-green-800', 'EMPTY':'bg-gray-100 text-gray-800',
+                  'MUTED_L':'bg-yellow-100 text-yellow-800', 'MUTED_R':'bg-yellow-100 text-yellow-800',
+                  'DROPOUT':'bg-red-100 text-red-800', 'MISMATCH':'bg-orange-100 text-orange-800' };
+        var cls = c[st] || 'bg-gray-100 text-gray-800';
+        return '<span class="px-2 py-0.5 rounded-full text-xs font-semibold ' + cls + '">' + (st||'-') + '</span>';
+    }
+    function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    /* ── Load List ── */
+    async function loadList() {
+        var date = dateEl.value.trim();
+        var agent = agentEl.value.trim();
+        var params = new URLSearchParams();
+        if (date) params.set('date', date);
+        if (agent) params.set('agent_id', agent);
+
+        statusEl.textContent = '조회 중...';
+        statusEl.className = 'text-sm text-yellow-600 ml-2';
+        closeModal();
+
+        try {
+            var resp = await fetch('/api/rec/list?' + params.toString());
+            var data = await resp.json();
+            if (!resp.ok) {
+                statusEl.textContent = '오류: ' + (data.error || resp.statusText);
+                statusEl.className = 'text-sm text-red-500 ml-2';
+                tableWrap.innerHTML = '<div class="p-6 text-red-500">오류: ' + (data.error || resp.statusText) + '</div>';
+                return;
+            }
+
+            var records = data.records || [];
+            if (!records.length) {
+                statusEl.textContent = '결과 없음';
+                statusEl.className = 'text-sm text-gray-400 ml-2';
+                tableWrap.innerHTML = '<div class="p-6 text-gray-400">조회 결과가 없습니다.</div>';
+                return;
+            }
+
+            statusEl.textContent = records.length + '건 조회됨';
+            statusEl.className = 'text-sm text-green-600 ml-2 font-semibold';
+
+            var html = '<table class="min-w-full divide-y divide-gray-200">';
+            html += '<thead class="bg-gray-50"><tr>';
+            html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">파일명</th>';
+            html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">상태</th>';
+            html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">시간</th>';
+            html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">점수</th>';
+            html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">분석일시</th>';
+            html += '</tr></thead><tbody class="bg-white divide-y divide-gray-100">';
+
+            for (var i = 0; i < records.length; i++) {
+                var r = records[i];
+                var fname = r.filename || '';
+                var sc = r.score_total != null ? Math.round(r.score_total) : null;
+                var scHtml = sc != null ? '<span class="font-semibold ' + scoreClass(sc) + '">' + sc + '</span>' : '<span class="text-gray-400">-</span>';
+                html += '<tr class="hover:bg-blue-50 cursor-pointer transition-colors rec-row" data-filename="' + escapeHtml(fname) + '">';
+                html += '<td class="px-4 py-2.5 text-sm font-mono text-gray-800">' + escapeHtml(fname) + '</td>';
+                html += '<td class="px-4 py-2.5 text-sm">' + statusBadge(r.status) + '</td>';
+                html += '<td class="px-4 py-2.5 text-sm text-gray-700">' + fmtDur(r.duration_wav || r.duration_sec) + '</td>';
+                html += '<td class="px-4 py-2.5 text-sm">' + scHtml + '</td>';
+                html += '<td class="px-4 py-2.5 text-sm text-gray-700">' + fmtDatetime(r.aq_analyzed_at) + '</td>';
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+            tableWrap.innerHTML = html;
+
+            // Attach row click
+            tableWrap.querySelectorAll('.rec-row').forEach(function(row) {
+                row.addEventListener('click', function() {
+                    // Highlight selected row
+                    tableWrap.querySelectorAll('.rec-row').forEach(function(r) { r.classList.remove('bg-blue-100'); });
+                    row.classList.add('bg-blue-100');
+                    loadDetail(row.getAttribute('data-filename'));
+                });
+            });
+        } catch (err) {
+            statusEl.textContent = '네트워크 오류';
+            statusEl.className = 'text-sm text-red-500 ml-2';
+            tableWrap.innerHTML = '<div class="p-6 text-red-500">오류: ' + err.message + '</div>';
+        }
+    }
+
+    /* ── Load Detail ── */
+    async function loadDetail(filename) {
+        var agent = agentEl.value.trim();
+        var qp = new URLSearchParams();
+        if (agent) qp.set('agent_id', agent);
+
+        try {
+            var resp = await fetch('/api/rec/detail/' + encodeURIComponent(filename) + '?' + qp.toString());
+            var data = await resp.json();
+            if (!resp.ok || !data.record) return;
+            renderDetail(data.record);
+        } catch(e) { /* ignore */ }
+    }
+
+    /* ── Render Detail ── */
+    function renderDetail(r) {
+        // Open modal
+        modalOverlay.classList.remove('hidden');
+
+        // Audio player
+        if (r.filename) {
+            audioEl.src = '/api/rec/stream/' + encodeURIComponent(r.filename);
+        }
+
+        // Info
+        document.getElementById('d-filename').textContent = r.filename || '-';
+        document.getElementById('d-agent').textContent = r.agent_id || '-';
+        document.getElementById('d-status').innerHTML = statusBadge(r.status);
+        document.getElementById('d-duration').textContent = fmtDur(r.duration_wav || r.duration_sec);
+        document.getElementById('d-channel').textContent = r.is_stereo ? 'Stereo' : 'Mono';
+        document.getElementById('d-analyzed').textContent = fmtDatetime(r.aq_analyzed_at || r.transcribed_at);
+        document.getElementById('d-words').textContent = r.word_count != null ? r.word_count + ' words' : '-';
+
+        // Score total
+        var sc = r.score_total != null ? Math.round(r.score_total) : null;
+        var scEl = document.getElementById('d-score-total');
+        scEl.textContent = sc != null ? sc : '-';
+        if (sc != null) scEl.style.color = scoreColor(sc);
+
+        // Score bars
+        setBar('resp', r.score_response);
+        setBar('phrase', r.score_phrase);
+        setBar('silence', r.score_silence);
+
+        // Talk ratios
+        var aR = r.agent_talk_ratio || 0, cR = r.customer_talk_ratio || 0, sR = r.silence_ratio || 0;
+        setTimeout(function() {
+            document.getElementById('d-ratio-a').style.width = (aR*100)+'%';
+            document.getElementById('d-ratio-c').style.width = (cR*100)+'%';
+            document.getElementById('d-ratio-s').style.width = (sR*100)+'%';
+        }, 50);
+        document.getElementById('d-ratio-a-p').textContent = fmtPct(aR);
+        document.getElementById('d-ratio-c-p').textContent = fmtPct(cR);
+        document.getElementById('d-ratio-s-p').textContent = fmtPct(sR);
+
+        // Keywords
+        var reqHit = r.required_phrase_hit;
+        var reqList = r.required_phrase_list || '';
+        document.getElementById('d-kw-req').innerHTML = '필수문구: ' + (reqHit ? '<span class="text-green-600 font-semibold">O</span>' : '<span class="text-red-500 font-semibold">X</span>') + ' <span class="text-gray-400">(' + escapeHtml(reqList) + ')</span>';
+
+        var forbHit = r.forbidden_word_hit;
+        var forbList = r.forbidden_word_list || '';
+        document.getElementById('d-kw-forb').innerHTML = '금지어: ' + (forbHit ? '<span class="text-red-600 font-semibold">O</span>' : '<span class="text-green-600 font-semibold">X</span>') + ' <span class="text-gray-400">(' + escapeHtml(forbList || '없음') + ')</span>';
+
+        // Audio Quality
+        document.getElementById('d-aq-lrms').textContent = r.left_rms_db != null ? r.left_rms_db.toFixed(1) + ' dB' : '-';
+        document.getElementById('d-aq-rrms').textContent = r.right_rms_db != null ? r.right_rms_db.toFixed(1) + ' dB' : '-';
+        document.getElementById('d-aq-lsil').textContent = r.left_silence != null ? fmtPct(r.left_silence) : '-';
+        document.getElementById('d-aq-rsil').textContent = r.right_silence != null ? fmtPct(r.right_silence) : '-';
+        document.getElementById('d-aq-drop').textContent = r.dropout_count != null ? r.dropout_count + '회' : '-';
+        document.getElementById('d-aq-dur').textContent = fmtDur(r.duration_wav);
+
+        // STT Conversation
+        renderConversation(r.segments_json);
+    }
+
+    function setBar(name, value) {
+        var valEl = document.getElementById('d-score-' + name + '-v');
+        var barEl = document.getElementById('d-bar-' + name);
+        if (value != null) {
+            var v = Math.round(value);
+            valEl.textContent = v;
+            valEl.style.color = scoreColor(v);
+            setTimeout(function() { barEl.style.width = v + '%'; barEl.style.background = scoreColor(v); }, 50);
+        } else {
+            valEl.textContent = '-';
+            barEl.style.width = '0%';
+        }
+    }
+
+    /* ── STT Conversation ── */
+    function renderConversation(segmentsJson) {
+        var container = document.getElementById('d-conv');
+        var countEl = document.getElementById('d-seg-cnt');
+
+        if (!segmentsJson) {
+            container.innerHTML = '<div class="text-gray-400 text-sm text-center py-8">STT 데이터 없음</div>';
+            countEl.textContent = '';
+            return;
+        }
+
+        var segments;
+        try { segments = typeof segmentsJson === 'string' ? JSON.parse(segmentsJson) : segmentsJson; }
+        catch(e) { container.innerHTML = '<div class="text-red-500 text-sm text-center py-4">파싱 오류</div>'; return; }
+
+        if (!Array.isArray(segments) || !segments.length) {
+            container.innerHTML = '<div class="text-gray-400 text-sm text-center py-8">대화 내용이 없습니다.</div>';
+            countEl.textContent = '';
+            return;
+        }
+
+        // order 필드 우선 정렬 (기존 데이터는 order 없음 → time 폴백)
+        segments.sort(function(a, b) {
+            var oa = a.order !== undefined ? a.order : 999999;
+            var ob = b.order !== undefined ? b.order : 999999;
+            if (oa !== ob) return oa - ob;
+            return (a.time || 0) - (b.time || 0);
+        });
+        countEl.textContent = segments.length + '개 세그먼트';
+
+        var html = '';
+        for (var i = 0; i < segments.length; i++) {
+            var seg = segments[i];
+            var speaker = (seg.speaker || '').toLowerCase();
+            var isAgent = speaker.indexOf('agent') >= 0 || speaker === 'left' || speaker === 'l';
+            var timeStr = fmtTs(seg.time) + '~' + fmtTs(seg.end);
+            var text = escapeHtml(seg.text || '');
+            var label = isAgent ? '상담원' : '고객';
+
+            if (isAgent) {
+                html += '<div class="flex items-start gap-2 max-w-[85%]">';
+                html += '<div class="flex-shrink-0 w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center"><span class="text-white text-[10px] font-bold">상</span></div>';
+                html += '<div class="min-w-0"><div class="flex items-baseline gap-1.5 mb-0.5"><span class="text-[11px] font-semibold text-blue-700">' + label + '</span><span class="text-[10px] text-gray-400">' + timeStr + '</span></div>';
+                html += '<div class="bg-blue-50 border border-blue-100 rounded-xl rounded-tl-sm px-3 py-1.5 text-sm text-gray-800 leading-relaxed">' + text + '</div></div></div>';
+            } else {
+                html += '<div class="flex items-start gap-2 max-w-[85%] ml-auto flex-row-reverse">';
+                html += '<div class="flex-shrink-0 w-7 h-7 bg-green-500 rounded-full flex items-center justify-center"><span class="text-white text-[10px] font-bold">고</span></div>';
+                html += '<div class="min-w-0"><div class="flex items-baseline gap-1.5 mb-0.5 justify-end"><span class="text-[10px] text-gray-400">' + timeStr + '</span><span class="text-[11px] font-semibold text-green-700">' + label + '</span></div>';
+                html += '<div class="bg-green-50 border border-green-100 rounded-xl rounded-tr-sm px-3 py-1.5 text-sm text-gray-800 leading-relaxed">' + text + '</div></div></div>';
+            }
+        }
+        container.innerHTML = html;
+    }
+
+})();
+</script>
+{% endblock %}
