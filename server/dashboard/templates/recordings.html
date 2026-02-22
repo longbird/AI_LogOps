@@ -8,12 +8,12 @@
     <div class="flex items-end gap-4 flex-wrap">
         <div>
             <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Agent ID</label>
-            <input id="ctrl-agent" type="text" placeholder="(auto: first connected)"
+            <input id="ctrl-agent" type="text" placeholder="(auto: first connected)" data-persist="rec_ctrl_agent"
                    class="border border-gray-300 rounded px-3 py-2 text-sm w-48 focus:ring-2 focus:ring-blue-400 focus:outline-none">
         </div>
         <div>
             <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Date (YYYYMMDD)</label>
-            <input id="ctrl-date" type="text" placeholder="(auto: today)" maxlength="8"
+            <input id="ctrl-date" type="text" placeholder="(auto: today)" maxlength="8" data-persist="rec_ctrl_date"
                    class="border border-gray-300 rounded px-3 py-2 text-sm w-40 focus:ring-2 focus:ring-blue-400 focus:outline-none">
         </div>
         <button id="btn-start" class="bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded text-sm font-semibold">
@@ -26,16 +26,31 @@
     </div>
 </div>
 
+<!-- Analysis Status (Real-time) -->
+<div class="bg-white rounded-lg shadow p-4 mb-6">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-600 uppercase">Analysis Progress</h2>
+        <div class="flex items-center gap-3">
+            <span id="ws-status" class="inline-flex items-center gap-1 text-xs text-gray-400">
+                <span id="ws-dot" class="w-2 h-2 rounded-full bg-gray-300"></span>
+                <span class="ws-label">Disconnected</span>
+            </span>
+            <button id="btn-clear-log" class="text-xs text-gray-400 hover:text-gray-600 underline">Clear</button>
+        </div>
+    </div>
+    <div id="rec-log" class="bg-gray-900 text-gray-200 rounded font-mono text-xs leading-relaxed p-3 h-64 overflow-y-auto whitespace-pre-wrap"></div>
+</div>
+
 <!-- Search Filters -->
 <div class="bg-white rounded-lg shadow p-4 mb-6 flex items-end gap-4">
     <div>
         <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Date (YYYYMMDD)</label>
-        <input id="rec-date" type="text" placeholder="20260221" maxlength="8"
+        <input id="rec-date" type="text" placeholder="20260221" maxlength="8" data-persist="rec_search_date"
                class="border border-gray-300 rounded px-3 py-2 text-sm w-40 focus:ring-2 focus:ring-blue-400 focus:outline-none">
     </div>
     <div>
         <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Agent ID</label>
-        <input id="rec-agent" type="text" placeholder="(auto)"
+        <input id="rec-agent" type="text" placeholder="(auto)" data-persist="rec_search_agent"
                class="border border-gray-300 rounded px-3 py-2 text-sm w-48 focus:ring-2 focus:ring-blue-400 focus:outline-none">
     </div>
     <button id="rec-search" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm font-semibold">
@@ -48,18 +63,7 @@
     <div class="p-6 text-gray-500">Enter a date and click Search to load recordings.</div>
 </div>
 
-<!-- Detail Modal -->
-<div id="rec-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
-    <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
-        <div class="flex justify-between items-center border-b px-6 py-4">
-            <h2 class="text-lg font-bold">Recording Detail</h2>
-            <button id="rec-modal-close" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
-        </div>
-        <div id="rec-modal-body" class="p-6">
-            <div class="text-gray-500">Loading...</div>
-        </div>
-    </div>
-</div>
+
 
 <script>
 (function() {
@@ -106,23 +110,56 @@
         }
     }
 
-    btnStart.addEventListener('click', function() { sendAnalyzeCmd('start'); });
+    btnStart.addEventListener('click', function() {
+        sendAnalyzeCmd('start');
+        connectRecWs();
+    });
     btnStop.addEventListener('click', function() { sendAnalyzeCmd('stop'); });
+
+    /* ── Helper functions ── */
+    function statusBadge(status) {
+        var colors = {
+            'OK': 'bg-green-100 text-green-800',
+            'EMPTY': 'bg-gray-100 text-gray-800',
+            'MUTED_L': 'bg-yellow-100 text-yellow-800',
+            'MUTED_R': 'bg-yellow-100 text-yellow-800',
+            'DROPOUT': 'bg-red-100 text-red-800',
+            'MISMATCH': 'bg-orange-100 text-orange-800'
+        };
+        var cls = colors[status] || 'bg-gray-100 text-gray-800';
+        return '<span class="px-2 py-0.5 rounded-full text-xs font-semibold ' + cls + '">' + (status || '-') + '</span>';
+    }
+
+    function fmtDuration(sec) {
+        if (sec == null || sec <= 0) return '-';
+        var m = Math.floor(sec / 60);
+        var s = Math.round(sec % 60);
+        return m + ':' + String(s).padStart(2, '0');
+    }
+
+    function scoreCell(score) {
+        if (score == null) return '<span class="text-gray-400">-</span>';
+        var v = Math.round(score);
+        var color = v >= 80 ? 'text-green-600' : (v >= 60 ? 'text-yellow-600' : 'text-red-600');
+        return '<span class="' + color + '">' + v + '</span>';
+    }
+
+    function fmtDatetime(dt) {
+        if (!dt) return '-';
+        try {
+            var d = new Date(dt);
+            return d.toLocaleString('ko-KR', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        } catch (e) { return dt; }
+    }
 
     /* ── Recording List / Detail ── */
     const searchBtn = document.getElementById('rec-search');
     const dateInput = document.getElementById('rec-date');
     const agentInput = document.getElementById('rec-agent');
     const resultsDiv = document.getElementById('rec-results');
-    const modal = document.getElementById('rec-modal');
-    const modalBody = document.getElementById('rec-modal-body');
-    const modalClose = document.getElementById('rec-modal-close');
 
     searchBtn.addEventListener('click', loadList);
     dateInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadList(); });
-
-    modalClose.addEventListener('click', function() { modal.classList.add('hidden'); });
-    modal.addEventListener('click', function(e) { if (e.target === modal) modal.classList.add('hidden'); });
 
     async function loadList() {
         const date = dateInput.value.trim();
@@ -151,20 +188,23 @@
             let html = '<table class="min-w-full divide-y divide-gray-200">';
             html += '<thead class="bg-gray-50"><tr>';
             html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Filename</th>';
-            html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Agent</th>';
             html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Status</th>';
+            html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Duration</th>';
             html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Score</th>';
+            html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">STT</th>';
             html += '<th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Analyzed At</th>';
             html += '</tr></thead><tbody class="bg-white divide-y divide-gray-100">';
 
             for (const r of records) {
                 const fname = r.filename || '';
-                html += '<tr class="hover:bg-gray-50 cursor-pointer" data-filename="' + fname + '">';
+                const agentVal = agentInput.value.trim() || agent;
+                html += '<tr class="hover:bg-blue-50 cursor-pointer transition-colors" data-filename="' + fname + '" data-agent="' + (agentVal) + '">';
                 html += '<td class="px-4 py-3 text-sm font-mono text-gray-800">' + (fname || '-') + '</td>';
-                html += '<td class="px-4 py-3 text-sm text-gray-700">' + (r.agent_id || '-') + '</td>';
-                html += '<td class="px-4 py-3 text-sm text-gray-700">' + (r.status || '-') + '</td>';
-                html += '<td class="px-4 py-3 text-sm text-gray-700">' + (r.score_total != null ? r.score_total : '-') + '</td>';
-                html += '<td class="px-4 py-3 text-sm text-gray-700">' + (r.analyzed_at || '-') + '</td>';
+                html += '<td class="px-4 py-3 text-sm">' + statusBadge(r.status) + '</td>';
+                html += '<td class="px-4 py-3 text-sm text-gray-700">' + fmtDuration(r.duration_wav || r.duration_sec) + '</td>';
+                html += '<td class="px-4 py-3 text-sm font-semibold">' + scoreCell(r.score_total) + '</td>';
+                html += '<td class="px-4 py-3 text-sm text-gray-500">' + (r.word_count != null ? r.word_count + ' words' : '-') + '</td>';
+                html += '<td class="px-4 py-3 text-sm text-gray-700">' + fmtDatetime(r.aq_analyzed_at) + '</td>';
                 html += '</tr>';
             }
             html += '</tbody></table>';
@@ -172,7 +212,10 @@
 
             resultsDiv.querySelectorAll('tr[data-filename]').forEach(function(row) {
                 row.addEventListener('click', function() {
-                    loadDetail(row.getAttribute('data-filename'));
+                    const fn = row.getAttribute('data-filename');
+                    const ag = row.getAttribute('data-agent');
+                    const qp = ag ? '?agent_id=' + encodeURIComponent(ag) : '';
+                    window.location.href = '/recordings/detail/' + encodeURIComponent(fn) + qp;
                 });
             });
         } catch (err) {
@@ -180,39 +223,74 @@
         }
     }
 
-    async function loadDetail(filename) {
-        modal.classList.remove('hidden');
-        modalBody.innerHTML = '<div class="text-gray-500">Loading...</div>';
+    /* ── Recording Analysis WebSocket ── */
+    const recLog = document.getElementById('rec-log');
+    const wsDot = document.getElementById('ws-dot');
+    const wsStatus = document.getElementById('ws-status');
+    const btnClearLog = document.getElementById('btn-clear-log');
+    let recWs = null;
+    let recWsRetryTimer = null;
 
-        const agent = agentInput.value.trim();
-        const params = new URLSearchParams();
-        if (agent) params.set('agent_id', agent);
-
-        try {
-            const resp = await fetch('/api/rec/detail/' + encodeURIComponent(filename) + '?' + params.toString());
-            const data = await resp.json();
-
-            if (!resp.ok) {
-                modalBody.innerHTML = '<div class="text-red-500">Error: ' + (data.error || resp.statusText) + '</div>';
-                return;
-            }
-
-            const rec = data.record || {};
-            let html = '<dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">';
-            for (const [key, value] of Object.entries(rec)) {
-                html += '<dt class="font-semibold text-gray-600">' + key + '</dt>';
-                if (typeof value === 'object' && value !== null) {
-                    html += '<dd class="text-gray-800 font-mono text-xs whitespace-pre-wrap">' + JSON.stringify(value, null, 2) + '</dd>';
-                } else {
-                    html += '<dd class="text-gray-800">' + (value != null ? value : '-') + '</dd>';
-                }
-            }
-            html += '</dl>';
-            modalBody.innerHTML = html;
-        } catch (err) {
-            modalBody.innerHTML = '<div class="text-red-500">Fetch error: ' + err.message + '</div>';
+    function setWsStatus(connected) {
+        const label = wsStatus.querySelector('.ws-label');
+        if (connected) {
+            wsDot.className = 'w-2 h-2 rounded-full bg-green-400 animate-pulse';
+            if (label) label.textContent = 'Connected';
+        } else {
+            wsDot.className = 'w-2 h-2 rounded-full bg-gray-300';
+            if (label) label.textContent = 'Disconnected';
         }
     }
+
+    function appendRecLog(text) {
+        const ts = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+        const line = document.createElement('div');
+
+        /* color by event type */
+        if (text.includes('STT 완료') || text.includes('업로드 완료')) {
+            line.className = 'text-green-400';
+        } else if (text.includes('STT 실패') || text.includes('업로드 스킵')) {
+            line.className = 'text-red-400';
+        } else if (text.includes('업로드 요청') || text.includes('STT 분석 시작')) {
+            line.className = 'text-yellow-300';
+        } else if (text.includes('분석결과 수신')) {
+            line.className = 'text-blue-300';
+        }
+
+        line.textContent = '[' + ts + '] ' + text;
+        recLog.appendChild(line);
+        recLog.scrollTop = recLog.scrollHeight;
+    }
+
+    function connectRecWs() {
+        if (recWs && recWs.readyState <= 1) return; /* already open/connecting */
+        const agent = ctrlAgent.value.trim() || agentInput.value.trim();
+        if (!agent) {
+            appendRecLog('(Agent ID를 입력하세요)');
+            return;
+        }
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = proto + '//' + location.host + '/ws/rec/status/' + encodeURIComponent(agent);
+        recWs = new WebSocket(url);
+        recWs.onopen = function() { setWsStatus(true); };
+        recWs.onmessage = function(ev) { appendRecLog(ev.data); };
+        recWs.onclose = function() {
+            setWsStatus(false);
+            /* auto-reconnect after 3s */
+            if (recWsRetryTimer) clearTimeout(recWsRetryTimer);
+            recWsRetryTimer = setTimeout(function() { connectRecWs(); }, 3000);
+        };
+        recWs.onerror = function() { /* onclose will fire */ };
+    }
+
+    btnClearLog.addEventListener('click', function() { recLog.innerHTML = ''; });
+
+    /* auto-connect if agent ID already filled */
+    (function tryAutoConnect() {
+        const agent = ctrlAgent.value.trim() || agentInput.value.trim();
+        if (agent) connectRecWs();
+    })();
+
 })();
 </script>
 {% endblock %}
