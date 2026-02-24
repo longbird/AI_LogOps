@@ -141,7 +141,10 @@ async def websocket_logs(websocket: WebSocket, agent_id: str) -> None:
             if session is None:
                 continue
             current_len = len(session.log_buffer)
-            if current_len > last_index:
+            if current_len < last_index:
+                # 버퍼가 트렁케이션됨 — 인덱스 리셋
+                last_index = current_len
+            elif current_len > last_index:
                 new_lines = session.log_buffer[last_index:current_len]
                 for line in new_lines:
                     await websocket.send_text(line)

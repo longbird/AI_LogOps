@@ -21,6 +21,16 @@ class _TCPServerLike(Protocol):
 
     async def set_rec_max_concurrent(self, value: int) -> None: ...
 
+    @property
+    def stt_engine(self) -> str: ...
+
+    @property
+    def openai_prompt(self) -> str: ...
+
+    async def set_stt_engine(self, engine: str) -> None: ...
+
+    async def set_openai_prompt(self, prompt: str) -> None: ...
+
     async def send_rec_data_req(
         self,
         agent_id: str,
@@ -263,6 +273,53 @@ async def api_rec_max_concurrent_set(request: Request) -> JSONResponse:
     return JSONResponse(
         {"status": "ok", "max_concurrent": tcp_server.rec_max_concurrent}
     )
+
+
+@router.get("/api/rec/stt-engine")
+async def api_rec_stt_engine_get(request: Request) -> JSONResponse:
+    """현재 STT 엔진 및 OpenAI 프롬프트 조회."""
+    state = _state(request)
+    tcp_server = state.tcp_server
+    if tcp_server is None:
+        return JSONResponse({"error": "server not configured"}, status_code=503)
+    return JSONResponse({
+        "stt_engine": tcp_server.stt_engine,
+        "openai_prompt": tcp_server.openai_prompt,
+    })
+
+
+@router.post("/api/rec/stt-engine")
+async def api_rec_stt_engine_set(request: Request) -> JSONResponse:
+    """STT 엔진 변경. JSON body: {engine: str, prompt?: str}."""
+    state = _state(request)
+    tcp_server = state.tcp_server
+    if tcp_server is None:
+        return JSONResponse({"error": "server not configured"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    engine = body.get("engine", "")
+    valid_engines = ("local", "openai-whisper", "openai-gpt4o", "openai-diarize", "rtzr")
+    if engine not in valid_engines:
+        return JSONResponse(
+            {"error": f"engine must be one of {valid_engines}"}, status_code=400
+        )
+
+    await tcp_server.set_stt_engine(engine)
+
+    prompt = body.get("prompt")
+    if prompt is not None:
+        await tcp_server.set_openai_prompt(str(prompt))
+
+    logger.info("stt_engine changed to %s via API", engine)
+    return JSONResponse({
+        "status": "ok",
+        "stt_engine": tcp_server.stt_engine,
+        "openai_prompt": tcp_server.openai_prompt,
+    })
 
 
 @router.websocket("/ws/rec/status/{agent_id}")
