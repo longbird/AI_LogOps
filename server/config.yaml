@@ -47,3 +47,95 @@ health:
   memory_threshold: 85
   disk_threshold: 90
   alert_cooldown: 1800
+
+# ── STT (음성 인식) 설정 ──
+stt:
+  # 로컬 Whisper 엔진 설정
+  whisper:
+    # 모델: HuggingFace 모델 ID 또는 faster-whisper 내장 모델명
+    # 한국어 파인튜닝 모델: ghost613/faster-whisper-large-v3-turbo-korean (깨끗한 음성 전용, µ-law 전화 음성 미지원)
+    # 전화 녹음 최적: large-v3-turbo (µ-law/8kHz 전화 음성에서 가장 안정적)
+    # 내장 모델: tiny, base, small, medium, large-v2, large-v3, large-v3-turbo
+    model: "large-v3-turbo"
+    device: "cpu"       # cpu 또는 cuda
+    compute_type: "int8" # int8, float16, float32
+    beam_size: 5
+    language: "ko"
+    vad_filter: true
+    vad_parameters:
+      threshold: 0.35               # 음성 감지 임계값 (0.0~1.0) — 전화 음성에 맞게 낮춤
+      min_speech_duration_ms: 150   # 최소 발화 길이 (ms) — 짧은 "네", "예" 캡처
+      min_silence_duration_ms: 300  # 최소 무음 길이 (ms) — 전화 대화 자연 멈춤에 맞춤 (700→300)
+      speech_pad_ms: 200            # 발화 앞뒤 패딩 (ms)
+
+    # 환각 방지 파라미터
+    hallucination_prevention:
+      compression_ratio_threshold: 2.4  # 반복 텍스트 감지
+      log_prob_threshold: -1.0          # 낮은 확률 세그먼트 필터링
+      no_speech_threshold: 0.8          # 무음 감지 임계값 (높을수록 무음 판정 엄격)
+      condition_on_previous_text: true  # 이전 텍스트 컨텍스트 활용
+      temperature:
+        - 0.0    # 첫 시도: 결정적
+        - 0.2    # 폴백 1
+        - 0.4    # 폴백 2
+        - 0.6    # 폴백 3
+        - 0.8    # 폴백 4
+        - 1.0    # 폴백 5 (최대 다양성)
+
+    # 도메인 프롬프트 (initial_prompt) — 대리운전 콜센터 도메인
+    # STT 결과 기반 자동 업데이트 시 이 값은 기본값으로 사용됨
+    initial_prompt: >-
+      안녕하세요, 대리운전입니다. 어디로 모실까요?
+      출발지와 도착지를 말씀해 주세요.
+      강남역, 홍대입구역, 서울역, 잠실역, 신림역, 구로디지털단지역,
+      수원역, 인천역, 판교역, 부천역, 일산, 분당,
+      아파트, 주민센터, 사거리, 삼거리, 대로,
+      대리 요금, 만 원, 이만 원, 삼만 원, 할인, 추가 요금,
+      기사님, 손님, 고객님, 예약, 배차, 도착 예정
+
+  # 오디오 전처리 설정
+  preprocessing:
+    enabled: true
+    resample_rate: 16000      # Whisper 입력 기준 샘플레이트
+    # 대역 필터: 전화 음성 대역 (300~3400Hz) 추출
+    bandpass:
+      enabled: true
+      low_freq: 300
+      high_freq: 3400
+    # 노이즈 감소
+    noise_reduction:
+      enabled: true
+      # prop_decrease: 노이즈 감소 비율 (0.0~1.0, 높을수록 공격적)
+      prop_decrease: 0.8
+    # 음량 정규화
+    normalize:
+      enabled: true
+      target_dbfs: -20.0       # 목표 dBFS (LUFS 근사치)
+
+  # 도메인 프롬프트 자동 업데이트
+  prompt_auto_update:
+    enabled: true
+    # 프롬프트 저장 경로 (storage 기준 상대경로)
+    prompt_file: "stt/domain_prompt.txt"
+    # 위치/도메인 어휘 사전 경로
+    vocabulary_file: "stt/domain_vocabulary.json"
+    # 업데이트 주기: 매 N건의 STT 처리 후 프롬프트 갱신
+    update_interval: 50
+    # 프롬프트 최대 토큰 수 (Whisper 제한: ~224 tokens)
+    max_prompt_tokens: 200
+
+  # 데이터 축적 및 자동 학습
+  learning:
+    enabled: true
+    # 학습 데이터 저장 경로
+    data_dir: "stt/training_data"
+    # 위치/지명 자동 추출 및 축적
+    location_extraction:
+      enabled: true
+      # 위치 패턴 매칭 키워드 (정규식)
+      patterns:
+        - "(에서|부터)\\s*출발"
+        - "(으로|까지)\\s*(가|와|오)"
+        - "(역|동|구|시|읍|면|리|아파트|빌딩|타워|센터|병원|학교|대학|공원|마트)"
+    # N건 축적 후 vocabulary 갱신
+    vocab_update_interval: 100

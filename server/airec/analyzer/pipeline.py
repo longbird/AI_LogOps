@@ -1,6 +1,6 @@
 """STT + quality analysis pipeline for a single recording.
 
-Orchestrates: WAV -> STT (faster-whisper) -> call quality scoring.
+Orchestrates: WAV -> STT (multi-engine) -> call quality scoring.
 DB operations are optional and passed as callbacks.
 """
 
@@ -53,38 +53,66 @@ class PipelineResult:
     required_phrase_hit: bool = False
     required_phrase_list: str = ""
     forbidden_word_hit: bool = False
+    stt_model: str = "faster-whisper-medium"
     forbidden_word_list: str = ""
 
 
+# Engine key → actual model name mapping for DB storage
+# local 엔진은 config.yaml에서 동적으로 결정됨 (get_stt_config 참조)
+def _get_engine_model_name(engine: str) -> str:
+    """STT 엔진별 DB 저장용 모델명 반환."""
+    static = {
+        "openai-whisper": "whisper-1",
+        "openai-gpt4o": "gpt-4o-mini-transcribe",
+        "openai-diarize": "gpt-4o-transcribe-diarize",
+        "rtzr": "rtzr-sommers",
+    }
+    if engine in static:
+        return static[engine]
+    # local: config에서 모델명 읽기
+    try:
+        from .stt import get_stt_config
+        cfg = get_stt_config()
+        model_name = cfg.get("whisper", {}).get("model", "faster-whisper-medium")
+        if "/" in model_name:
+            model_name = model_name.split("/")[-1]
+        return model_name
+    except Exception:
+        return "faster-whisper-medium"
+
 def run_pipeline(
-    filename: str, wav_path: str, language: str = "ko", in_out: int = 0
+    filename: str,
+    wav_path: str,
+    language: str = "ko",
+    in_out: int = 0,
+    *,
+    stt_engine: str = "local",
+    openai_prompt: str = "",
 ) -> PipelineResult:
     """Run full STT + quality analysis pipeline on a WAV file.
-
     Args:
         filename: Recording filename identifier.
         wav_path: Path to the WAV file.
         language: BCP-47 language code for STT.
         in_out: 1=수신, 2=발신, 0=알수없음 — 스테레오 채널 매핑에 사용.
-
+        stt_engine: 'local', 'openai-whisper', or 'openai-gpt4o'.
+        openai_prompt: Domain-specific prompt hint for OpenAI models.
     Returns:
         PipelineResult with transcript and quality data.
-
-    Raises:
-        ImportError: If faster-whisper is not installed.
+        ImportError: If faster-whisper is not installed (local engine).
         FileNotFoundError: If wav_path does not exist.
     """
     from .stt import transcribe_file
     from .call_quality import CallQualityResult, analyze_call_quality
-
-    transcribe = cast(Callable[[str, str, int], _TranscriptLike], transcribe_file)
-
     _logger.info(
-        "Pipeline start: filename=%s path=%s in_out=%d", filename, wav_path, in_out
+        "Pipeline start: filename=%s path=%s in_out=%d engine=%s",
+        filename, wav_path, in_out, stt_engine,
     )
-
     # Step 1: STT
-    transcript = transcribe(wav_path, language, in_out)
+    transcript = transcribe_file(
+        wav_path, language, in_out,
+        engine=stt_engine, openai_prompt=openai_prompt,
+    )
     _logger.info(
         "STT done: filename=%s segments=%d words=%d",
         filename,
@@ -127,6 +155,7 @@ def run_pipeline(
 
     return PipelineResult(
         filename=filename,
+        stt_model=_get_engine_model_name(stt_engine),
         full_text=transcript.full_text,
         agent_text=transcript.agent_text,
         customer_text=transcript.customer_text,
