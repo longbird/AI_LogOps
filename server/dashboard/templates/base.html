@@ -40,17 +40,46 @@
     {% set user_name = request.state.user if request.state.user is defined else '' %}
     <nav class="bg-gray-800 text-white shadow-lg">
         <div class="max-w-7xl mx-auto px-4">
-            <div class="flex justify-between h-16 items-center">
-                <div class="flex items-center space-x-8">
-                    <span class="text-xl font-bold">AI-LogOps</span>
-                    {% if 'dashboard' in perms %}<a href="/dashboard" class="hover:text-gray-300">대시보드</a>{% endif %}
-                    {% if 'logs' in perms %}<a href="/logs" class="hover:text-gray-300">로그</a>{% endif %}
-                    {% if 'deploys' in perms %}<a href="/deploys" class="hover:text-gray-300">배포</a>{% endif %}
-                    {% if 'recordings' in perms %}<a href="/recordings" class="hover:text-gray-300">녹취 분석</a>{% endif %}
-                    {% if 'rec_viewer' in perms %}<a href="/rec-viewer" class="hover:text-gray-300">녹취 조회</a>{% endif %}
-                    {% if 'admin' in perms %}<a href="/admin" class="hover:text-gray-300">계정 관리</a>{% endif %}
+            <div class="flex justify-between h-14 items-center">
+                <span class="text-xl font-bold shrink-0">AI-LogOps</span>
+                <!-- Desktop menu -->
+                <div class="hidden md:flex items-center space-x-6">
+                    {% if 'dashboard' in perms %}<a href="/dashboard" class="hover:text-gray-300 text-sm">대시보드</a>{% endif %}
+                    {% if 'logs' in perms %}<a href="/logs" class="hover:text-gray-300 text-sm">로그</a>{% endif %}
+                    {% if 'deploys' in perms %}<a href="/deploys" class="hover:text-gray-300 text-sm">배포</a>{% endif %}
+                    {% if 'recordings' in perms %}<a href="/recordings" class="hover:text-gray-300 text-sm">녹취 분석</a>{% endif %}
+                    {% if 'rec_viewer' in perms %}<a href="/rec-viewer" class="hover:text-gray-300 text-sm">녹취 조회</a>{% endif %}
+                    {% if 'admin' in perms %}<a href="/admin" class="hover:text-gray-300 text-sm">계정 관리</a>{% endif %}
                 </div>
-                <div class="flex items-center space-x-4">
+                <div class="hidden md:flex items-center space-x-4">
+                    {% if user_name %}
+                    <span class="text-sm text-gray-400">
+                        {{ user_name }}
+                        {% if user_role == 'admin' %}
+                        <span class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-purple-600 text-white">관리자</span>
+                        {% endif %}
+                    </span>
+                    {% endif %}
+                    <a href="/logout" class="hover:text-gray-300 text-sm">로그아웃</a>
+                </div>
+                <!-- Mobile hamburger -->
+                <button id="mobile-menu-btn" class="md:hidden p-2 rounded hover:bg-gray-700" onclick="document.getElementById('mobile-menu').classList.toggle('hidden')">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <!-- Mobile dropdown menu -->
+        <div id="mobile-menu" class="hidden md:hidden border-t border-gray-700">
+            <div class="px-4 py-3 space-y-2">
+                {% if 'dashboard' in perms %}<a href="/dashboard" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">대시보드</a>{% endif %}
+                {% if 'logs' in perms %}<a href="/logs" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">로그</a>{% endif %}
+                {% if 'deploys' in perms %}<a href="/deploys" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">배포</a>{% endif %}
+                {% if 'recordings' in perms %}<a href="/recordings" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">녹취 분석</a>{% endif %}
+                {% if 'rec_viewer' in perms %}<a href="/rec-viewer" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">녹취 조회</a>{% endif %}
+                {% if 'admin' in perms %}<a href="/admin" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">계정 관리</a>{% endif %}
+                <div class="border-t border-gray-700 pt-2 mt-2 flex items-center justify-between">
                     {% if user_name %}
                     <span class="text-sm text-gray-400">
                         {{ user_name }}

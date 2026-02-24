@@ -1,217 +1,260 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="mb-4">
-    <a href="/recordings" class="text-blue-600 hover:text-blue-800 text-sm font-medium">&larr; 목록으로</a>
+<div class="h-[calc(100vh-6rem)] flex flex-col">
+    <div class="flex-none mb-4">
+        <a href="/recordings" class="text-blue-600 hover:text-blue-800 text-sm font-medium">&larr; 목록으로</a>
+    </div>
+
+    <div class="flex-none flex items-center justify-between mb-4">
+        <h1 class="text-2xl font-bold text-gray-800">녹취 분석 상세</h1>
+    </div>
+
+    <!-- Loading -->
+    <div id="loading" class="flex-1 flex flex-col items-center justify-center">
+        <svg class="animate-spin h-8 w-8 text-blue-500 mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        <div class="text-gray-500 text-sm">데이터를 불러오는 중...</div>
+    </div>
+
+    <!-- Error -->
+    <div id="error" class="hidden flex-1 flex flex-col items-center justify-center">
+        <div class="text-red-500 text-lg mb-2">조회 실패</div>
+        <div class="text-gray-500 text-sm" id="error-msg"></div>
+    </div>
+
+    <!-- Content -->
+    <div id="content" class="hidden flex-1 flex flex-col min-h-0 space-y-4">
+        
+        <!-- Top: Audio Player -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex-none">
+            <div class="flex items-center gap-4">
+                <div class="flex-shrink-0 w-10 h-10 bg-blue-50 rounded-full flex items-center justify-center text-blue-500">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <audio id="audio-player" class="w-full h-8" controls preload="metadata">
+                        브라우저가 오디오 재생을 지원하지 않습니다.
+                    </audio>
+                </div>
+                <span id="audio-status" class="text-xs text-gray-400 whitespace-nowrap"></span>
+            </div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0">
+            
+            <!-- Left Column: Info & Analysis (Scrollable) -->
+            <div class="lg:col-span-5 flex flex-col gap-4 overflow-y-auto pr-1 custom-scrollbar">
+                
+                <!-- Card 1: Basic Info -->
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                    <h2 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        녹취 정보
+                    </h2>
+                    <div class="grid grid-cols-2 gap-y-4 gap-x-4">
+                        <div class="col-span-2">
+                            <div class="text-xs text-gray-400 mb-1">파일명</div>
+                            <div id="info-filename" class="text-sm font-mono font-medium text-gray-900 break-all leading-tight"></div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-400 mb-1">에이전트</div>
+                            <div id="info-agent" class="text-sm font-medium text-gray-900"></div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-400 mb-1">음질 상태</div>
+                            <div id="info-status" class="text-sm"></div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-400 mb-1">통화 시간</div>
+                            <div id="info-duration" class="text-sm font-semibold text-gray-900"></div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-400 mb-1">채널</div>
+                            <div id="info-stereo" class="text-sm text-gray-900"></div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-400 mb-1">분석 일시</div>
+                            <div id="info-analyzed" class="text-sm text-gray-900"></div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-400 mb-1">단어 수</div>
+                            <div id="info-wordcount" class="text-sm text-gray-900"></div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-400 mb-1">STT 모델</div>
+                            <div id="info-model" class="text-sm text-gray-900"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Card 2: Scores & Analysis -->
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                    <h2 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-5 flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                        평가 및 분석
+                    </h2>
+                    
+                    <div class="flex items-center gap-6 mb-8">
+                        <!-- Total Score Ring -->
+                        <div class="relative w-28 h-28 flex-shrink-0">
+                            <svg class="w-full h-full -rotate-90" viewBox="0 0 36 36">
+                                <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#f3f4f6" stroke-width="3"/>
+                                <circle id="score-ring" cx="18" cy="18" r="15.9155" fill="none"
+                                        stroke="#10b981" stroke-width="3"
+                                        stroke-dasharray="0 100" stroke-linecap="round"
+                                        style="transition: stroke-dasharray 1s ease-out"/>
+                            </svg>
+                            <div class="absolute inset-0 flex flex-col items-center justify-center">
+                                <span class="text-xs text-gray-400 font-medium">총점</span>
+                                <span id="score-value" class="text-3xl font-bold text-gray-800 leading-none mt-1">-</span>
+                            </div>
+                        </div>
+                        
+                        <!-- Mini Stats -->
+                        <div class="flex-1 space-y-3">
+                            <div>
+                                <div class="flex justify-between text-xs mb-1">
+                                    <span class="text-gray-500 font-medium">응답 속도</span>
+                                    <span id="bar-response-val" class="font-bold text-gray-800">-</span>
+                                </div>
+                                <div class="w-full bg-gray-100 rounded-full h-1.5">
+                                    <div id="bar-response" class="h-1.5 rounded-full transition-all duration-700" style="width:0%; background:#3b82f6"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-xs mb-1">
+                                    <span class="text-gray-500 font-medium">필수 문구</span>
+                                    <span id="bar-phrase-val" class="font-bold text-gray-800">-</span>
+                                </div>
+                                <div class="w-full bg-gray-100 rounded-full h-1.5">
+                                    <div id="bar-phrase" class="h-1.5 rounded-full transition-all duration-700" style="width:0%; background:#10b981"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-xs mb-1">
+                                    <span class="text-gray-500 font-medium">침묵 비율</span>
+                                    <span id="bar-silence-val" class="font-bold text-gray-800">-</span>
+                                </div>
+                                <div class="w-full bg-gray-100 rounded-full h-1.5">
+                                    <div id="bar-silence" class="h-1.5 rounded-full transition-all duration-700" style="width:0%; background:#f59e0b"></div>
+                                </div>
+                            </div>
+                            <div class="pt-1 text-[11px] text-gray-400 text-right">
+                                <span id="score-first-resp">초기 응답: -</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-gray-100 pt-5 space-y-5">
+                        <!-- Talk Ratio -->
+                        <div>
+                            <h3 class="text-[11px] font-bold text-gray-400 uppercase tracking-wide mb-3">대화 점유율</h3>
+                            <div class="flex h-3 rounded-full overflow-hidden mb-2 shadow-inner">
+                                <div id="ratio-agent" class="transition-all duration-700" style="width:0%; background:#3b82f6"></div>
+                                <div id="ratio-customer" class="transition-all duration-700" style="width:0%; background:#10b981"></div>
+                                <div id="ratio-silence" class="transition-all duration-700" style="width:0%; background:#e5e7eb"></div>
+                            </div>
+                            <div class="flex justify-between text-xs text-gray-500">
+                                <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-blue-500"></span> 상담원 <strong id="ratio-agent-pct" class="text-gray-700">-</strong></span>
+                                <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-green-500"></span> 고객 <strong id="ratio-customer-pct" class="text-gray-700">-</strong></span>
+                                <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-gray-200"></span> 침묵 <strong id="ratio-silence-pct" class="text-gray-700">-</strong></span>
+                            </div>
+                        </div>
+
+                        <!-- Keywords -->
+                        <div>
+                            <h3 class="text-[11px] font-bold text-gray-400 uppercase tracking-wide mb-3">키워드 검출</h3>
+                            <div class="space-y-3 bg-gray-50 rounded-lg p-3">
+                                <div class="flex items-start gap-3">
+                                    <div class="flex-shrink-0 mt-0.5" id="kw-req-icon">-</div>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="text-xs font-semibold text-gray-600">필수 문구</div>
+                                        <div id="kw-req-list" class="text-xs mt-0.5 break-words">-</div>
+                                    </div>
+                                </div>
+                                <div class="flex items-start gap-3 pt-2 border-t border-gray-200">
+                                    <div class="flex-shrink-0 mt-0.5" id="kw-forb-icon">-</div>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="text-xs font-semibold text-gray-600">금지어</div>
+                                        <div id="kw-forb-list" class="text-xs mt-0.5 break-words">-</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Card 3: Audio Quality -->
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                    <h2 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
+                        오디오 품질 분석
+                    </h2>
+                    <div class="grid grid-cols-2 gap-y-3 gap-x-4">
+                        <div>
+                            <div class="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">L채널 RMS</div>
+                            <div id="aq-lrms" class="font-mono text-sm font-medium text-gray-800">-</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">R채널 RMS</div>
+                            <div id="aq-rrms" class="font-mono text-sm font-medium text-gray-800">-</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">L채널 침묵</div>
+                            <div id="aq-lsilence" class="font-mono text-sm font-medium text-gray-800">-</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">R채널 침묵</div>
+                            <div id="aq-rsilence" class="font-mono text-sm font-medium text-gray-800">-</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">드롭아웃</div>
+                            <div id="aq-dropout" class="font-mono text-sm font-medium text-gray-800">-</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">WAV 길이</div>
+                            <div id="aq-dur-wav" class="font-mono text-sm font-medium text-gray-800">-</div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">SMDR 길이</div>
+                            <div id="aq-dur-smdr" class="font-mono text-sm font-medium text-gray-800">-</div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+            
+            <!-- Right Column: STT Conversation (Full Height) -->
+            <div class="lg:col-span-7 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col h-full overflow-hidden">
+                <div class="p-4 border-b border-gray-100 bg-gray-50 flex items-center justify-between flex-none">
+                    <h2 class="text-sm font-bold text-gray-600 flex items-center gap-2">
+                        <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
+                        대화 내용 (STT)
+                    </h2>
+                    <span id="conv-count" class="text-xs font-medium text-gray-500 bg-white px-2 py-1 rounded border border-gray-200"></span>
+                </div>
+                <div id="conversation" class="flex-1 overflow-y-auto p-5 space-y-4 custom-scrollbar bg-white">
+                    <div class="text-gray-400 text-sm text-center py-20 flex flex-col items-center">
+                        <svg class="w-8 h-8 mb-2 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
+                        <span class="opacity-50">로딩 중...</span>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
 </div>
-<h1 class="text-2xl font-bold mb-6">녹취 분석 상세</h1>
 
-<!-- Loading -->
-<div id="loading" class="text-center py-16">
-    <svg class="animate-spin h-8 w-8 text-blue-500 mx-auto mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-    </svg>
-    <div class="text-gray-500 text-sm">데이터를 불러오는 중...</div>
-</div>
-
-<!-- Error -->
-<div id="error" class="hidden text-center py-16">
-    <div class="text-red-500 text-lg mb-2">조회 실패</div>
-    <div class="text-gray-500 text-sm" id="error-msg"></div>
-</div>
-
-<!-- Content -->
-<div id="content" class="hidden space-y-6">
-
-    <!-- Section 1: Basic Info -->
-    <div class="bg-white rounded-lg shadow p-6">
-        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">녹취 정보</h2>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-y-4 gap-x-6">
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">파일명</div>
-                <div id="info-filename" class="text-sm font-mono font-semibold text-gray-800 break-all"></div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">에이전트</div>
-                <div id="info-agent" class="text-sm text-gray-800"></div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">음질 상태</div>
-                <div id="info-status" class="text-sm"></div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">통화 시간</div>
-                <div id="info-duration" class="text-sm font-semibold text-gray-800"></div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">채널</div>
-                <div id="info-stereo" class="text-sm text-gray-800"></div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">분석 일시</div>
-                <div id="info-analyzed" class="text-sm text-gray-800"></div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">STT 모델</div>
-                <div id="info-model" class="text-sm text-gray-800"></div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">단어 수</div>
-                <div id="info-wordcount" class="text-sm text-gray-800"></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Section 1.5: Audio Player -->
-    <div class="bg-white rounded-lg shadow p-4">
-        <div class="flex items-center gap-4">
-            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">녹취 재생</h2>
-            <audio id="audio-player" class="w-full h-10" controls preload="none">
-                브라우저가 오디오 재생을 지원하지 않습니다.
-            </audio>
-            <span id="audio-status" class="text-xs text-gray-400 whitespace-nowrap"></span>
-        </div>
-    </div>
-
-    <!-- Section 2: Scores -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-        <!-- Total Score -->
-        <div class="bg-white rounded-lg shadow p-6 flex flex-col items-center justify-center">
-            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-5">총점</h2>
-            <div class="relative w-36 h-36 mb-2">
-                <svg class="w-full h-full -rotate-90" viewBox="0 0 36 36">
-                    <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#e5e7eb" stroke-width="2.5"/>
-                    <circle id="score-ring" cx="18" cy="18" r="15.9155" fill="none"
-                            stroke="#10b981" stroke-width="2.5"
-                            stroke-dasharray="0 100" stroke-linecap="round"
-                            style="transition: stroke-dasharray 0.8s ease"/>
-                </svg>
-                <div class="absolute inset-0 flex flex-col items-center justify-center">
-                    <span id="score-value" class="text-4xl font-bold text-gray-800">-</span>
-                    <span class="text-xs text-gray-400">/ 100</span>
-                </div>
-            </div>
-        </div>
-
-        <!-- Score Breakdown -->
-        <div class="bg-white rounded-lg shadow p-6">
-            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-5">항목별 점수</h2>
-            <div class="space-y-5">
-                <div>
-                    <div class="flex justify-between text-sm mb-1.5">
-                        <span class="text-gray-600">응답 속도</span>
-                        <span id="bar-response-val" class="font-semibold text-gray-800">-</span>
-                    </div>
-                    <div class="w-full bg-gray-100 rounded-full h-3">
-                        <div id="bar-response" class="h-3 rounded-full transition-all duration-700" style="width:0%; background:#3b82f6"></div>
-                    </div>
-                </div>
-                <div>
-                    <div class="flex justify-between text-sm mb-1.5">
-                        <span class="text-gray-600">필수 문구</span>
-                        <span id="bar-phrase-val" class="font-semibold text-gray-800">-</span>
-                    </div>
-                    <div class="w-full bg-gray-100 rounded-full h-3">
-                        <div id="bar-phrase" class="h-3 rounded-full transition-all duration-700" style="width:0%; background:#10b981"></div>
-                    </div>
-                </div>
-                <div>
-                    <div class="flex justify-between text-sm mb-1.5">
-                        <span class="text-gray-600">침묵 비율</span>
-                        <span id="bar-silence-val" class="font-semibold text-gray-800">-</span>
-                    </div>
-                    <div class="w-full bg-gray-100 rounded-full h-3">
-                        <div id="bar-silence" class="h-3 rounded-full transition-all duration-700" style="width:0%; background:#f59e0b"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="mt-5 pt-4 border-t text-sm text-gray-500">
-                <span id="score-first-resp" class="block">초기 응답: -</span>
-            </div>
-        </div>
-
-        <!-- Talk Ratios + Keywords -->
-        <div class="bg-white rounded-lg shadow p-6">
-            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-5">통화 비율</h2>
-            <div class="flex h-7 rounded-full overflow-hidden mb-2">
-                <div id="ratio-agent" class="transition-all duration-700" style="width:0%; background:#3b82f6"></div>
-                <div id="ratio-customer" class="transition-all duration-700" style="width:0%; background:#10b981"></div>
-                <div id="ratio-silence" class="transition-all duration-700" style="width:0%; background:#d1d5db"></div>
-            </div>
-            <div class="flex justify-between text-xs text-gray-500 mb-6">
-                <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full bg-blue-500"></span> 상담원 <strong id="ratio-agent-pct">-</strong></span>
-                <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full bg-green-500"></span> 고객 <strong id="ratio-customer-pct">-</strong></span>
-                <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full bg-gray-300"></span> 침묵 <strong id="ratio-silence-pct">-</strong></span>
-            </div>
-
-            <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">키워드 분석</h3>
-            <div class="space-y-2 text-sm">
-                <div class="flex items-start gap-2">
-                    <span id="kw-req-icon" class="text-base leading-none mt-0.5">-</span>
-                    <div>
-                        <span class="text-gray-500">필수 문구</span>
-                        <div id="kw-req-list" class="text-gray-800 text-xs mt-0.5">-</div>
-                    </div>
-                </div>
-                <div class="flex items-start gap-2">
-                    <span id="kw-forb-icon" class="text-base leading-none mt-0.5">-</span>
-                    <div>
-                        <span class="text-gray-500">금지어</span>
-                        <div id="kw-forb-list" class="text-gray-800 text-xs mt-0.5">-</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Section 3: STT Conversation -->
-    <div class="bg-white rounded-lg shadow p-6">
-        <div class="flex items-center justify-between mb-4">
-            <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">STT 대화</h2>
-            <span id="conv-count" class="text-xs text-gray-400"></span>
-        </div>
-        <div id="conversation" class="space-y-3 max-h-[600px] overflow-y-auto pr-2">
-            <div class="text-gray-400 text-sm text-center py-8">로딩 중...</div>
-        </div>
-    </div>
-
-    <!-- Section 4: Audio Quality -->
-    <div class="bg-white rounded-lg shadow p-6">
-        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">음질 분석</h2>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-y-4 gap-x-6 text-sm">
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">L채널 RMS</div>
-                <div id="aq-lrms" class="font-mono text-gray-800">-</div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">R채널 RMS</div>
-                <div id="aq-rrms" class="font-mono text-gray-800">-</div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">L채널 침묵</div>
-                <div id="aq-lsilence" class="font-mono text-gray-800">-</div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">R채널 침묵</div>
-                <div id="aq-rsilence" class="font-mono text-gray-800">-</div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">드롭아웃</div>
-                <div id="aq-dropout" class="font-mono text-gray-800">-</div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">WAV 길이</div>
-                <div id="aq-dur-wav" class="font-mono text-gray-800">-</div>
-            </div>
-            <div>
-                <div class="text-xs text-gray-400 mb-0.5">SMDR 길이</div>
-                <div id="aq-dur-smdr" class="font-mono text-gray-800">-</div>
-            </div>
-        </div>
-    </div>
-
-</div>
+<style>
+/* Custom Scrollbar for Webkit */
+.custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background-color: #e5e7eb; border-radius: 3px; }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background-color: #d1d5db; }
+</style>
 
 <script>
 (function() {
@@ -286,15 +329,15 @@
 
     function statusBadge(st) {
         var colors = {
-            'OK': 'bg-green-100 text-green-800',
-            'EMPTY': 'bg-gray-100 text-gray-800',
-            'MUTED_L': 'bg-yellow-100 text-yellow-800',
-            'MUTED_R': 'bg-yellow-100 text-yellow-800',
-            'DROPOUT': 'bg-red-100 text-red-800',
-            'MISMATCH': 'bg-orange-100 text-orange-800'
+            'OK': 'bg-green-100 text-green-700 border border-green-200',
+            'EMPTY': 'bg-gray-100 text-gray-700 border border-gray-200',
+            'MUTED_L': 'bg-yellow-100 text-yellow-800 border border-yellow-200',
+            'MUTED_R': 'bg-yellow-100 text-yellow-800 border border-yellow-200',
+            'DROPOUT': 'bg-red-100 text-red-700 border border-red-200',
+            'MISMATCH': 'bg-orange-100 text-orange-800 border border-orange-200'
         };
-        var cls = colors[st] || 'bg-gray-100 text-gray-800';
-        return '<span class="px-2.5 py-1 rounded-full text-xs font-semibold ' + cls + '">' + (st || '-') + '</span>';
+        var cls = colors[st] || 'bg-gray-100 text-gray-700 border border-gray-200';
+        return '<span class="px-2 py-0.5 rounded text-[11px] font-bold tracking-wide ' + cls + '">' + (st || '-') + '</span>';
     }
 
     function escapeHtml(str) {
@@ -375,7 +418,7 @@
         if (r.required_phrase_hit) {
             reqIcon.textContent = '\u2705';
             reqList.textContent = r.required_phrase_list || '(detected)';
-            reqList.className = 'text-green-700 text-xs mt-0.5';
+            reqList.className = 'text-green-700 font-semibold text-xs mt-0.5';
         } else {
             reqIcon.textContent = '\u274c';
             reqList.textContent = r.required_phrase_list || '(not detected)';
