@@ -4,8 +4,8 @@
 **설명:** 다중 에이전트 원격 로그 분석 및 자동 배포 시스템  
 **개발 기간:** 2026-02-16 ~ 현재  
 **브랜치:** `develop`  
-**최신 버전:** v1.4.4
-**테스트:** 253 전체 통과
+**최신 버전:** v1.7.0
+**테스트:** 406 전체 통과
 
 ---
 
@@ -700,3 +700,389 @@ AI-LogOps/
 | 61 | `9ca6abf` | 02-21 | TCP 이벤트 알림, dead code 정리, E2E STT 테스트 |
 
 **총 61개 커밋, 3일간 개발.**
+
+---
+
+## 0-2. v1.4.5 ~ v1.4.9 (2026-02-20 ~ 02-21)
+
+### 주요 변경 사항
+
+#### STT 녹취 분석 파이프라인 (v1.4.5, 02-20)
+- `server/airec/analyzer/` 모듈 추가: faster-whisper 기반 STT 파이프라인
+- `server/airec/` 녹취 서버 컴포넌트 생성 (RecordingWatcher, RecordingStorage, AnalysisScheduler)
+- Agent↔Server 간 TCP 녹취 명령 프로토콜 설계
+- `server/airec/database.py` — 녹취 분석 결과 MySQL 저장
+- 녹취 분석 테스트 22개 추가, 기능 문서화
+
+#### 에이전트 GUI + 버전 관리 (02-20)
+- `agent/gui/app.py` — tkinter 기반 Windows 에이전트 GUI 추가
+- 버전 관리 (`agent/__init__.py` `__version__`) 및 서비스/GUI 이중 실행 지원
+- 텔레그램 2-봇 구조 (서버 봇 + 에이전트 봇) 정리
+- 서버 경유 자동 배포 (`eeb3d04`) — HTTP API 업로드 → TCP 전달
+- deploy 청크 64KB 증가, 비동기 처리 (`cfb5197`)
+
+#### 프로세스 관리 강화 + 자동 재연결 (02-21)
+- `fab8dee`: ProcessManager 강화, 자동 재연결, 텔레그램 send-only 전환, 멀티에이전트 배포
+- TCP 재연결 로직 개선: 서버 재시작 시 빠른 재연결 (`afa63c7`)
+
+#### µ-law WAV 지원 (02-21)
+- `5c8ac1d`: 전화 녹음 포맷 µ-law fmt=7 PCM 디코딩 지원 (`wave` 모듈 우회, numpy rawread)
+- 모노 µ-law WAV → 16bit PCM 스테레오 변환 후 STT 업로드
+- `8179bf7`: 녹취 분석 로깅 추가, `get_wav_duration` µ-law 지원
+
+#### 파일 안정화 + v1.4.8 / v1.4.9 (02-21)
+- `9804961` (v1.4.8): 녹취 파일 쓰기 완료 후 분석 시작 (10초 안정화 대기)
+- `eabcd2d` (v1.4.9): `rec_no` → `filename` 식별자 전환 — 전체 파이프라인 리팩토링
+- `2f0177c`: 오래된 파일 우선 스캔 + 안정화 10초 대기
+- `fbb500d`: 에이전트 GUI에 강제 재연결 버튼 추가
+- `d9aae94`: 모노 녹음도 STT 업로드 허용 (기존 스테레오 전용 제한 해제)
+
+### 수정된 주요 파일
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `server/airec/analyzer/stt.py` | STT 파이프라인 초기 구현 |
+| `server/airec/analyzer/pipeline.py` | 녹취 분석 오케스트레이터 |
+| `server/airec/watcher.py` | RecordingWatcher — 폴더 감시 |
+| `agent/gui/app.py` | tkinter GUI 추가 |
+| `agent/core/tcp_client.py` | 녹취 명령 콜백 추가 |
+| `shared/protocol.py` | 녹취 프로토콜 타입 추가 |
+
+---
+
+## 0-3. v1.5.0 ~ v1.6.5 (2026-02-21 ~ 02-23)
+
+### 주요 변경 사항
+
+#### v1.5.0 — 서버 경유 프로세스 원격 배포 (02-21)
+- `987888b`: 서버를 통한 원격 프로세스 배포 기능 추가
+- `deploy.py --target process --process-dir` CLI 옵션
+- 에이전트의 `ProcessDeployer`가 서버에서 받은 zip을 압축 해제 후 실행
+
+#### 대시보드 — 녹취 분석 UI (02-21)
+- `587a65b`: 대시보드에 녹취 분석 시작/중지 컨트롤 추가
+
+#### v1.6.5 — 녹취 분석 서버-에이전트 통합 완성 (02-23)
+
+**녹취 프로토콜 확장:**
+- `5b4fdc6`: CMD_REC (START/STOP/STATUS), REC_DATA_REQ, REC_DATA_RESP 프로토콜 추가
+- 서버가 에이전트에게 분석 명령 전송, 에이전트가 결과 반환하는 양방향 구조
+
+**에이전트 DB 헬퍼:**
+- `5a965ff`: 에이전트 로컈 DB(rec_his, ext_his)에서 녹취 데이터 조회 모듈 추가
+- `01fbcc7`: TCP 클라이언트에 녹취 명령 및 데이터 쿼리 콜백 추가
+
+**로그 선택적 전송 개선:**
+- `10f0f54`: 파일 메타데이터 기반 선택적 로그 전송, 파일 목록 최적화
+
+**녹취 감시 고도화:**
+- `5308592`: 서버 주도 분석 — 서버가 요청 시에만 에이전트 분석 실행
+- 오디오 품질 검사 (채널 RMS, 무음 비율, 드롭아웃 감지)
+- 텔레그램 이상 알림 통합
+
+**서비스/GUI 통합:**
+- `b57d34a` (v1.6.5): win_service.py에 녹취 분석 완전 통합
+- `82d0667`: 에이전트 GUI에 녹취 분석 상태 표시 추가
+
+**서버 STT/품질 파이프라인 강화:**
+- `501283e`: faster-whisper 한국어 최적화, call quality 분석기 개선
+- `1a71e25`: 녹취 분석 결과 DB 스키마 (`rec_audio_quality` 테이블) 추가
+- `6f1f139`: TCP 서버에 녹취 명령, 배포, 데이터 쿼리 핸들러 추가
+
+**서버 옵션 및 RBAC:**
+- `87cb6d4`: `public_url` 설정, `--no-telegram` 서버 옵션
+- `7eb0516`: RBAC 사용자/권한 관리 시스템 추가
+- `1d15a74`: RBAC를 대시보드 미들웨어 및 네비게이션에 통합
+
+**대시보드 기능 대폭 확장:**
+- `db7d347`: 녹취 분석 대시보드 — 실시간 컨트롤, 상태 표시
+- `e224587`: 녹취 목록 + 상세 팝업 (파형 플레이어, 트랜스크립트)
+- `42c72d0`: 로그 대시보드 실시간 스트리밍
+- `50a2254`: 배포 대시보드에 프로세스 배포 + 녹취 클라이언트 배포 섹션 추가
+
+**서버 관리 GUI:**
+- `e7e4ecb`: tkinter 기반 서버 관리 프로그램 (`run_server_gui.py`) 추가
+  - 에이전트 현황, 로그 뷰어, 배포 탭, 녹취 분석 탭
+
+### 수정된 주요 파일
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `shared/protocol.py` | CMD_REC, REC_DATA_REQ/RESP 프로토콜 추가 |
+| `agent/service/win_service.py` | 녹취 분석 완전 통합 (1,000줄+) |
+| `agent/gui/app.py` | 녹취 분석 상태 표시 |
+| `server/core/tcp_server.py` | 녹취 명령 핸들러 추가 |
+| `server/airec/rec_handler.py` | 서버 측 녹취 메시지 처리 |
+| `server/airec/analyzer/pipeline.py` | STT + 품질 분석 파이프라인 |
+| `server/dashboard/` | RBAC, 녹취/로그/배포 대시보드 강화 |
+| `run_server_gui.py` | 서버 관리 GUI 신규 추가 |
+
+---
+
+## 0-4. v1.7.0 (2026-02-23) — 에이전트 공통 로직 추출 + 멀티 서버 지원
+
+### 주요 변경 사항
+
+#### ConfigView (02-23)
+- `9559b25`: `agent/core/config_view.py` — 중복 config 헬퍼 함수 통합
+  - `win_service.py`의 `_as_mapping`/`_to_str` 등 5개 함수
+  - `gui/app.py`의 `_m`/`_s`/`_i`/`_b`/`_ls` 등 5개 함수
+  - → `ConfigView.s()`, `.i()`, `.b()`, `.ls()`, `.sub()` 통일
+
+#### RecordingController (02-23)
+- `4554333`: `agent/recording/controller.py` 신규 생성
+  - `win_service.py`와 `gui/app.py`에 중복된 녹취 핸들러 약 315줄 추출
+  - `handle_cmd_rec`, `handle_rec_upload_req`, `handle_stt_result`, `handle_rec_data_req` 메서드
+  - `nonlocal` 클로저 → 인스턴스 속성으로 상태 관리
+
+#### AgentRuntime 오케스트레이터 (02-23)
+- `7fb7c22`: `agent/core/agent_runtime.py` 신규 생성
+  - `win_service.py` `_run_agent()` ~600줄, `gui/app.py` `_run_agent_async()` ~600줄 → AgentRuntime으로 통합
+  - `AgentHooks` dataclass: 모드별 콜백 (GUI/서비스 분기)
+  - `asyncio.Event` 기반 정지 메커니즘
+
+#### win_service.py / gui/app.py 리팩토링 (02-23)
+- `0b41b03`: win_service.py 1,032줄 → ~200줄, gui/app.py 1,181줄 → ~400줄
+  - 모든 공통 로직 제거, AgentRuntime 사용
+  - 서비스 모드: win32event → asyncio.Event 브릿지
+  - GUI 모드: `self._root.after(0, ...)` 콜백 훅 주입
+
+#### 멀티 서버 지원 (02-23)
+- `2dcfd95`: `agent/core/server_connection.py` 신규 생성
+  - `ServerConfig`, `ServerConnection`, `RecordingOwnership` dataclass
+  - 하위 호환: 기존 `connection:` 설정 → 단일 서버 `"default"`로 자동 변환
+  - 새 포맷: `servers:` 리스트로 N개 서버 동시 연결
+  - 녹취 소유권 잠금: 먼저 START 명령을 보낸 서버가 단독 소유
+  - 로그 fan-out: 실시간 모드 활성 서버 전체에 병렬 전송
+
+#### v1.7.0 배포 (02-23)
+- `54d6d5f`: 에이전트 버전 1.7.0으로 업데이트 및 릴리스
+- `d19ed38`: `CLAUDE.md` — AI-LogOps 프로젝트 규칙 및 배포 가이드 문서화
+
+### 수정된 주요 파일
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `agent/core/config_view.py` | **신규** — 타입 안전 config 접근자 |
+| `agent/recording/controller.py` | **신규** — 녹취 명령 핸들러 클래스 |
+| `agent/core/agent_runtime.py` | **신규** — 에이전트 공통 오케스트레이터 |
+| `agent/core/server_connection.py` | **신규** — 멀티 서버 연결 컨텍스트 |
+| `agent/service/win_service.py` | 1,032 → ~200줄 (AgentRuntime 사용) |
+| `agent/gui/app.py` | 1,181 → ~400줄 (AgentRuntime 사용) |
+| `agent/__init__.py` | 버전 1.7.0 |
+| `CLAUDE.md` | **신규** — 프로젝트 규칙 문서 |
+
+---
+
+## 0-5. v1.7.1 (2026-02-24) — STT 한국어 최적화 + 세그먼트 분할
+
+### 주요 변경 사항
+
+#### 한국어 STT 최적화 조사 및 구현
+
+사용자 요구: 전화 녹취 STT 정확도 향상 및 대화 시간대별 분리
+
+**조사 결과:**
+- 한국어 파인튜닝 모델(`ghost613/faster-whisper-large-v3-turbo-korean`) 테스트 → µ-law 8kHz 전화 음성에서 0개 세그먼트 생성 → 채택 불가
+- 기본 `large-v3-turbo` 모델이 전화 녹음에서 가장 안정적
+
+**config.yaml `stt:` 셉션 추가:**
+- VAD `min_silence_duration_ms` 700 → **300ms** 변경 (핵심 수정)
+- VAD `threshold` 0.5 → 0.35, `min_speech_duration_ms` 200 → 150 ('네', '예' 캡처)
+- `no_speech_threshold` 0.6 → 0.8 (환각 방지 강화)
+- 오디오 전처리: 리샘플링(16kHz), 대역통과필터(300~3400Hz), 노이즈 감소, 음량 정규화
+
+#### 오디오 전처리 파이프라인 추가 (`stt.py`)
+- `_preprocess_audio(audio, sr)`: WAV 로드 → µ-law 디코딩 → 리샘플링 → 대역필터 → 노이즈감소 → 정규화
+- 의존성 추가: `scipy`, `noisereduce` (`requirements.txt`)
+
+#### 도메인 프롬프트 자동 업데이트 (`stt.py`)
+- `_get_domain_prompt()`: 대리운전 도메인 어휘를 Whisper `initial_prompt`로 주입
+- `_update_domain_prompt()`: STT 결과에서 위치/지명 패턴 추출, 50건마다 자동 갱신
+- `_accumulate_stt_data()`: 지명 데이터 `storage/stt/training_data/`에 누적, 100건마다 vocabulary 갱신
+
+#### 세그먼트 분할 알고리즘 (핵심 버그 수정)
+
+**문제:** 전체 대화가 1개 세그먼트로 출력 (Whisper word_segments 인덱스 불일치)
+
+**구현된 함수들:**
+
+| 함수 | 역할 |
+|------|------|
+| `_map_words_to_segments()` | word timestamps를 VAD 분할 세그먼트에 재매핑 |
+| `_split_long_segments()` | 8초 초과 세그먼트 후처리 분할 (3-tier) |
+| `_split_by_words()` | 한국어 문장 종결 패턴으로 분할, elapsed 기준 버그 수정 |
+| `_split_by_text()` | 텍스트 기반 분할 (word timestamps 없을 때) |
+| `_split_by_time()` | Gap 감지(무음>2초) + 균등 시간 분할 (최후 수단) |
+
+**핵심 수정 사항:**
+1. `_split_by_text()` 누락된 `return` 문 추가
+2. `_map_words_to_segments()` 신규 구현 — raw 세그먼트 word_segments를 VAD 분할 세그먼트에 재매핑
+3. `transcribe()` 에서 `_map_words_to_segments()` 호출 추가
+4. `_split_by_words()` `elapsed` 계산 기준 수정 (첫 단어 → 마지막 분할 시점)
+5. `_split_by_words()` 분할 후 초과 세그먼트 재분할 추가
+6. `_split_by_time()` gap 감지 로직 추가 (단어 간 무음 > 2초 강제 분할)
+
+**테스트 결과:**
+- 92초 스테레오 파일: 1덩어리 → 21개 세그먼트, 최대 5.9초
+- 전체 WAV 파일 (20260221~20260224): 모든 세그먼트 ≤ 8.0초
+- `run_pipeline()` 통합 테스트 PASS
+
+#### pipeline.py 개선
+- `_get_engine_model_name()`: `config.yaml stt.whisper.model`에서 동적으로 모델명 읽기
+
+### 수정된 주요 파일
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `server/airec/analyzer/stt.py` | 오디오 전처리, VAD 최적화, 세그먼트 분할 알고리즘 전면 재작성 |
+| `server/airec/analyzer/pipeline.py` | 동적 모델명 매핑 추가 |
+| `server/config.yaml` | `stt:` 섹션 추가 (VAD, 전처리, 환각 방지 파라미터) |
+| `requirements.txt` | `scipy`, `noisereduce` 추가 |
+| `docs/STT_Korean_Optimization_Project.md` | **신규** — STT 최적화 프로젝트 상세 문서 |
+
+---
+
+## 4-1. 프로젝트 구조 (현재)
+
+```
+AI-LogOps/
+├── agent/
+│   ├── core/
+│   │   ├── agent_runtime.py         # ★ AgentRuntime 오케스트레이터
+│   │   ├── config_view.py           # ★ 타입 안전 config 접근자
+│   │   ├── server_connection.py     # ★ 멀티 서버 연결 컨텍스트
+│   │   ├── tcp_client.py
+│   │   ├── log_watcher.py
+│   │   ├── log_cmd_handler.py
+│   │   └── deploy_handler.py
+│   ├── recording/
+│   │   ├── controller.py            # ★ RecordingController
+│   │   ├── watcher.py               # 녹취 폴더 감시
+│   │   ├── uploader.py              # HTTPS WAV 업로드
+│   │   ├── audio_quality.py         # 오디오 품질 분석
+│   │   ├── energy.py
+│   │   ├── silence.py
+│   │   └── models.py
+│   ├── service/
+│   │   └── win_service.py           # Windows 서비스 (AgentRuntime 사용)
+│   ├── gui/
+│   │   └── app.py                   # tkinter GUI (AgentRuntime 사용)
+│   └── telegram/
+│       └── poller.py
+├── server/
+│   ├── airec/
+│   │   ├── analyzer/
+│   │   │   ├── stt.py               # ★ STT 파이프라인 (한국어 최적화)
+│   │   │   ├── pipeline.py          # ★ 녹취 분석 오케스트레이터
+│   │   │   ├── call_quality.py      # 통화 품질 분석
+│   │   │   └── keywords.py          # 키워드 매칭
+│   │   ├── rec_handler.py           # 서버 측 녹취 메시지 처리
+│   │   ├── storage.py               # WAV 파일 저장 관리
+│   │   ├── watcher.py               # 서버 측 녹취 감시
+│   │   └── database.py
+│   ├── core/
+│   │   ├── tcp_server.py
+│   │   └── session_manager.py
+│   ├── dashboard/
+│   │   ├── main.py                  # FastAPI 대시보드
+│   │   ├── middleware.py            # RBAC 미들웨어
+│   │   ├── rbac.py                  # 사용자/권한 관리
+│   │   └── routers/
+│   │       ├── recordings.py
+│   │       ├── deploy.py
+│   │       └── logs.py
+│   └── config.yaml
+├── shared/
+│   ├── protocol.py                  # TCP 프로토콜 (녹취 명령 포함)
+│   └── models.py
+├── tests/
+│   ├── test_protocol_rec.py         # 녹취 프로토콜 테스트
+│   ├── test_recording_watcher.py
+│   ├── test_stt.py
+│   └── ... (기타 테스트 파일)
+├── docs/
+│   ├── DEVELOPMENT_HISTORY.md
+│   ├── FEATURES.md
+│   ├── AI-LogOps_Technical_Spec_v2.1.md
+│   ├── STT_Korean_Optimization_Project.md  # ★ STT 최적화 문서
+│   └── plans/
+│       ├── 2026-02-16-ai-logops-implementation.md
+│       ├── 2026-02-17-agent-feature-enhancement.md
+│       ├── 2026-02-17-selective-log-transfer-design.md
+│       ├── 2026-02-17-selective-log-transfer.md
+│       ├── 2026-02-20-airrec-agent-command-server.md
+│       ├── 2026-02-23-extract-agent-common-logic.md
+│       └── 2026-02-23-multi-server-support.md
+├── run_server_gui.py                # ★ 서버 관리 GUI
+├── agent.spec
+├── build_agent.bat
+├── deploy.py
+├── requirements.txt
+└── pytest.ini
+```
+
+---
+
+## 5-1. 테스트 현황 (최신)
+
+| 단계 | 테스트 수 | 누적 |
+|------|----------|------|
+| v1.0.0 (Phase 1~6) | 369 | 369 |
+| v1.1 (기능 확장 4종) | +25 | 394 |
+| v1.2 (선택적 로그 전송) | +12 | 406 |
+
+**전체 406개 테스트 통과, 0 실패.**
+
+---
+
+## 6-1. 전체 커밋 이력 (추가분 v1.4.5~)
+
+| # | 커밋 | 일시 | 설명 |
+|---|------|------|------|
+| 62 | `5c03d07` | 02-20 | STT 녹취 분석 파이프라인 + 서버-에이전트 아키텍처 |
+| 63 | `5688fd1` | 02-20 | 에이전트 GUI, 버전 관리, 2-봇 텔레그램, 배포 개선 |
+| 64 | `6037308` | 02-20 | 녹취 분석 테스트 + 기능 문서화 |
+| 65 | `eeb3d04` | 02-20 | 서버 경유 에이전트 자동 배포 |
+| 66 | `cfb5197` | 02-20 | deploy 청크 64KB 증가 + 비동기 처리 |
+| 67 | `fab8dee` | 02-21 | 프로세스 관리 강화, 자동 재연결, 멀티에이전트 배포 |
+| 68 | `b396a1a` | 02-21 | Git 시크릿 제거 (이미 기록됨) |
+| 69 | `9ca6abf` | 02-21 | TCP 이벤트 알림, dead code 정리, E2E STT 테스트 (이미 기록됨) |
+| 70 | `3878354` | 02-21 | v1.4.4 문서 업데이트 + 버전 업 |
+| 71 | `5c8ac1d` | 02-21 | µ-law(fmt=7) WAV 지원 |
+| 72 | `afa63c7` | 02-21 | 서버 재시작 시 빠른 재연결 + 모노 µ-law PCM 변환 |
+| 73 | `8179bf7` | 02-21 | 녹취 분석 로깅 + get_wav_duration µ-law 지원 |
+| 74 | `9804961` | 02-21 | **v1.4.8** 파일 안정화 후 분석 시작 |
+| 75 | `eabcd2d` | 02-21 | **v1.4.9** rec_no→filename 식별자 전환 |
+| 76 | `2f0177c` | 02-21 | 오래된 파일 우선 스캔 + 안정화 10초 대기 |
+| 77 | `fbb500d` | 02-21 | 에이전트 GUI 강제 재연결 버튼 |
+| 78 | `d9aae94` | 02-21 | 모노 녹음 STT 업로드 허용 |
+| 79 | `987888b` | 02-21 | **v1.5.0** 서버 경유 프로세스 원격 배포 |
+| 80 | `587a65b` | 02-21 | 대시보드 녹취 분석 시작/중지 UI |
+| 81 | `5b4fdc6` | 02-23 | 녹취 프로토콜 명령 + 데이터 쿼리 타입 추가 |
+| 82 | `5a965ff` | 02-23 | 에이전트 DB 헬퍼 (녹취 데이터 조회) |
+| 83 | `01fbcc7` | 02-23 | TCP 클라이언트 녹취 명령/데이터 쿼리 콜백 |
+| 84 | `10f0f54` | 02-23 | 로그 선택적 전송 + 파일 메타데이터 개선 |
+| 85 | `5308592` | 02-23 | 녹취 감시 고도화 (서버 주도 + 품질 검사) |
+| 86 | `b57d34a` | 02-23 | **v1.6.5** 녹취 분석 에이전트 서비스 통합 |
+| 87 | `82d0667` | 02-23 | 녹취 분석 에이전트 GUI 통합 |
+| 88 | `501283e` | 02-23 | 서버 STT + 품질 파이프라인 강화 |
+| 89 | `1a71e25` | 02-23 | 서버 녹취 핸들러 + DB 스키마 추가 |
+| 90 | `6f1f139` | 02-23 | TCP 서버 녹취 명령/배포/데이터 쿼리 핸들러 |
+| 91 | `87cb6d4` | 02-23 | public_url 설정 + --no-telegram 옵션 |
+| 92 | `7eb0516` | 02-23 | RBAC 사용자/권한 관리 시스템 |
+| 93 | `1d15a74` | 02-23 | RBAC 대시보드 미들웨어 통합 |
+| 94 | `db7d347` | 02-23 | 녹취 분석 대시보드 실시간 컨트롤 |
+| 95 | `e224587` | 02-23 | 녹취 목록 + 상세 팝업 (파형 플레이어) |
+| 96 | `42c72d0` | 02-23 | 로그 대시보드 실시간 스트리밍 |
+| 97 | `50a2254` | 02-23 | 배포 대시보드 프로세스/녹취 클라이언트 배포 |
+| 98 | `e7e4ecb` | 02-23 | 서버 관리 GUI (run_server_gui.py) |
+| 99 | `d19ed38` | 02-23 | CLAUDE.md 프로젝트 규칙 문서화 |
+| 100 | `9559b25` | 02-23 | ConfigView 타입 안전 config 접근자 |
+| 101 | `4554333` | 02-23 | RecordingController 클래스 추가 |
+| 102 | `7fb7c22` | 02-23 | AgentRuntime 오케스트레이터 |
+| 103 | `0b41b03` | 02-23 | win_service + gui 리팩토링 (AgentRuntime 사용) |
+| 104 | `2dcfd95` | 02-23 | 멀티 서버 연결 지원 |
+| 105 | `54d6d5f` | 02-23 | **v1.7.0** 에이전트 버전 업 |
+
+**총 105개 커밋, 8일간 개발.**
