@@ -408,8 +408,9 @@ class AgentRuntime:
 
         auto_connect = bool(srv.host and srv.port)
         reconnect_delay = max(srv.reconnect_delay, 10)
-        reconnect_counter = 0
-        first_reconnect = True
+        # 시간 기반 재접속: 카운터 대신 다음 재접속 시각을 추적
+        _FIRST_RECONNECT_DELAY = 5  # 끊긴 직후 첫 재시도까지 5초
+        next_reconnect = 0.0  # 0 = 미예약
 
         if auto_connect:
             logger.info("[%s] auto-connect: %s:%s ...", srv.name, srv.host, srv.port)
@@ -419,40 +420,44 @@ class AgentRuntime:
                 self._update_aggregate_connection()
             else:
                 logger.warning("[%s] auto-connect: failed, will retry", srv.name)
+                next_reconnect = loop.time() + _FIRST_RECONNECT_DELAY
 
         while not self._stop_event.is_set():
             await asyncio.sleep(1)
-
             now = loop.time()
-            if now < next_heartbeat:
-                continue
-            next_heartbeat = now + interval
 
             if tcp_client.is_connected:
-                reconnect_counter = 0
-                first_reconnect = True
-                try:
-                    await asyncio.wait_for(tcp_client.send_heartbeat(), timeout=5.0)
-                except (ConnectionError, OSError, asyncio.TimeoutError):
-                    logger.warning(
-                        "[%s] heartbeat failed — closing connection", srv.name
-                    )
-                    await tcp_client.close_on_error()
-                    await on_connection_lost(conn)
+                # 연결 중: heartbeat interval 마다 전송
+                next_reconnect = 0.0
+                if now >= next_heartbeat:
+                    next_heartbeat = now + interval
+                    try:
+                        await asyncio.wait_for(tcp_client.send_heartbeat(), timeout=5.0)
+                    except (ConnectionError, OSError, asyncio.TimeoutError):
+                        logger.warning(
+                            "[%s] heartbeat failed — closing connection", srv.name
+                        )
+                        await tcp_client.close_on_error()
+                        await on_connection_lost(conn)
+                        next_reconnect = now + _FIRST_RECONNECT_DELAY
             elif auto_connect:
-                reconnect_counter += 1
-                threshold = 5 if first_reconnect else reconnect_delay
-                if reconnect_counter >= threshold:
-                    reconnect_counter = 0
-                    first_reconnect = False
+                # 미연결: 시간 기반 재접속
+                if next_reconnect == 0.0:
+                    next_reconnect = now + _FIRST_RECONNECT_DELAY
+                elif now >= next_reconnect:
                     logger.info(
-                        "[%s] reconnecting to %s:%s ...", srv.name, srv.host, srv.port
+                        "[%s] reconnecting to %s:%s ...",
+                        srv.name,
+                        srv.host,
+                        srv.port,
                     )
                     connected = await tcp_client.connect()
                     if connected:
                         logger.info("[%s] reconnected successfully", srv.name)
-                        first_reconnect = True
+                        next_reconnect = 0.0
                         self._update_aggregate_connection()
+                    else:
+                        next_reconnect = now + reconnect_delay
 
     def _update_aggregate_connection(self) -> None:
         any_connected = any(c.tcp_client.is_connected for c in self._connections)

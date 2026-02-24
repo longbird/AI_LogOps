@@ -202,8 +202,9 @@ class TCPClient:
         """연결 오류 시 강제 종료 (DISCONNECT 패킷 전송 없이).
 
         heartbeat 전송 실패 등 연결이 이미 끊어진 상황에서 사용.
-        _recv_loop 종료 → _connected = False → 재접속 로직 트리거.
+        즉시 _connected = False 설정하여 재접속 로직이 바로 트리거되도록 한다.
         """
+        self._connected = False
         if self._recv_task is not None:
             _ = self._recv_task.cancel()
         writer = self._writer
@@ -287,13 +288,18 @@ class TCPClient:
         finally:
             self._connected = False
             self.session_id = ""
-            writer = self._writer
-            if writer is not None and not writer.is_closing():
-                writer.close()
+            # 로컬 참조 캡처 — await 중 connect()가 새 연결을 만들 수 있으므로
+            # identity 체크로 새 연결을 덮어쓰지 않도록 보호
+            old_reader = self._reader
+            old_writer = self._writer
+            if old_writer is not None and not old_writer.is_closing():
+                old_writer.close()
                 with contextlib.suppress(OSError):
-                    await writer.wait_closed()
-            self._reader = None
-            self._writer = None
+                    await old_writer.wait_closed()
+            if self._reader is old_reader:
+                self._reader = None
+            if self._writer is old_writer:
+                self._writer = None
 
     async def _close_connection(self) -> None:
         writer = self._writer
