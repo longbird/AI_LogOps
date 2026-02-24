@@ -35,6 +35,7 @@ class RecordingTab(tk.Frame):
         self._build_ui()
         # 서버에서 현재 최대 동시 분석수 가져오기
         self._fetch_max_concurrent()
+        self._fetch_stt_engine()
 
     def _build_ui(self) -> None:
         # ── 분석 제어 영역 ──
@@ -173,6 +174,39 @@ class RecordingTab(tk.Frame):
         )
         self._max_concurrent_spin.pack(side=tk.LEFT)
 
+
+        # ── STT 엔진 선택 ──
+        tk.Label(
+            btn_frame,
+            text="STT 엔진:",
+            bg=BG_FRAME,
+            fg=FG_DIM,
+            font=FONT_NORMAL,
+        ).pack(side=tk.LEFT, padx=(24, 4))
+
+        self._engine_map: dict[str, str] = {
+            "로컬 (faster-whisper)": "local",
+            "OpenAI Whisper": "openai-whisper",
+            "OpenAI GPT-4o": "openai-gpt4o",
+            "OpenAI Diarize (화자분리)": "openai-diarize",
+            "RTZR (리턴제로)": "rtzr",
+        }
+        self._engine_reverse: dict[str, str] = {
+            v: k for k, v in self._engine_map.items()
+        }
+        self._stt_engine_var = tk.StringVar(value="로컬 (faster-whisper)")
+        self._stt_engine_combo = ttk.Combobox(
+            btn_frame,
+            textvariable=self._stt_engine_var,
+            values=list(self._engine_map.keys()),
+            state="readonly",
+            width=20,
+            font=FONT_NORMAL,
+        )
+        self._stt_engine_combo.pack(side=tk.LEFT)
+        self._stt_engine_combo.bind(
+            "<<ComboboxSelected>>", self._on_stt_engine_changed
+        )
         self._status_label = tk.Label(
             btn_frame,
             text="",
@@ -359,6 +393,55 @@ class RecordingTab(tk.Frame):
 
         # WebSocket 연결 해제
         self._ws_stop_event.set()
+
+    # ── STT 엔진 제어 ──
+
+    def _fetch_stt_engine(self) -> None:
+        """서버에서 현재 STT 엔진 설정 조회 → ComboBox에 반영."""
+        if not self._app.is_server_running():
+            return
+
+        def _do() -> None:
+            result = self._app.api_get("/api/rec/stt-engine")
+            if result and "stt_engine" in result:
+                engine_key = result["stt_engine"]
+                display = self._engine_reverse.get(
+                    engine_key, "로컬 (faster-whisper)"
+                )
+                self.after(0, lambda: self._stt_engine_var.set(display))
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _on_stt_engine_changed(self, _event: Any = None) -> None:
+        """STT 엔진 변경 → 즉시 서버 API 호출."""
+        if not self._app.is_server_running():
+            return
+
+        display = self._stt_engine_var.get()
+        engine_key = self._engine_map.get(display, "local")
+
+        def _do() -> None:
+            result = self._app.api_post(
+                "/api/rec/stt-engine", {"engine": engine_key}
+            )
+            if result and result.get("status") == "ok":
+                actual = result.get("stt_engine", engine_key)
+                self.after(
+                    0,
+                    self._append_log,
+                    f"STT 엔진 변경: {actual}",
+                    "info",
+                )
+            else:
+                err = (result or {}).get("error", "응답 없음")
+                self.after(
+                    0,
+                    self._append_log,
+                    f"STT 엔진 변경 실패: {err}",
+                    "fail",
+                )
+
+        threading.Thread(target=_do, daemon=True).start()
 
     # ── WebSocket (분석 진행상황) ──
 

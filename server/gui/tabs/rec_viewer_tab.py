@@ -251,7 +251,7 @@ class RecViewerTab(tk.Frame):
         )
         style.map("RecViewer.Treeview", background=[("selected", "#264f78")])
 
-        cols = ("filename", "status", "duration", "score", "analyzed_at")
+        cols = ("filename", "model", "status", "duration", "score", "analyzed_at")
         self._tree = ttk.Treeview(
             tree_frame,
             columns=cols,
@@ -261,12 +261,14 @@ class RecViewerTab(tk.Frame):
             height=10,
         )
         self._tree.heading("filename", text="파일명")
+        self._tree.heading("model", text="STT 모델")
         self._tree.heading("status", text="상태")
         self._tree.heading("duration", text="시간")
         self._tree.heading("score", text="점수")
         self._tree.heading("analyzed_at", text="분석일시")
 
-        self._tree.column("filename", width=280)
+        self._tree.column("filename", width=260)
+        self._tree.column("model", width=160, anchor="center")
         self._tree.column("status", width=80, anchor="center")
         self._tree.column("duration", width=80, anchor="center")
         self._tree.column("score", width=80, anchor="center")
@@ -295,29 +297,54 @@ class RecViewerTab(tk.Frame):
         # ── 좌측: Section A — 녹취 정보 ──
         self._info_section = self._create_section("녹취 정보", self._left_col)
 
-        info_keys = [
-            ("filename", "파일명"),
-            ("agent", "에이전트"),
-            ("status", "음질 상태"),
-            ("duration", "통화 시간"),
-            ("channel", "채널"),
-            ("analyzed", "분석 일시"),
-            ("words", "단어 수"),
-        ]
-
-        for i, (key, label_text) in enumerate(info_keys):
-            r, c = divmod(i, 4)
+        # Row 0: 파일명(3칸) + 에이전트(2칸)
+        row0_keys = [("filename", "파일명", 3), ("agent", "에이전트", 2)]
+        col = 0
+        for key, label_text, span in row0_keys:
             tk.Label(
                 self._info_section,
                 text=label_text,
                 bg=BG_FRAME,
                 fg=FG_DIM,
                 font=("Segoe UI", 8),
-            ).grid(row=r * 2, column=c, sticky="w", padx=10, pady=(2, 0))
+            ).grid(row=0, column=col, columnspan=span, sticky="w", padx=10, pady=(2, 0))
             lbl = tk.Label(
-                self._info_section, text="-", bg=BG_FRAME, fg=FG_TEXT, font=FONT_NORMAL
+                self._info_section,
+                text="-",
+                bg=BG_FRAME,
+                fg=FG_TEXT,
+                font=FONT_NORMAL,
             )
-            lbl.grid(row=r * 2 + 1, column=c, sticky="w", padx=10, pady=(0, 4))
+            lbl.grid(
+                row=1, column=col, columnspan=span, sticky="w", padx=10, pady=(0, 4)
+            )
+            self._info_labels[key] = lbl
+            col += span
+
+        # Row 1: 음질/채널/통화시간/분석일시/단어수 (5칸)
+        row1_keys = [
+            ("status", "음질"),
+            ("channel", "채널"),
+            ("duration", "통화시간"),
+            ("analyzed", "분석일시"),
+            ("words", "단어수"),
+        ]
+        for c, (key, label_text) in enumerate(row1_keys):
+            tk.Label(
+                self._info_section,
+                text=label_text,
+                bg=BG_FRAME,
+                fg=FG_DIM,
+                font=("Segoe UI", 8),
+            ).grid(row=2, column=c, sticky="w", padx=10, pady=(2, 0))
+            lbl = tk.Label(
+                self._info_section,
+                text="-",
+                bg=BG_FRAME,
+                fg=FG_TEXT,
+                font=FONT_NORMAL,
+            )
+            lbl.grid(row=3, column=c, sticky="w", padx=10, pady=(0, 4))
             self._info_labels[key] = lbl
 
         # ── 좌측: Section B — 점수 ──
@@ -538,13 +565,16 @@ class RecViewerTab(tk.Frame):
 
         for r in records:
             filename = r.get("filename", "")
+            model = r.get("model_name") or "-"
             status = r.get("status", "-")
             duration = self._fmt_duration(r.get("duration_wav"))
             score = self._fmt_score(r.get("score_total"))
             analyzed_at = r.get("aq_analyzed_at", "").replace("T", " ")
 
             self._tree.insert(
-                "", tk.END, values=(filename, status, duration, score, analyzed_at)
+                "",
+                tk.END,
+                values=(filename, model, status, duration, score, analyzed_at),
             )
 
     def _on_record_selected(self, _event: Any) -> None:
