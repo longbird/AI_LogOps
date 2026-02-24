@@ -9,9 +9,9 @@ from dataclasses import dataclass
 
 from .energy import load_wav, rms_dbfs
 
-SILENCE_THRESHOLD_DB = -48.0
+SILENCE_THRESHOLD_DB = -52.0  # 전화 녹취 특성상 -48 → -52로 완화
 FRAME_MS = 20
-MIN_DROPOUT_SEC = 2.0  # 2초 이상 연속 침묵만 dropout으로 간주
+MIN_DROPOUT_SEC = 5.0  # 5초 이상 연속 침묵만 dropout으로 간주 (2초는 자연 휴지)
 
 
 @dataclass

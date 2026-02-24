@@ -11,6 +11,49 @@ from shared.utils import setup_logging
 
 logger: logging.Logger = setup_logging("db_helpers")
 
+
+# ---------------------------------------------------------------------------
+# 테이블 존재 확인 헬퍼
+# ---------------------------------------------------------------------------
+
+
+def _table_exists(conn: pymysql.connections.Connection, table: str) -> bool:
+    """INFORMATION_SCHEMA를 통해 테이블 존재 여부를 확인한다."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES"
+                " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s"
+                " LIMIT 1",
+                (table,),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        logger.debug("_table_exists check failed: %s", table, exc_info=True)
+        return False
+
+
+def _resolve_his_table(
+    conn: pymysql.connections.Connection,
+    date_str: str,
+) -> str:
+    """날짜에 해당하는 rec_his 테이블명을 결정한다.
+
+    - 오늘 날짜 → ``rec_his``
+    - 이전 날짜 → ``rec_his_YYYYMM`` (존재하면), 없으면 ``rec_his`` 폴백
+    """
+    today = datetime.now().strftime("%Y%m%d")
+    if date_str == today:
+        return "rec_his"
+
+    partitioned = f"rec_his_{date_str[:6]}"
+    if _table_exists(conn, partitioned):
+        return partitioned
+
+    logger.info("Table %s does not exist — falling back to rec_his", partitioned)
+    return "rec_his"
+
+
 # ---------------------------------------------------------------------------
 # rec_no resolution — rec_his / rec_his_YYYYMM 테이블에서 조회
 # ---------------------------------------------------------------------------
@@ -24,7 +67,7 @@ def _resolve_rec_no(
     """filename으로 rec_his 계열 테이블에서 rec_no를 조회한다.
 
     - 오늘 날짜 녹취 → ``rec_his`` 에서 검색
-    - 이전 날짜 녹취 → ``rec_his_YYYYMM`` 에서 검색
+    - 이전 날짜 녹취 → ``rec_his_YYYYMM`` (존재 시), 없으면 ``rec_his`` 폴백
     - recording_date 미지정 → ``rec_his`` 먼저, 없으면 ``rec_his_YYYYMM`` (당월) 시도
     - 못 찾으면 ``None`` 반환 (INSERT 불가)
     """
@@ -33,14 +76,21 @@ def _resolve_rec_no(
 
     # 조회할 테이블 목록 결정
     if recording_date:
-        if recording_date == today:
-            tables = ["rec_his"]
-        else:
-            yyyymm = recording_date[:6]
-            tables = [f"rec_his_{yyyymm}"]
+        table = _resolve_his_table(conn, recording_date)
+        tables = [table]
+        # rec_his_YYYYMM → rec_his 폴백이 _resolve_his_table에서 처리되지만,
+        # 혹시 rec_his에서도 못 찾을 경우를 대비해 두 테이블 모두 시도
+        if table != "rec_his":
+            tables.append("rec_his")
+        elif recording_date != today:
+            # rec_his로 폴백된 경우 — rec_his만 조회
+            pass
     else:
         # 날짜 미지정: rec_his(오늘) → rec_his_YYYYMM(당월 아카이브) 순서
-        tables = ["rec_his", f"rec_his_{current_yyyymm}"]
+        tables = ["rec_his"]
+        partitioned = f"rec_his_{current_yyyymm}"
+        if _table_exists(conn, partitioned):
+            tables.append(partitioned)
 
     stem = filename.rsplit(".", 1)[0] if "." in filename else filename
 
@@ -106,7 +156,7 @@ def fetch_unanalyzed_recordings(
     """rec_his 계열 테이블에서 아직 분석(rec_transcript)이 없는 녹취 목록 조회.
 
     - 오늘 날짜 → ``rec_his``
-    - 이전 날짜 → ``rec_his_YYYYMM``
+    - 이전 날짜 → ``rec_his_YYYYMM`` (존재 시), 없으면 ``rec_his`` 폴백
 
     Returns:
         ``[(rec_no, filename, in_out), ...]`` — 미분석 녹취 목록
@@ -116,11 +166,7 @@ def fetch_unanalyzed_recordings(
     if not date_str:
         date_str = today
 
-    if date_str[:8] == today:
-        table = "rec_his"
-    else:
-        yyyymm = date_str[:6]
-        table = f"rec_his_{yyyymm}"
+    table = _resolve_his_table(conn, date_str)
 
     sql = (
         f"SELECT h.rec_no, h.file_name, COALESCE(h.in_out, 0) AS in_out"
@@ -128,11 +174,12 @@ def fetch_unanalyzed_recordings(
         f" LEFT JOIN rec_transcript t ON h.rec_no = t.rec_no"
         f" WHERE t.rec_no IS NULL"
         f" AND h.file_name IS NOT NULL AND h.file_name != ''"
+        f" AND h.oper_day = %s"
     )
 
     try:
         with conn.cursor() as cur:
-            cur.execute(sql)
+            cur.execute(sql, (date_str,))
             rows = cur.fetchall()
     except Exception:
         logger.warning(
@@ -483,28 +530,25 @@ def query_recordings_list(
 
     녹취 날짜 기준으로 조회한다 (분석 수행일이 아닌 녹취 발생일).
     - 오늘 → ``rec_his`` INNER JOIN
-    - 이전 → ``rec_his_YYYYMM`` INNER JOIN
+    - 이전 → ``rec_his_YYYYMM`` INNER JOIN (존재 시), 없으면 ``rec_his`` 폴백
 
     If *date_str* is empty the current date is used.
     """
     if not date_str:
         date_str = datetime.now().strftime("%Y%m%d")
 
-    today = datetime.now().strftime("%Y%m%d")
-    if date_str == today:
-        his_table = "rec_his"
-    else:
-        his_table = f"rec_his_{date_str[:6]}"
+    his_table = _resolve_his_table(conn, date_str)
 
     sql = (
         _RECORDING_JOIN_SQL
         + f" INNER JOIN {his_table} h ON aq.rec_no = h.rec_no"
+        + " WHERE h.oper_day = %s"
         + " ORDER BY aq.analyzed_at DESC"
     )
 
     try:
         with conn.cursor() as cur:
-            cur.execute(sql)
+            cur.execute(sql, (date_str,))
             rows: list[dict[str, object]] = cur.fetchall()  # pyright: ignore[reportAssignmentType]
     except Exception:
         logger.warning(

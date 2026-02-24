@@ -183,6 +183,7 @@ class RecordingController:
                 stt.segments_json,
                 stt.duration_sec,
                 stt.word_count,
+                model_name=stt.stt_model,
             )
             _ = await asyncio.to_thread(
                 upsert_call_quality,
@@ -220,6 +221,11 @@ class RecordingController:
             self._logger.warning("invalid REC_DATA_REQ payload")
             return
 
+        # WAV 파일 바이너리 전송 (base64)
+        if req.query_type == "wav_file":
+            await self._handle_wav_file_req(req)
+            return
+
         db_cfg = dict(self._cfg.sub("db").raw())
         if not db_cfg:
             self._logger.warning("recording.db not configured, cannot query recordings")
@@ -250,6 +256,76 @@ class RecordingController:
             )
         except Exception:
             self._logger.exception("Failed to handle REC_DATA_REQ")
+
+    async def _handle_wav_file_req(self, req: RecDataReqPayload) -> None:
+        """WAV 파일 바이너리를 base64로 인코딩해서 전송."""
+        import base64
+
+        watch_dir = self._cfg.s("watch_dir", "")
+        if not watch_dir:
+            self._logger.warning("watch_dir not configured for wav_file request")
+            resp = RecDataRespPayload(query_type="wav_file", records=[])
+            with contextlib.suppress(ConnectionError, OSError):
+                await self._tcp_client.send_packet(
+                    PacketType.REC_DATA_RESP, resp.pack()
+                )
+            return
+
+        # watch_dir 하위에서 파일명 검색
+        target: Path | None = None
+        for wav_file in Path(watch_dir).rglob("*.wav"):
+            if wav_file.name == req.filename:
+                target = wav_file
+                break
+
+        if target is None:
+            self._logger.warning(
+                "wav_file not found: filename=%s watch_dir=%s",
+                req.filename,
+                watch_dir,
+            )
+            resp = RecDataRespPayload(query_type="wav_file", records=[])
+            with contextlib.suppress(ConnectionError, OSError):
+                await self._tcp_client.send_packet(
+                    PacketType.REC_DATA_RESP, resp.pack()
+                )
+            return
+
+        max_size = 8 * 1024 * 1024  # 8MB (payload limit 10MB, JSON overhead 고려)
+        file_size = target.stat().st_size
+        if file_size > max_size:
+            self._logger.warning(
+                "wav_file too large: filename=%s size=%d max=%d",
+                req.filename,
+                file_size,
+                max_size,
+            )
+            resp = RecDataRespPayload(
+                query_type="wav_file",
+                records=[{"error": "file_too_large", "size": file_size}],
+            )
+            with contextlib.suppress(ConnectionError, OSError):
+                await self._tcp_client.send_packet(
+                    PacketType.REC_DATA_RESP, resp.pack()
+                )
+            return
+
+        wav_bytes = await asyncio.to_thread(target.read_bytes)
+        wav_b64 = base64.b64encode(wav_bytes).decode("ascii")
+
+        resp = RecDataRespPayload(
+            query_type="wav_file",
+            records=[
+                {
+                    "filename": req.filename,
+                    "wav_b64": wav_b64,
+                    "size": file_size,
+                }
+            ],
+        )
+        with contextlib.suppress(ConnectionError, OSError):
+            await self._tcp_client.send_packet(PacketType.REC_DATA_RESP, resp.pack())
+        self._logger.info("wav_file sent: filename=%s size=%d", req.filename, file_size)
 
     async def on_connection_lost(self) -> None:
         await self._stop_watcher()
