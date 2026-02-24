@@ -786,6 +786,8 @@ class SttResultPayload:
     required_phrase_list: str = ""
     forbidden_word_hit: bool = False
     forbidden_word_list: str = ""
+    # STT 엔진 정보
+    stt_model: str = "faster-whisper-medium"
     # 음질 분석 결과 (서버에서 분석 후 함께 전송)
     aq_status: str = ""
     aq_left_rms_db: float = 0.0
@@ -826,6 +828,7 @@ class SttResultPayload:
             "aq_dropout_count": self.aq_dropout_count,
             "aq_duration_wav": self.aq_duration_wav,
             "aq_is_stereo": self.aq_is_stereo,
+            "stt_model": self.stt_model,
         }
         return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode(
             "utf-8"
@@ -863,6 +866,7 @@ class SttResultPayload:
             aq_dropout_count=int(d.get("aq_dropout_count", 0)),
             aq_duration_wav=float(d.get("aq_duration_wav", 0.0)),
             aq_is_stereo=bool(d.get("aq_is_stereo", False)),
+            stt_model=str(d.get("stt_model", "faster-whisper-medium")),
         )
 
 

@@ -192,20 +192,45 @@ class RecHandler:
         wav_path: str,
         quality: dict[str, str | float | int | bool] | None = None,
         in_out: int = 0,
+        *,
+        stt_engine: str = "local",
+        openai_prompt: str = "",
     ) -> SttResultPayload | None:
         """Run STT pipeline on uploaded WAV and return result payload.
-
-        *quality* 가 전달되면 SttResultPayload 에 음질 분석 결과를 포함한다.
         *in_out* 1=수신, 2=발신 — STT 채널 매핑에 사용.
+        *stt_engine* 'local', 'openai-whisper', 'openai-gpt4o',
+        'openai-diarize', 'rtzr'.
+        *openai_prompt* OpenAI 모델에 전달할 도메인 힌트 텍스트.
         Returns None if pipeline fails.
         """
         try:
             from server.airec.analyzer.pipeline import run_pipeline
 
-            result = run_pipeline(filename, wav_path, in_out=in_out)
+            result = run_pipeline(
+                filename,
+                wav_path,
+                in_out=in_out,
+                stt_engine=stt_engine,
+                openai_prompt=openai_prompt,
+            )
+        except ModuleNotFoundError as e:
+            _logger.exception(
+                "STT pipeline failed (missing dependency): agent_id=%s filename=%s engine=%s",
+                agent_id,
+                filename,
+                stt_engine,
+            )
+            if stt_engine == "rtzr" and e.name == "requests":
+                _logger.error(
+                    "RTZR engine requires 'requests' package. Install with: pip install requests"
+                )
+            return None
         except Exception:
             _logger.exception(
-                "STT pipeline failed: agent_id=%s filename=%s", agent_id, filename
+                "STT pipeline failed: agent_id=%s filename=%s engine=%s",
+                agent_id,
+                filename,
+                stt_engine,
             )
             return None
 
@@ -244,6 +269,7 @@ class RecHandler:
             required_phrase_list=result.required_phrase_list,
             forbidden_word_hit=result.forbidden_word_hit,
             forbidden_word_list=result.forbidden_word_list,
+            stt_model=result.stt_model,
             aq_status=aq_status,
             aq_left_rms_db=aq_left_rms_db,
             aq_right_rms_db=aq_right_rms_db,

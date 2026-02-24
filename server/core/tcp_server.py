@@ -82,6 +82,10 @@ class TCPServer:
         self._rec_max_concurrent: int = 3  # 최대 동시 처리 건수
         self._rec_waiting_agents: list[str] = []  # NEXT 대기 중인 에이전트 목록
 
+        # ── STT 엔진 설정 ──
+        self._stt_engine: str = "local"  # local | openai-whisper | openai-gpt4o
+        self._openai_prompt: str = ""  # OpenAI 모델 도메인 힌트
+
     @property
     def rec_max_concurrent(self) -> int:
         """최대 동시 녹취 분석 건수."""
@@ -98,6 +102,30 @@ class TCPServer:
         )
         # 슬롯이 늘어났으면 대기 에이전트에 즉시 NEXT
         await self._try_dispatch_next()
+
+    @property
+    def stt_engine(self) -> str:
+        """현재 STT 엔진."""
+        return self._stt_engine
+
+    async def set_stt_engine(self, engine: str) -> None:
+        """STT 엔진 변경."""
+        valid = ("local", "openai-whisper", "openai-gpt4o", "openai-diarize", "rtzr")
+        if engine not in valid:
+            self._logger.warning("invalid stt_engine: %s (valid: %s)", engine, valid)
+            return
+        self._stt_engine = engine
+        self._logger.info("stt_engine changed to %s", engine)
+
+    @property
+    def openai_prompt(self) -> str:
+        """OpenAI STT 모델 도메인 힌트."""
+        return self._openai_prompt
+
+    async def set_openai_prompt(self, prompt: str) -> None:
+        """OpenAI STT 모델 도메인 힌트 변경."""
+        self._openai_prompt = prompt
+        self._logger.info("openai_prompt changed (len=%d)", len(prompt))
 
     async def _notify(self, message: str) -> None:
         """이벤트 알림 콜백 호출. 실패 시 무시."""
@@ -923,12 +951,15 @@ class TCPServer:
 
             # ── Step 2: STT 분석 (음질 결과와 무관하게 항상 진행) ──
             stt_payload: SttResultPayload | None = await asyncio.to_thread(
-                self.rec_handler.run_stt_pipeline,  # type: ignore[union-attr]
-                agent_id,
-                filename,
-                wav_path,
-                quality,  # 음질 분석 결과를 SttResultPayload에 포함
-                in_out,  # 수신/발신 정보 → 채널 매핑
+                lambda: self.rec_handler.run_stt_pipeline(  # type: ignore[union-attr]
+                    agent_id,
+                    filename,
+                    wav_path,
+                    quality,
+                    in_out,
+                    stt_engine=self._stt_engine,
+                    openai_prompt=self._openai_prompt,
+                )
             )
             if stt_payload is not None:
                 try:
