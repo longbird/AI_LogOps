@@ -54,6 +54,10 @@ def create_app(
         APIRouter,
         importlib.import_module("server.dashboard.routes.admin").router,
     )
+    analysis_router = cast(
+        APIRouter,
+        importlib.import_module("server.dashboard.routes.analysis").router,
+    )
 
     templates_dir = Path(__file__).parent / "templates"
     static_dir = Path(__file__).parent / "static"
@@ -123,6 +127,7 @@ def create_app(
             or request.url.path == "/api/rec/upload"
             or request.url.path.startswith("/api/rec/stream/")
             or request.url.path.startswith("/api/logs/")
+            or request.url.path.startswith("/api/analysis/")
         ):
             return await call_next(request)
 
@@ -178,6 +183,7 @@ def create_app(
     app.include_router(recordings_router)
     app.include_router(deploy_api_router)
     app.include_router(admin_router)
+    app.include_router(analysis_router)
 
     # 녹취 파일 업로드/스트리밍 라우터 (에이전트 → 서버 HTTP 업로드, GUI → WAV 스트리밍)
     if rec_storage is not None:

@@ -23,7 +23,8 @@ class SessionManagerLike(Protocol):
 
 class _TCPServerLike(Protocol):
     async def send_log_command(
-        self, agent_id: str, action: LogAction, date: str = ...
+        self, agent_id: str, action: LogAction, date: str = ...,
+        folder_index: int = ...,
     ) -> bool: ...
 
 
@@ -115,6 +116,46 @@ async def toggle_log_stream(request: Request, agent_id: str) -> JSONResponse:
         action_str,
         agent_id,
     )
+    return JSONResponse(
+        {"error": f"failed to send command to {agent_id}"}, status_code=502
+    )
+
+
+@router.post("/api/logs/{agent_id}/history")
+async def request_log_history(request: Request, agent_id: str) -> JSONResponse:
+    """과거 로그 조회 요청: 에이전트에 HIST_REQUEST 전송."""
+    state = _state(request)
+    tcp_server = state.tcp_server
+    if tcp_server is None:
+        return JSONResponse({"error": "server not configured"}, status_code=503)
+
+    try:
+        body: dict[str, Any] = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    date: str = body.get("date", "")
+    if not date or len(date) != 8 or not date.isdigit():
+        return JSONResponse(
+            {"error": "date must be 8-digit YYYYMMDD string"}, status_code=400
+        )
+
+    folder_index: int = int(body.get("folder_index", -1))
+
+    success = await tcp_server.send_log_command(
+        agent_id, LogAction.HIST_REQUEST, date, folder_index=folder_index
+    )
+    if success:
+        logger.info(
+            "history request sent: agent=%s date=%s folder=%d",
+            agent_id, date, folder_index,
+        )
+        return JSONResponse({
+            "status": "ok",
+            "agent_id": agent_id,
+            "date": date,
+            "folder_index": folder_index,
+        })
     return JSONResponse(
         {"error": f"failed to send command to {agent_id}"}, status_code=502
     )

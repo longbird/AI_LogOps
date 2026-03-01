@@ -137,14 +137,16 @@ class AgentRuntime:
                 return
 
             # 5. Shared LogWatcher + fan-out callback
-            async def _send_log(filename: str, line: str) -> None:
+            async def _send_log(filename: str, line: str, folder_index: int) -> None:
                 tasks: list[Awaitable[None]] = []
                 for conn in connections:
                     if (
                         conn.tcp_client.is_connected
                         and conn.log_cmd_handler.is_realtime_active
                     ):
-                        tasks.append(conn.tcp_client.send_log_line(filename, line))
+                        tasks.append(
+                            conn.tcp_client.send_log_line(filename, line, folder_index)
+                        )
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)
                 self._hooks.on_log_sent()
@@ -286,6 +288,7 @@ class AgentRuntime:
                     recording_cfg=recording_cfg,
                     rec_ownership=rec_ownership,
                     deploy_lock=deploy_lock,
+                    process_args=process_args or None,
                 )
                 conn.deploy_handler.updater = updater
                 conn.deploy_handler.process_deployer = process_deployer
@@ -511,7 +514,9 @@ class AgentRuntime:
         recording_cfg: ConfigView,
         rec_ownership: RecordingOwnership,
         deploy_lock: asyncio.Lock,
+        process_args: list[str] | None = None,
     ) -> ServerConnection:
+        from agent.core.ctrl_handler import CtrlHandler
         from agent.core.deploy_handler import DeployHandler
         from agent.core.log_cmd_handler import LogCmdHandler
         from agent.core.tcp_client import TCPClient
@@ -543,6 +548,13 @@ class AgentRuntime:
         )
         tcp_client.on_cmd_deploy = deploy_handler.handle_cmd_deploy
         tcp_client.on_file_chunk = deploy_handler.handle_file_chunk
+
+        ctrl_handler = CtrlHandler(
+            tcp_client=tcp_client,
+            process_mgr=process_mgr,
+            process_args=process_args,
+        )
+        tcp_client.on_cmd_ctrl = ctrl_handler.handle_cmd_ctrl
 
         rec_controller = RecordingController(
             tcp_client=tcp_client,

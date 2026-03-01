@@ -13,7 +13,7 @@ from watchdog.observers import Observer
 
 from shared.protocol import LogFileEntry
 
-LineCallback = Callable[[str, str], Awaitable[None]]
+LineCallback = Callable[[str, str, int], Awaitable[None]]
 
 
 class _LogEventHandler(FileSystemEventHandler):
@@ -144,6 +144,51 @@ class LogWatcher:
             entries.append(entry)
         return entries
 
+    @property
+    def watch_dir_count(self) -> int:
+        """감시 폴더 수 반환."""
+        return len(self._watch_dirs)
+
+    def find_files_by_date_and_folder(
+        self, date_str: str, folder_index: int
+    ) -> list[str]:
+        """특정 감시 폴더에서 YYYYMMDD_* 패턴 파일 검색.
+        folder_index < 0 이면 전체 폴더 검색 (find_files_by_date 동작)."""
+        if folder_index < 0:
+            return self.find_files_by_date(date_str)
+
+        if folder_index >= len(self._watch_dirs):
+            return []
+
+        watch_dir = self._watch_dirs[folder_index]
+        if not watch_dir.exists() or not watch_dir.is_dir():
+            return []
+
+        files: list[str] = []
+        pattern = f"{date_str}_*"
+        for file_path in watch_dir.glob(pattern):
+            if file_path.is_file() and self._is_watchable(str(file_path)):
+                files.append(str(file_path.resolve()))
+        return sorted(files)
+
+    def get_files_metadata_by_folder(
+        self, date_str: str, folder_index: int
+    ) -> list[LogFileEntry]:
+        """특정 폴더의 YYYYMMDD_* 파일 메타데이터 수집.
+        folder_index < 0 이면 전체 폴더 (get_files_metadata 동작)."""
+        files = self.find_files_by_date_and_folder(date_str, folder_index)
+        entries: list[LogFileEntry] = []
+        for filepath in files:
+            path = Path(filepath)
+            data = path.read_bytes()
+            entry = LogFileEntry(
+                filename=path.name,
+                file_size=len(data),
+                md5=hashlib.md5(data).digest(),
+            )
+            entries.append(entry)
+        return entries
+
     def get_latest_file(self) -> str | None:
         """감시 폴더의 최신 파일 경로 반환 (이름 기준 정렬 마지막)."""
 
@@ -208,11 +253,11 @@ class LogWatcher:
             filepath = await self._event_queue.get()
             if not self._is_watchable(filepath):
                 continue
-
+            folder_index = self._get_folder_index(filepath)
             lines = await asyncio.to_thread(self._read_new_lines, filepath)
             filename = Path(filepath).name
             for line in lines:
-                await self._on_new_line(filename, line)
+                await self._on_new_line(filename, line, folder_index)
 
     def _seed_file_positions(self) -> None:
         for filepath in self.get_watchable_files():
@@ -221,6 +266,17 @@ class LogWatcher:
 
     def _is_watchable(self, filepath: str) -> bool:
         return Path(filepath).suffix.lower() in self._extensions
+
+    def _get_folder_index(self, filepath: str) -> int:
+        """파일 경로가 속한 watch_dir의 0-based 인덱스 반환. 미매칭 시 0."""
+        resolved = Path(filepath).resolve()
+        for idx, watch_dir in enumerate(self._watch_dirs):
+            try:
+                resolved.relative_to(watch_dir.resolve())
+                return idx
+            except ValueError:
+                continue
+        return 0
 
     def _read_new_lines(self, filepath: str) -> list[str]:
         file_path = Path(filepath)

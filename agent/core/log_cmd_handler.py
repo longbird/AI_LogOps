@@ -57,7 +57,7 @@ class LogCmdHandler:
             return
 
         if cmd.action == LogAction.HIST_REQUEST:
-            await self._handle_hist_request(cmd.date)
+            await self._handle_hist_request(cmd.date, cmd.folder_index)
         elif cmd.action == LogAction.REAL_START:
             await self._handle_real_start()
         elif cmd.action == LogAction.REAL_STOP:
@@ -81,21 +81,25 @@ class LogCmdHandler:
         ack = CmdLogAckPayload(action=action, status=status, file_count=file_count)
         await self._client.send_packet(PacketType.CMD_LOG_ACK, ack.pack())
 
-    async def _handle_hist_request(self, date_str: str) -> None:
+    async def _handle_hist_request(
+        self, date_str: str, folder_index: int = -1
+    ) -> None:
         """2-Phase selective transfer:
         Phase 1: Collect file metadata → send LOG_FILE_LIST
         Phase 2: Wait for LOG_FILE_SELECT → send only selected files
         """
-        # Phase 1: Send file list
-        entries = self._watcher.get_files_metadata(date_str)
+        # Phase 1: Send file list (폴더 필터링)
+        entries = self._watcher.get_files_metadata_by_folder(date_str, folder_index)
         await self._client.send_log_file_list(entries)
 
         if not entries:
-            logger.info("no files found for date=%s", date_str)
+            logger.info(
+                "no files found for date=%s folder_index=%d", date_str, folder_index
+            )
             return
 
-        # Build lookup map
-        files = self._watcher.find_files_by_date(date_str)
+        # Build lookup map (폴더 필터링)
+        files = self._watcher.find_files_by_date_and_folder(date_str, folder_index)
         self._pending_file_map = {Path(f).name: f for f in files}
 
         # Phase 2: Wait for selection

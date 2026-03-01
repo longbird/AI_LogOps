@@ -27,6 +27,10 @@ class _TCPServerLike(Protocol):
 
     def get_deploy_result_future(self, agent_id: str) -> asyncio.Future[Any] | None: ...
 
+    async def send_ctrl_command(
+        self, agent_id: str, action: Any,
+    ) -> bool: ...
+
 
 class SessionManagerLike(Protocol):
     def get_all_sessions(self) -> list[AgentSession]: ...
@@ -220,3 +224,48 @@ def _sort_timestamp(raw_timestamp: object) -> float:
     if not isinstance(raw_timestamp, (int, float)):
         return 0.0
     return float(raw_timestamp)
+
+
+# ── Control API ──
+
+
+@router.post("/api/ctrl/restart")
+async def api_ctrl_restart(request: Request) -> JSONResponse:
+    """에이전트에 CMD_CTRL RESTART 전송."""
+    state = _state(request)
+    tcp_server = state.tcp_server
+    session_mgr = state.session_mgr
+
+    if tcp_server is None:
+        return JSONResponse({"error": "서버가 실행 중이 아닙니다"}, status_code=503)
+
+    try:
+        body: dict[str, Any] = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    agent_id: str = body.get("agent_id", "")
+    target: str = body.get("target", "agent")
+
+    # agent_id 미지정 시 첫 번째 연결된 에이전트 사용
+    if not agent_id and session_mgr is not None:
+        sessions = session_mgr.get_all_sessions()
+        if sessions:
+            agent_id = sessions[0].agent_info.agent_id
+
+    if not agent_id:
+        return JSONResponse({"error": "에이전트가 연결되어 있지 않습니다"}, status_code=404)
+
+    from shared.protocol import CtrlAction
+
+    success = await tcp_server.send_ctrl_command(agent_id, CtrlAction.RESTART)
+    if success:
+        logger.info("restart command sent: agent=%s target=%s", agent_id, target)
+        return JSONResponse({
+            "status": "ok",
+            "agent_id": agent_id,
+            "target": target,
+        })
+    return JSONResponse(
+        {"error": f"에이전트 {agent_id}에 명령 전송 실패"}, status_code=502
+    )

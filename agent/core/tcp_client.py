@@ -186,10 +186,9 @@ class TCPClient:
         payload = LogHistPayload(filename=filename, data=data)
         await self.send_packet(PacketType.LOG_HIST, payload.pack())
 
-    async def send_log_line(self, filename: str, line: str) -> None:
+    async def send_log_line(self, filename: str, line: str, folder_index: int = 0) -> None:
         """LOG_REAL 패킷으로 실시간 로그 라인 전송."""
-
-        payload = LogRealPayload(filename=filename, line=line)
+        payload = LogRealPayload(filename=filename, line=line, folder_index=folder_index)
         await self.send_packet(PacketType.LOG_REAL, payload.pack())
 
     async def send_log_file_list(self, entries: list[LogFileEntry]) -> None:

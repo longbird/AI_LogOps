@@ -17,6 +17,7 @@ from shared.protocol import (
     CmdLogAckPayload,
     CmdRecPayload,
     CmdRecAckPayload,
+    CtrlAction,
     LogAction,
     RecAction,
     LogFileListPayload,
@@ -85,6 +86,10 @@ class TCPServer:
         # ── STT 엔진 설정 ──
         self._stt_engine: str = "local"  # local | openai-whisper | openai-gpt4o
         self._openai_prompt: str = ""  # OpenAI 모델 도메인 힌트
+
+        # ── 실시간 로그 분석 상태 ──
+        # agent_id -> {folder_index -> MonitorState} (실시간 수신 시 레이지 초기화)
+        self._monitor_states: dict[str, dict[int, Any]] = {}
 
     @property
     def rec_max_concurrent(self) -> int:
@@ -446,35 +451,54 @@ class TCPServer:
                 saved_path,
                 len(message.data),
             )
+            # 진행 상황을 log_buffer에 추가
+            session = self.session_mgr.get_session(agent_id)
+            if session is not None:
+                size_kb = len(message.data) / 1024
+                session.log_buffer.append(
+                    f"[HIST] Received: {message.filename} ({size_kb:.1f} KB)"
+                )
         except ValueError:
             self._logger.warning("invalid LOG_HIST payload: agent_id=%s", agent_id)
 
     def _handle_log_real(self, agent_id: str, payload: bytes) -> None:
         try:
             message = LogRealPayload.unpack(payload)
-
             # In-memory buffer for dashboard WebSocket streaming
             session = self.session_mgr.get_session(agent_id)
             if session is not None:
                 buf_len = len(session.log_buffer)
-                session.log_buffer.append(message.line)
+                buffered_line = f"[F{message.folder_index}] {message.line}"
+                session.log_buffer.append(buffered_line)
                 if len(session.log_buffer) > 1000:
                     session.log_buffer = session.log_buffer[-500:]
                 # 최초 수신 또는 100건마다 INFO 로그
                 if buf_len == 0 or (buf_len + 1) % 100 == 0:
                     self._logger.info(
-                        "LOG_REAL: agent=%s file=%s buffer=%d",
+                        "LOG_REAL: agent=%s file=%s folder=%d buffer=%d",
                         agent_id,
                         message.filename,
+                        message.folder_index,
                         buf_len + 1,
                     )
 
+            # 실시간 분석 — 폴더별 MonitorState에 라인 피드
+            folder_idx = message.folder_index
+            if agent_id not in self._monitor_states:
+                self._monitor_states[agent_id] = {}
+            if folder_idx not in self._monitor_states[agent_id]:
+                from server.analysis.monitor_state import MonitorState
+                self._monitor_states[agent_id][folder_idx] = MonitorState()
+            self._monitor_states[agent_id][folder_idx].process_line(
+                message.line, filename=message.filename
+            )
             # Persist to disk
             if self.storage_mgr is not None:
                 self.storage_mgr.append_realtime_log(
                     agent_id=agent_id,
                     filename=message.filename,
                     line=message.line,
+                    folder_index=message.folder_index,
                 )
         except ValueError:
             self._logger.warning("invalid LOG_REAL payload: agent_id=%s", agent_id)
@@ -521,15 +545,33 @@ class TCPServer:
             self._logger.warning("deploy rolled back: agent_id=%s", agent_id)
             asyncio.create_task(self._notify(f"⚠️ 배포 롤백: {agent_id}"))
 
+    async def send_ctrl_command(
+        self, agent_id: str, action: CtrlAction,
+    ) -> bool:
+        """CMD_CTRL 패킷을 에이전트에 전송."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return False
+        writer = cast(_WriterLike, session.writer)
+        from shared.protocol import CmdCtrlPayload
+        cmd = CmdCtrlPayload(action=action)
+        writer.write(Packet.build(PacketType.CMD_CTRL, cmd.pack()))
+        await writer.drain()
+        self._logger.info(
+            "CMD_CTRL sent: agent_id=%s action=%s", agent_id, action.name
+        )
+        return True
+
     async def send_log_command(
-        self, agent_id: str, action: LogAction, date: str = ""
+        self, agent_id: str, action: LogAction, date: str = "",
+        folder_index: int = -1,
     ) -> bool:
         """CMD_LOG 패킷을 에이전트에 전송."""
         session = self.session_mgr.get_session(agent_id)
         if session is None or session.writer is None:
             return False
         writer = cast(_WriterLike, session.writer)
-        cmd = CmdLogPayload(action=action, date=date)
+        cmd = CmdLogPayload(action=action, date=date, folder_index=folder_index)
         writer.write(Packet.build(PacketType.CMD_LOG, cmd.pack()))
         await writer.drain()
         return True
@@ -642,7 +684,16 @@ class TCPServer:
             self._logger.warning("invalid LOG_FILE_LIST payload: agent_id=%s", agent_id)
             return
 
-        stored = self.storage_mgr.get_stored_file_metadata(agent_id)
+        # 파일명에서 날짜 추출하여 날짜별 메타데이터 조회
+        import re
+
+        date_str = ""
+        if file_list.entries:
+            m = re.match(r"^(\d{8})_", file_list.entries[0].filename)
+            if m:
+                date_str = m.group(1)
+
+        stored = self.storage_mgr.get_stored_file_metadata(agent_id, date_str)
         selected: list[str] = []
 
         for entry in file_list.entries:
@@ -655,11 +706,21 @@ class TCPServer:
                     selected.append(entry.filename)
 
         self._logger.info(
-            "file list comparison: agent_id=%s total=%d selected=%d",
+            "file list comparison: agent_id=%s total=%d selected=%d skipped=%d",
             agent_id,
             len(file_list.entries),
             len(selected),
+            len(file_list.entries) - len(selected),
         )
+
+        # 진행 메시지를 log_buffer에 추가
+        session = self.session_mgr.get_session(agent_id)
+        if session is not None:
+            skipped = len(file_list.entries) - len(selected)
+            session.log_buffer.append(
+                f"[HIST] File list: {len(file_list.entries)} files, "
+                f"{len(selected)} to transfer, {skipped} skipped (already stored)"
+            )
 
         select = LogFileSelectPayload(filenames=selected)
         writer.write(Packet.build(PacketType.LOG_FILE_SELECT, select.pack()))
@@ -927,10 +988,13 @@ class TCPServer:
         음질 분석 결과와 관계없이 STT 분석은 항상 진행.
         *in_out* 1=수신, 2=발신 — STT 채널 매핑에 사용.
         """
+        if self.rec_handler is None:
+            return
+        rec_handler = self.rec_handler
         try:
             # ── Step 1: 음질 분석 (서버에서 수행) ──
             quality = await asyncio.to_thread(
-                self.rec_handler.run_audio_quality,  # type: ignore[union-attr]
+                rec_handler.run_audio_quality,
                 agent_id,
                 filename,
                 wav_path,
@@ -951,7 +1015,7 @@ class TCPServer:
 
             # ── Step 2: STT 분석 (음질 결과와 무관하게 항상 진행) ──
             stt_payload: SttResultPayload | None = await asyncio.to_thread(
-                lambda: self.rec_handler.run_stt_pipeline(  # type: ignore[union-attr]
+                lambda: rec_handler.run_stt_pipeline(
                     agent_id,
                     filename,
                     wav_path,

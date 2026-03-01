@@ -20,22 +20,70 @@
     <span id="stream-status" class="text-sm text-gray-400"></span>
 </div>
 
-<div id="log-container" class="bg-gray-900 text-green-400 font-mono text-sm p-4 rounded-lg h-[600px] overflow-y-auto">
-    <p class="text-gray-500">Select an agent to view logs...</p>
+<!-- History controls -->
+<div id="history-bar" class="hidden mb-4 flex items-center space-x-3 bg-gray-700 rounded-lg px-4 py-2">
+    <span class="text-gray-300 text-sm font-semibold">History:</span>
+    <input type="date" id="hist-date" class="border border-gray-500 bg-gray-800 text-gray-200 rounded px-2 py-1 text-sm">
+    <span class="text-gray-400 text-sm">폴더:</span>
+    <button id="btn-hist-all" onclick="setHistFolder(-1)"
+        class="px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-blue-700 text-white">ALL</button>
+    <button id="btn-hist-f0" onclick="setHistFolder(0)"
+        class="px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-gray-600 text-gray-300 hover:bg-gray-500">F0</button>
+    <button id="btn-hist-f1" onclick="setHistFolder(1)"
+        class="px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-gray-600 text-gray-300 hover:bg-gray-500">F1</button>
+    <button id="btn-hist-fetch" onclick="fetchHistory()"
+        class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-1 rounded text-sm font-semibold">Fetch</button>
+    <span id="hist-status" class="text-sm text-gray-400"></span>
+</div>
+
+<!-- Main layout: log (left 60%) + analysis (right 40%) -->
+<div class="flex gap-4">
+    <!-- Log panel -->
+    <div class="flex-[3] min-w-0">
+        <div id="log-container" class="bg-gray-900 text-green-400 font-mono text-sm p-4 rounded-lg h-[600px] overflow-y-auto">
+            <p class="text-gray-500">Select an agent to view logs...</p>
+        </div>
+    </div>
+
+    <!-- Analysis panel -->
+    <div class="flex-[2] min-w-0">
+        <!-- 폴더 선택 바 (스트리밍 시작 후 표시) -->
+        <div id="folder-bar" class="hidden mb-1 flex items-center gap-2 bg-gray-700 rounded-lg px-3 py-1.5">
+            <span class="text-gray-400 text-xs">분석 폴더:</span>
+            <button id="btn-folder-0" onclick="switchAnalysisFolder(0)"
+                class="px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-blue-700 text-white">F0</button>
+            <button id="btn-folder-1" onclick="switchAnalysisFolder(1)"
+                class="px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-gray-600 text-gray-300 hover:bg-gray-500">F1</button>
+            <span id="folder-status" class="text-gray-500 text-xs ml-1"></span>
+        </div>
+        <div id="analysis-panel" class="bg-gray-800 text-gray-200 text-xs rounded-lg h-[600px] overflow-y-auto p-3 space-y-3">
+            <p class="text-gray-500 text-center mt-8">분석 데이터 없음<br><span class="text-gray-600">에이전트를 선택하고 스트리밍을 시작하세요</span></p>
+        </div>
+    </div>
 </div>
 
 <script>
 var ws = null;
 var streaming = false;
 var STREAM_KEY = 'ailogops_logs_streaming';
+var analysisTimer = null;
+var currentAgentId = null;
+var currentFolder = 0;  // 현재 선택된 분석 폴더 인덱스
+var histFolderIndex = -1;  // History 폴더 선택: -1=ALL
 
 function switchAgent(agentId) {
     if (ws) { ws.close(); ws = null; }
+    stopAnalysisPolling();
+    currentAgentId = agentId || null;
+    currentFolder = 0;
+
     var container = document.getElementById('log-container');
     var wsStatus = document.getElementById('ws-status');
     var streamStatus = document.getElementById('stream-status');
     var btnStart = document.getElementById('btn-stream-start');
     var btnStop = document.getElementById('btn-stream-stop');
+    var folderBar = document.getElementById('folder-bar');
+    var historyBar = document.getElementById('history-bar');
     container.innerHTML = '';
     streaming = false;
 
@@ -46,13 +94,25 @@ function switchAgent(agentId) {
         streamStatus.textContent = '';
         btnStart.classList.add('hidden');
         btnStop.classList.add('hidden');
+        folderBar.classList.add('hidden');
+        historyBar.classList.add('hidden');
         localStorage.removeItem(STREAM_KEY);
+        resetAnalysisPanel();
         return;
     }
 
     btnStart.classList.remove('hidden');
     btnStop.classList.add('hidden');
     streamStatus.textContent = '';
+
+    // History bar 표시 + 날짜 기본값 설정
+    historyBar.classList.remove('hidden');
+    var dateInput = document.getElementById('hist-date');
+    if (!dateInput.value) {
+        var today = new Date();
+        dateInput.value = today.toISOString().slice(0, 10);
+    }
+    document.getElementById('hist-status').textContent = '';
 
     fetch('/api/logs/' + agentId)
         .then(function(r) { return r.text(); })
@@ -64,8 +124,9 @@ function switchAgent(agentId) {
     ws.onopen = function() {
         wsStatus.textContent = 'Connected';
         wsStatus.className = 'text-sm text-green-500';
-        /* 에이전트 선택 시 자동 스트리밍 시작 */
-        toggleStream('start');
+        /* 수동 스트리밍: Start Streaming 버튼 표시만 하고 자동 시작하지 않음 */
+        btnStart.classList.remove('hidden');
+        btnStop.classList.add('hidden');
     };
     ws.onmessage = function(e) {
         var div = document.createElement('div');
@@ -98,18 +159,24 @@ async function toggleStream(action) {
         });
         var data = await resp.json();
         if (resp.ok) {
+            var folderBar = document.getElementById('folder-bar');
             if (action === 'start') {
                 streaming = true;
                 streamStatus.textContent = 'Streaming';
                 streamStatus.className = 'text-sm text-green-600 font-semibold';
                 btnStart.classList.add('hidden');
                 btnStop.classList.remove('hidden');
+                folderBar.classList.remove('hidden');
+                setFolderButtonStyles(currentFolder);
+                startAnalysisPolling(agentId);
             } else {
                 streaming = false;
                 streamStatus.textContent = 'Stopped';
                 streamStatus.className = 'text-sm text-gray-500';
                 btnStart.classList.remove('hidden');
                 btnStop.classList.add('hidden');
+                folderBar.classList.add('hidden');
+                stopAnalysisPolling();
             }
         } else {
             streamStatus.textContent = 'Error: ' + (data.error || resp.statusText);
@@ -127,6 +194,230 @@ document.getElementById('btn-stream-stop').addEventListener('click', function() 
 function scrollToBottom() {
     var c = document.getElementById('log-container');
     c.scrollTop = c.scrollHeight;
+}
+
+/* ───────── Analysis polling ───────── */
+
+function startAnalysisPolling(agentId) {
+    stopAnalysisPolling();
+    fetchAnalysis(agentId, currentFolder);  // 즉시 1회
+    analysisTimer = setInterval(function() { fetchAnalysis(agentId, currentFolder); }, 3000);
+}
+
+function stopAnalysisPolling() {
+    if (analysisTimer) { clearInterval(analysisTimer); analysisTimer = null; }
+}
+
+function resetAnalysisPanel() {
+    document.getElementById('analysis-panel').innerHTML =
+        '<p class="text-gray-500 text-center mt-8">분석 데이터 없음<br><span class="text-gray-600">에이전트를 선택하고 스트리밍을 시작하세요</span></p>';
+    document.getElementById('folder-bar').classList.add('hidden');
+}
+
+/* ── 폴더 선택 ── */
+
+function setFolderButtonStyles(activeFolder) {
+    [0, 1].forEach(function(i) {
+        var btn = document.getElementById('btn-folder-' + i);
+        if (!btn) return;
+        if (i === activeFolder) {
+            btn.className = 'px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-blue-700 text-white';
+        } else {
+            btn.className = 'px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-gray-600 text-gray-300 hover:bg-gray-500';
+        }
+    });
+}
+
+async function switchAnalysisFolder(folderIndex) {
+    if (!currentAgentId || folderIndex === currentFolder) return;
+    currentFolder = folderIndex;
+    setFolderButtonStyles(folderIndex);
+    var folderStatus = document.getElementById('folder-status');
+    folderStatus.textContent = '초기화 중...';
+    stopAnalysisPolling();
+    // 서버측 MonitorState 초기화
+    try {
+        await fetch('/api/analysis/' + currentAgentId + '/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folder_index: folderIndex }),
+        });
+    } catch (e) { /* ignore */ }
+    folderStatus.textContent = '';
+    // 분석 패널 초기화 후 새 폴더로 폴링 재시작
+    document.getElementById('analysis-panel').innerHTML =
+        '<p class="text-gray-500 text-center mt-8">F' + folderIndex + ' 데이터 수집 중...</p>';
+    startAnalysisPolling(currentAgentId);
+}
+
+async function fetchAnalysis(agentId, folder) {
+    folder = (folder === undefined) ? 0 : folder;
+    try {
+        var resp = await fetch('/api/analysis/' + agentId + '?folder=' + folder);
+        if (!resp.ok) return;  // 데이터 없음 — 패널 유지
+        var d = await resp.json();
+        renderAnalysis(d, folder);
+    } catch (e) { /* network error — silently ignore */ }
+}
+
+function badge(text, color) {
+    return '<span class="inline-block px-1.5 py-0.5 rounded text-xs font-mono bg-' + color + '-900 text-' + color + '-300 border border-' + color + '-700">' + esc(text) + '</span>';
+}
+
+function esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function row(label, value, color) {
+    color = color || 'gray';
+    return '<div class="flex justify-between items-baseline py-0.5 border-b border-gray-700">' +
+           '<span class="text-gray-400">' + esc(label) + '</span>' +
+           '<span class="font-mono text-' + color + '-300">' + esc(value) + '</span></div>';
+}
+
+function section(title, content) {
+    return '<div class="bg-gray-900 rounded p-2">' +
+           '<div class="text-gray-300 font-semibold text-xs uppercase tracking-wide mb-1">' + esc(title) + '</div>' +
+           content + '</div>';
+}
+
+function renderAnalysis(d, folder) {
+    var html = '';
+
+    /* Header — 현재 분석 폴더 표시 */
+    html += '<div class="flex justify-between items-center mb-1">' +
+            '<span class="text-gray-300 font-semibold">실시간 분석 <span class="text-blue-400 font-mono text-xs">[F' + (folder || 0) + ']</span></span>' +
+            '<span class="text-gray-500 text-xs">업데이트: ' + esc(d.updated_at) + '</span></div>';
+    html += '<div class="text-gray-500 text-xs mb-2">가동: ' + esc(d.uptime) + ' &nbsp;|&nbsp; 총 라인: ' + esc(d.total_lines) + ' &nbsp;|&nbsp; 마지막: ' + esc(d.last_log_ts) + '</div>';
+
+    /* Thread Status */
+    var t = d.thread || {};
+    var threadContent = row('RTP 스레드', (t.rtp_count || 0) + '개 [' + (t.rtp_indices || []).join(',') + ']', t.rtp_count > 0 ? 'green' : 'gray') +
+                        row('PKT 스레드', (t.pkt_count || 0) + '개 [' + (t.pkt_indices || []).join(',') + ']', t.pkt_count > 0 ? 'blue' : 'gray') +
+                        row('활성 세션', t.active_sessions || 0, t.active_sessions > 0 ? 'yellow' : 'gray');
+    html += section('스레드 상태', threadContent);
+
+    /* Duration Mismatch (1h) */
+    var m = d.mismatch_1h || {};
+    var mContent = row('불일치 건수 (1h)', m.count || 0, m.count > 0 ? 'red' : 'gray') +
+                   row('평균 지연', m.avg_lag != null ? m.avg_lag.toFixed(1) + 's' : '-', 'orange') +
+                   row('최대 지연', m.max_lag != null ? m.max_lag + 's' : '-', 'orange') +
+                   row('최소 지연', m.min_lag != null ? m.min_lag + 's' : '-', 'green');
+    if (m.causes && m.causes.length > 0) {
+        mContent += '<div class="mt-1 text-gray-500 text-xs">원인: ' +
+            m.causes.map(function(c) { return badge(c[0] + ' x' + c[1], 'orange'); }).join(' ') + '</div>';
+    }
+    html += section('Duration Mismatch (1h)', mContent);
+
+    /* Activity (5min) */
+    var a = d.activity_5min || {};
+    var aContent = row('RTP 시작/매칭/종료', (a.rtp_start||0) + ' / ' + (a.rtp_match||0) + ' / ' + (a.rtp_bye||0), 'cyan') +
+                   row('파일 열기/닫기', (a.file_open||0) + ' / ' + (a.file_close||0), 'blue') +
+                   row('평균 파일 크기', a.file_avg_size_kb != null ? a.file_avg_size_kb.toFixed(1) + ' KB' : '-', 'gray') +
+                   row('평균 통화 시간', a.file_avg_duration != null ? a.file_avg_duration + 's' : '-', 'gray') +
+                   row('SMDR (전체/응답)', (a.smdr_total||0) + ' / ' + (a.smdr_answer||0), 'purple') +
+                   row('SSPP', a.sspp_total || 0, 'gray') +
+                   row('대기 세션', (a.pending_count||0) + '개 (평균 ' + (a.pending_avg_wait != null ? a.pending_avg_wait.toFixed(1) : '-') + 's)', a.pending_count > 0 ? 'yellow' : 'gray');
+    html += section('세션 활동 (5min)', aContent);
+
+    /* Grace Period */
+    var g = d.grace || {};
+    var gContent = row('시작', g.started || 0, 'yellow') +
+                   row('만료', g.expired || 0, 'red') +
+                   row('재개', g.resumed || 0, 'green') +
+                   row('종료', g.terminated || 0, 'gray');
+    html += section('Grace Period', gContent);
+
+    /* Recent Mismatches */
+    if (d.recent_mismatches && d.recent_mismatches.length > 0) {
+        var rmRows = d.recent_mismatches.slice(-5).reverse().map(function(r) {
+            return '<tr class="border-b border-gray-700">' +
+                   '<td class="py-0.5 pr-2 text-gray-400">' + esc(r.ts) + '</td>' +
+                   '<td class="pr-2 text-yellow-300">' + esc(r.ext) + '</td>' +
+                   '<td class="pr-2 text-red-300">' + esc(r.lag) + 's</td>' +
+                   '<td class="text-gray-400 truncate max-w-[80px]">' + esc(r.cause) + '</td></tr>';
+        }).join('');
+        html += section('최근 불일치',
+            '<table class="w-full text-xs"><thead><tr class="text-gray-500">' +
+            '<th class="text-left pr-2">시각</th><th class="text-left pr-2">내선</th>' +
+            '<th class="text-left pr-2">지연</th><th class="text-left">원인</th></tr></thead>' +
+            '<tbody>' + rmRows + '</tbody></table>');
+    }
+
+    /* Recent Thread Events */
+    if (d.recent_thread_events && d.recent_thread_events.length > 0) {
+        var teRows = d.recent_thread_events.slice(-5).reverse().map(function(r) {
+            return '<div class="py-0.5 border-b border-gray-700 truncate">' +
+                   '<span class="text-gray-500 mr-1">' + esc(r.ts) + '</span>' +
+                   '<span class="text-blue-300">' + esc(r.msg) + '</span></div>';
+        }).join('');
+        html += section('최근 스레드 이벤트', teRows);
+    }
+
+    /* Active Sessions */
+    if (d.active_sessions && d.active_sessions.length > 0) {
+        var asRows = d.active_sessions.slice(0, 5).map(function(s) {
+            return '<div class="py-0.5 border-b border-gray-700">' +
+                   '<span class="text-green-400 font-mono mr-2">' + esc(s.cid) + '</span>' +
+                   '<span class="text-gray-400">' + esc(s.open_time) + '</span>' +
+                   '<span class="text-gray-500 ml-2 truncate text-xs">' + esc(s.file) + '</span></div>';
+        }).join('');
+        html += section('활성 세션 (' + d.active_sessions.length + ')', asRows);
+    }
+
+    document.getElementById('analysis-panel').innerHTML = html;
+}
+
+/* ───────── History controls ───────── */
+
+function setHistFolder(index) {
+    histFolderIndex = index;
+    var buttons = {'-1': 'btn-hist-all', '0': 'btn-hist-f0', '1': 'btn-hist-f1'};
+    Object.keys(buttons).forEach(function(key) {
+        var btn = document.getElementById(buttons[key]);
+        if (!btn) return;
+        if (parseInt(key) === index) {
+            btn.className = 'px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-blue-700 text-white';
+        } else {
+            btn.className = 'px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-gray-600 text-gray-300 hover:bg-gray-500';
+        }
+    });
+}
+
+async function fetchHistory() {
+    if (!currentAgentId) return;
+    var dateInput = document.getElementById('hist-date');
+    var histStatus = document.getElementById('hist-status');
+    var dateVal = dateInput.value;  // YYYY-MM-DD format
+    if (!dateVal) {
+        histStatus.textContent = '날짜를 선택하세요';
+        histStatus.className = 'text-sm text-red-400';
+        return;
+    }
+    var dateStr = dateVal.replace(/-/g, '');  // YYYYMMDD
+
+    histStatus.textContent = '요청 중...';
+    histStatus.className = 'text-sm text-yellow-400';
+
+    try {
+        var resp = await fetch('/api/logs/' + currentAgentId + '/history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date: dateStr, folder_index: histFolderIndex }),
+        });
+        var data = await resp.json();
+        if (resp.ok) {
+            histStatus.textContent = '요청 전송 완료 (date=' + dateStr + ', folder=' + (histFolderIndex < 0 ? 'ALL' : 'F' + histFolderIndex) + ')';
+            histStatus.className = 'text-sm text-green-400';
+        } else {
+            histStatus.textContent = 'Error: ' + (data.error || resp.statusText);
+            histStatus.className = 'text-sm text-red-400';
+        }
+    } catch (err) {
+        histStatus.textContent = 'Network error: ' + err.message;
+        histStatus.className = 'text-sm text-red-400';
+    }
 }
 
 /* Auto-connect if agent was previously selected */

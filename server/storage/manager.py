@@ -22,18 +22,36 @@ class StorageManager:
 
     def save_log_history(self, agent_id: str, filename: str, data: bytes) -> str:
         """누적 로그 저장. 반환: 저장 경로.
-        경로: {base_dir}/logs/{agent_id}/{filename}"""
+        파일명에서 날짜(YYYYMMDD) 추출 → 일자별 폴더에 저장.
+        경로: {base_dir}/logs/{agent_id}/{date_str}/{filename}
+        날짜 추출 실패 시: {base_dir}/logs/{agent_id}/{filename} (레거시)"""
 
-        target = self.base_dir / "logs" / agent_id / filename
+        import re
+
+        date_match = re.match(r"^(\d{8})_", filename)
+        if date_match:
+            date_str = date_match.group(1)
+            target = self.base_dir / "logs" / agent_id / date_str / filename
+        else:
+            target = self.base_dir / "logs" / agent_id / filename
         target.parent.mkdir(parents=True, exist_ok=True)
         _ = target.write_bytes(data)
         return str(target)
 
-    def append_realtime_log(self, agent_id: str, filename: str, line: str) -> None:
+    def append_realtime_log(
+        self, agent_id: str, filename: str, line: str, folder_index: int = 0
+    ) -> None:
         """실시간 로그 라인 append.
-        경로: {base_dir}/logs/{agent_id}/realtime/{filename}"""
+        경로: {base_dir}/logs/{agent_id}/realtime/folder_{N}/{filename}"""
 
-        target = self.base_dir / "logs" / agent_id / "realtime" / filename
+        target = (
+            self.base_dir
+            / "logs"
+            / agent_id
+            / "realtime"
+            / f"folder_{folder_index}"
+            / filename
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as stream:
             if line.endswith("\n"):
@@ -55,9 +73,12 @@ class StorageManager:
         target = self.base_dir / "logs" / agent_id / filename
         return target.read_text(encoding="utf-8")
 
-    def get_stored_file_metadata(self, agent_id: str) -> dict[str, tuple[int, bytes]]:
+    def get_stored_file_metadata(
+        self, agent_id: str, date_str: str = ""
+    ) -> dict[str, tuple[int, bytes]]:
         """에이전트 로그 디렉토리의 파일별 (size, md5) 반환. realtime/ 제외.
 
+        date_str 지정 시 해당 날짜 폴더 + flat 경로 모두 검색 (레거시 호환).
         Returns: {filename: (file_size, md5_digest)}
         """
         root = self.base_dir / "logs" / agent_id
@@ -65,11 +86,34 @@ class StorageManager:
             return {}
 
         result: dict[str, tuple[int, bytes]] = {}
+
+        # flat 경로 검색 (레거시)
         for path in root.iterdir():
             if not path.is_file():
                 continue
+            if date_str and not path.name.startswith(date_str + "_"):
+                continue
             data = path.read_bytes()
             result[path.name] = (len(data), hashlib.md5(data).digest())
+
+        # 일자별 폴더 검색
+        if date_str:
+            date_dir = root / date_str
+            if date_dir.exists() and date_dir.is_dir():
+                for path in date_dir.iterdir():
+                    if path.is_file() and path.name not in result:
+                        data = path.read_bytes()
+                        result[path.name] = (len(data), hashlib.md5(data).digest())
+        else:
+            # date_str 미지정 시 모든 하위 날짜 폴더도 검색
+            for sub in root.iterdir():
+                if not sub.is_dir() or sub.name == "realtime":
+                    continue
+                for path in sub.iterdir():
+                    if path.is_file() and path.name not in result:
+                        data = path.read_bytes()
+                        result[path.name] = (len(data), hashlib.md5(data).digest())
+
         return result
 
     def save_report(self, agent_id: str, report_name: str, content: str) -> str:

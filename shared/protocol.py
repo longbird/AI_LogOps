@@ -219,41 +219,59 @@ class LogHistPayload:
 
 @dataclass(slots=True)
 class LogRealPayload:
-    """LOG_REAL: [FileName(256B)] [LineLen(2B)] [Line(variable)]."""
-
+    """LOG_REAL: [FolderIndex(1B)] [FileName(256B)] [LineLen(2B)] [Line(variable)]."""
     filename: str
     line: str
-
+    folder_index: int = 0  # 0-based index into agent's watch_dirs list
     _NAME_SIZE: ClassVar[int] = 256
-    _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct("!256sH")
-    _HEADER_SIZE: ClassVar[int] = 258
-
+    _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct("!B256sH")
+    _HEADER_SIZE: ClassVar[int] = 259
     def pack(self) -> bytes:
         line_bytes = self.line.encode("utf-8")
         line_len = len(line_bytes)
         if line_len > 0xFFFF:
             raise ValueError("line exceeds 2-byte length field")
+        if not 0 <= self.folder_index <= 0xFF:
+            raise ValueError("folder_index must fit in 1 byte")
         return (
             self._HEADER_STRUCT.pack(
+                self.folder_index,
                 _encode_fixed(self.filename, self._NAME_SIZE, "filename"),
                 line_len,
             )
             + line_bytes
         )
+    # Legacy format (no folder_index): [FileName(256B)] [LineLen(2B)] [Line(variable)]
+    _LEGACY_STRUCT: ClassVar[struct.Struct] = struct.Struct("!256sH")
+    _LEGACY_HEADER_SIZE: ClassVar[int] = 258
 
     @classmethod
     def unpack(cls, data: bytes) -> LogRealPayload:
-        if len(data) < cls._HEADER_SIZE:
-            raise ValueError("log real payload is too short")
-        filename_raw, line_len = cast(
-            tuple[bytes, int], cls._HEADER_STRUCT.unpack(data[: cls._HEADER_SIZE])
-        )
-        line_bytes = data[cls._HEADER_SIZE :]
-        if len(line_bytes) != line_len:
-            raise ValueError("log real payload line size mismatch")
-        return cls(
-            filename=_decode_fixed(filename_raw), line=line_bytes.decode("utf-8")
-        )
+        # Try new format first: [FolderIndex(1B)] [FileName(256B)] [LineLen(2B)] [Line]
+        if len(data) >= cls._HEADER_SIZE:
+            folder_index, filename_raw, line_len = cast(
+                tuple[int, bytes, int], cls._HEADER_STRUCT.unpack(data[: cls._HEADER_SIZE])
+            )
+            line_bytes = data[cls._HEADER_SIZE :]
+            if len(line_bytes) == line_len:
+                return cls(
+                    filename=_decode_fixed(filename_raw),
+                    line=line_bytes.decode("utf-8"),
+                    folder_index=folder_index,
+                )
+        # Fallback: legacy format without folder_index
+        if len(data) >= cls._LEGACY_HEADER_SIZE:
+            filename_raw, line_len = cast(
+                tuple[bytes, int], cls._LEGACY_STRUCT.unpack(data[: cls._LEGACY_HEADER_SIZE])
+            )
+            line_bytes = data[cls._LEGACY_HEADER_SIZE :]
+            if len(line_bytes) == line_len:
+                return cls(
+                    filename=_decode_fixed(filename_raw),
+                    line=line_bytes.decode("utf-8"),
+                    folder_index=0,
+                )
+        raise ValueError("log real payload: neither new nor legacy format matched")
 
 
 @dataclass(slots=True)
@@ -510,26 +528,43 @@ class CmdCtrlAckPayload:
 
 @dataclass(slots=True)
 class CmdLogPayload:
-    """CMD_LOG: [Action(1B)][Date(8B, null-padded UTF-8 "YYYYMMDD")] = 9B."""
+    """CMD_LOG: [Action(1B)][Date(8B)][FolderIndex(1B, signed)] = 10B."""
 
     action: LogAction
     date: str
+    folder_index: int = -1  # -1=전체, 0+=특정 폴더
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!B8s")
-    _SIZE: ClassVar[int] = 9
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!B8sb")
+    _SIZE: ClassVar[int] = 10
+
+    # Legacy format (no folder_index)
+    _LEGACY_STRUCT: ClassVar[struct.Struct] = struct.Struct("!B8s")
+    _LEGACY_SIZE: ClassVar[int] = 9
 
     def pack(self) -> bytes:
         return self._STRUCT.pack(
             LogAction(self.action),
             _encode_fixed(self.date, 8, "date"),
+            self.folder_index,
         )
 
     @classmethod
     def unpack(cls, data: bytes) -> CmdLogPayload:
-        if len(data) != cls._SIZE:
-            raise ValueError("cmd log payload must be exactly 9 bytes")
-        action_raw, date_raw = cast(tuple[int, bytes], cls._STRUCT.unpack(data))
-        return cls(action=LogAction(action_raw), date=_decode_fixed(date_raw))
+        if len(data) == cls._SIZE:
+            action_raw, date_raw, folder_index = cast(
+                tuple[int, bytes, int], cls._STRUCT.unpack(data)
+            )
+            return cls(
+                action=LogAction(action_raw),
+                date=_decode_fixed(date_raw),
+                folder_index=folder_index,
+            )
+        if len(data) == cls._LEGACY_SIZE:
+            action_raw, date_raw = cast(
+                tuple[int, bytes], cls._LEGACY_STRUCT.unpack(data)
+            )
+            return cls(action=LogAction(action_raw), date=_decode_fixed(date_raw))
+        raise ValueError("cmd log payload must be 9 or 10 bytes")
 
 
 @dataclass(slots=True)

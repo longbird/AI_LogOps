@@ -240,7 +240,7 @@ class _DeploySection:
         self._log(f"[재시작] {self._target} 재시작 요청")
 
         def _do_restart() -> None:
-            body: dict[str, Any] = {"action": "restart"}
+            body: dict[str, Any] = {"action": "restart", "target": self._target}
             if agent_id:
                 body["agent_id"] = agent_id
             result = self._app.api_post("/api/ctrl/restart", body)
