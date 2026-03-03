@@ -116,6 +116,7 @@ class AgentRuntime:
             process_cfg = cfg.sub("target_process")
             schedule_cfg = cfg.sub("schedule")
             recording_cfg = cfg.sub("recording")
+            rec_client_cfg = cfg.sub("rec_client")
 
             from agent import __version__ as agent_version
 
@@ -163,6 +164,19 @@ class AgentRuntime:
                 process_path=process_cfg.s("path", ""),
                 backup_dir=process_cfg.s("backup_dir", "./backups"),
             )
+
+            # 6-1. Rec Client ProcessManager (optional)
+            rec_client_mgr: ProcessManager | None = None
+            rec_client_name = rec_client_cfg.s("name", "")
+            rec_client_path = rec_client_cfg.s("path", "")
+            rec_client_args = rec_client_cfg.ls("args", [])
+            if rec_client_name and rec_client_path:
+                rec_client_mgr = ProcessManager(
+                    process_name=rec_client_name,
+                    process_path=rec_client_path,
+                    backup_dir=rec_client_cfg.s("backup_dir", "./backups"),
+                )
+                logger.info("rec_client process manager: %s", rec_client_name)
 
             # 7. Shared Telegram poller
             poller = AgentTelegramPoller(
@@ -289,6 +303,8 @@ class AgentRuntime:
                     rec_ownership=rec_ownership,
                     deploy_lock=deploy_lock,
                     process_args=process_args or None,
+                    rec_client_mgr=rec_client_mgr,
+                    rec_client_args=rec_client_args or None,
                 )
                 conn.deploy_handler.updater = updater
                 conn.deploy_handler.process_deployer = process_deployer
@@ -515,6 +531,8 @@ class AgentRuntime:
         rec_ownership: RecordingOwnership,
         deploy_lock: asyncio.Lock,
         process_args: list[str] | None = None,
+        rec_client_mgr: ProcessManager | None = None,
+        rec_client_args: list[str] | None = None,
     ) -> ServerConnection:
         from agent.core.ctrl_handler import CtrlHandler
         from agent.core.deploy_handler import DeployHandler
@@ -553,6 +571,8 @@ class AgentRuntime:
             tcp_client=tcp_client,
             process_mgr=process_mgr,
             process_args=process_args,
+            rec_client_mgr=rec_client_mgr,
+            rec_client_args=rec_client_args,
         )
         tcp_client.on_cmd_ctrl = ctrl_handler.handle_cmd_ctrl
 

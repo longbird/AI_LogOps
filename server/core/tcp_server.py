@@ -91,6 +91,10 @@ class TCPServer:
         # agent_id -> {folder_index -> MonitorState} (실시간 수신 시 레이지 초기화)
         self._monitor_states: dict[str, dict[int, Any]] = {}
 
+        # ── HIST 전송 진행률 추적 ──
+        # agent_id -> {"total": int, "received": int, "total_bytes": int}
+        self._hist_progress: dict[str, dict[str, int]] = {}
+
     @property
     def rec_max_concurrent(self) -> int:
         """최대 동시 녹취 분석 건수."""
@@ -454,10 +458,28 @@ class TCPServer:
             # 진행 상황을 log_buffer에 추가
             session = self.session_mgr.get_session(agent_id)
             if session is not None:
-                size_kb = len(message.data) / 1024
-                session.log_buffer.append(
-                    f"[HIST] Received: {message.filename} ({size_kb:.1f} KB)"
-                )
+                size_bytes = len(message.data)
+                progress = self._hist_progress.get(agent_id)
+                if progress is not None:
+                    progress["received"] += 1
+                    progress["total_bytes"] += size_bytes
+                    rcv = progress["received"]
+                    total = progress["total"]
+                    total_kb = progress["total_bytes"] / 1024
+                    pct = int(rcv * 100 / total) if total > 0 else 100
+                    session.log_buffer.append(
+                        f"[HIST] {rcv}/{total} ({pct}%) {message.filename} "
+                        f"({size_bytes / 1024:.1f} KB) 누적: {total_kb:.0f} KB"
+                    )
+                    if rcv >= total:
+                        session.log_buffer.append(
+                            f"[HIST] 전송 완료: {total}개 파일, {total_kb:.0f} KB"
+                        )
+                        del self._hist_progress[agent_id]
+                else:
+                    session.log_buffer.append(
+                        f"[HIST] {message.filename} ({size_bytes / 1024:.1f} KB)"
+                    )
         except ValueError:
             self._logger.warning("invalid LOG_HIST payload: agent_id=%s", agent_id)
 
@@ -546,19 +568,23 @@ class TCPServer:
             asyncio.create_task(self._notify(f"⚠️ 배포 롤백: {agent_id}"))
 
     async def send_ctrl_command(
-        self, agent_id: str, action: CtrlAction,
+        self, agent_id: str, action: CtrlAction, target: int = 1,
     ) -> bool:
-        """CMD_CTRL 패킷을 에이전트에 전송."""
+        """CMD_CTRL 패킷을 에이전트에 전송.
+
+        target: DeployTarget 값 (0=AGENT, 1=PROCESS, 2=REC_CLIENT).
+        """
         session = self.session_mgr.get_session(agent_id)
         if session is None or session.writer is None:
             return False
         writer = cast(_WriterLike, session.writer)
         from shared.protocol import CmdCtrlPayload
-        cmd = CmdCtrlPayload(action=action)
+        cmd = CmdCtrlPayload(action=action, target=target)
         writer.write(Packet.build(PacketType.CMD_CTRL, cmd.pack()))
         await writer.drain()
         self._logger.info(
-            "CMD_CTRL sent: agent_id=%s action=%s", agent_id, action.name
+            "CMD_CTRL sent: agent_id=%s action=%s target=%d",
+            agent_id, action.name, target,
         )
         return True
 
@@ -713,13 +739,18 @@ class TCPServer:
             len(file_list.entries) - len(selected),
         )
 
+        # HIST 진행률 초기화
+        self._hist_progress[agent_id] = {
+            "total": len(selected), "received": 0, "total_bytes": 0,
+        }
+
         # 진행 메시지를 log_buffer에 추가
         session = self.session_mgr.get_session(agent_id)
         if session is not None:
             skipped = len(file_list.entries) - len(selected)
             session.log_buffer.append(
-                f"[HIST] File list: {len(file_list.entries)} files, "
-                f"{len(selected)} to transfer, {skipped} skipped (already stored)"
+                f"[HIST] 전송 시작: {len(selected)}개 파일 "
+                f"(이미 저장: {skipped}개, 전체: {len(file_list.entries)}개)"
             )
 
         select = LogFileSelectPayload(filenames=selected)
@@ -1144,6 +1175,7 @@ class TCPServer:
         query_type: str,
         date_str: str = "",
         filename: str = "",
+        search: str = "",
         timeout: float = 30.0,
     ) -> RecDataRespPayload | None:
         """Send REC_DATA_REQ to agent and wait for response."""
@@ -1157,7 +1189,8 @@ class TCPServer:
         self._rec_data_futures[agent_id] = future
 
         req = RecDataReqPayload(
-            query_type=query_type, date_str=date_str, filename=filename
+            query_type=query_type, date_str=date_str,
+            filename=filename, search=search,
         )
         writer.write(Packet.build(PacketType.REC_DATA_REQ, req.pack()))
         await writer.drain()

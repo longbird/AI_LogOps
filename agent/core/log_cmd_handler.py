@@ -57,7 +57,9 @@ class LogCmdHandler:
             return
 
         if cmd.action == LogAction.HIST_REQUEST:
-            await self._handle_hist_request(cmd.date, cmd.folder_index)
+            # recv_loop를 블록하지 않도록 별도 Task로 실행
+            # (_handle_hist_request는 LOG_FILE_SELECT 수신을 기다리므로)
+            asyncio.create_task(self._handle_hist_request(cmd.date, cmd.folder_index))
         elif cmd.action == LogAction.REAL_START:
             await self._handle_real_start()
         elif cmd.action == LogAction.REAL_STOP:

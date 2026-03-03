@@ -474,6 +474,85 @@ def upsert_call_quality(
 
 
 # ---------------------------------------------------------------------------
+# 녹취 파일 검색 (rec_his 직접 조회, 분석 여부 무관)
+# ---------------------------------------------------------------------------
+
+
+def query_rec_file_list(
+    conn: pymysql.connections.Connection,
+    date_str: str = "",
+    search: str = "",
+) -> list[dict[str, object]]:
+    """rec_his 테이블에서 녹취 파일 목록을 검색한다. 분석 여부와 무관.
+
+    *search* 가 비어있으면 해당 날짜의 전체 녹취 목록을 반환한다.
+    *search* 가 지정되면 file_name, caller, callee 및 STT 텍스트
+    (``rec_transcript.full_text``)에서 LIKE 검색한다.
+    STT 텍스트 매칭 시 미리보기(``text_preview``)도 함께 반환한다.
+    """
+    if not date_str:
+        date_str = datetime.now().strftime("%Y%m%d")
+
+    his_table = _resolve_his_table(conn, date_str)
+
+    if search:
+        # 검색어가 있으면 rec_transcript LEFT JOIN → full_text 검색 + 미리보기
+        sql = (
+            f"SELECT h.rec_no, h.file_name, h.oper_day, h.in_out,"
+            f" h.caller, h.callee,"
+            f" LEFT(t.full_text, 200) AS text_preview"
+            f" FROM {his_table} h"
+            f" LEFT JOIN rec_transcript t ON t.rec_no = h.rec_no"
+            f" WHERE h.oper_day = %s"
+            f" AND h.file_name IS NOT NULL AND h.file_name != ''"
+        )
+        params: list[object] = [date_str]
+        search_pattern = f"%{search}%"
+        sql += (
+            " AND (h.file_name LIKE %s"
+            " OR h.caller LIKE %s"
+            " OR h.callee LIKE %s"
+            " OR t.full_text LIKE %s)"
+        )
+        params.extend([search_pattern] * 4)
+    else:
+        # 검색어 없으면 JOIN 생략 (전체 목록)
+        sql = (
+            f"SELECT h.rec_no, h.file_name, h.oper_day, h.in_out,"
+            f" h.caller, h.callee"
+            f" FROM {his_table} h"
+            f" WHERE h.oper_day = %s"
+            f" AND h.file_name IS NOT NULL AND h.file_name != ''"
+        )
+        params = [date_str]
+
+    sql += " ORDER BY h.rec_no DESC LIMIT 500"
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows: list[dict[str, object]] = cur.fetchall()  # pyright: ignore[reportAssignmentType]
+    except Exception:
+        logger.warning(
+            "query_rec_file_list failed: table=%s date=%s search=%s",
+            his_table,
+            date_str,
+            search,
+            exc_info=True,
+        )
+        return []
+
+    logger.debug(
+        "query_rec_file_list: table=%s date=%s search=%s → %d rows",
+        his_table,
+        date_str,
+        search,
+        len(rows),
+    )
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # QUERY helpers
 # ---------------------------------------------------------------------------
 

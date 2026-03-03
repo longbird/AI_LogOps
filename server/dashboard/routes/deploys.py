@@ -28,7 +28,7 @@ class _TCPServerLike(Protocol):
     def get_deploy_result_future(self, agent_id: str) -> asyncio.Future[Any] | None: ...
 
     async def send_ctrl_command(
-        self, agent_id: str, action: Any,
+        self, agent_id: str, action: Any, target: int = ...,
     ) -> bool: ...
 
 
@@ -256,11 +256,14 @@ async def api_ctrl_restart(request: Request) -> JSONResponse:
     if not agent_id:
         return JSONResponse({"error": "에이전트가 연결되어 있지 않습니다"}, status_code=404)
 
-    from shared.protocol import CtrlAction
+    from shared.protocol import CtrlAction, DeployTarget
 
-    success = await tcp_server.send_ctrl_command(agent_id, CtrlAction.RESTART)
+    target_map = {"agent": DeployTarget.AGENT, "process": DeployTarget.PROCESS, "rec_client": DeployTarget.REC_CLIENT}
+    target_int = target_map.get(target, DeployTarget.PROCESS)
+
+    success = await tcp_server.send_ctrl_command(agent_id, CtrlAction.RESTART, target=target_int)
     if success:
-        logger.info("restart command sent: agent=%s target=%s", agent_id, target)
+        logger.info("restart command sent: agent=%s target=%s(%d)", agent_id, target, target_int)
         return JSONResponse({
             "status": "ok",
             "agent_id": agent_id,

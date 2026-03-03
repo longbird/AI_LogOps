@@ -28,7 +28,7 @@ async def get_analysis(
     folder_states = tcp._monitor_states.get(agent_id, {})
     monitor_state = folder_states.get(folder)
     if monitor_state is None:
-        return JSONResponse({"error": "no data yet"}, status_code=404)
+        return JSONResponse({"status": "no_data"})
     return JSONResponse(monitor_state.to_dict())
 
 

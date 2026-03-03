@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 from server.gui.constants import (
     BG_BTN,
+    BG_BTN_PRIMARY,
     BG_DARK,
     BG_FRAME,
     FG_DIM,
@@ -53,9 +54,12 @@ class RecViewerTab(tk.Frame):
         self._update_timer_id: str = ""
         self._user_seeking: bool = False
 
+        self._search_mode: str = "analysis"  # "analysis" | "files"
+
         # UI Components
         self._date_entry: tk.Entry
         self._agent_entry: tk.Entry
+        self._keyword_entry: tk.Entry
         self._search_status: tk.Label
         self._tree: ttk.Treeview
         self._detail_frame: tk.Frame
@@ -125,10 +129,29 @@ class RecViewerTab(tk.Frame):
             ),
         )
 
-        # Search Button
+        # Search Keyword Entry
+        tk.Label(
+            search_frame, text="검색어:", bg=BG_FRAME, fg=FG_TEXT, font=FONT_NORMAL
+        ).pack(side=tk.LEFT, padx=(15, 5))
+
+        self._keyword_entry = tk.Entry(
+            search_frame,
+            width=25,
+            bg="#1e1e1e",
+            fg=FG_TEXT,
+            insertbackground=FG_TEXT,
+            font=FONT_NORMAL,
+            relief=tk.FLAT,
+        )
+        self._keyword_entry.pack(side=tk.LEFT)
+        self._keyword_entry.bind(
+            "<Return>", lambda _e: self._file_search()
+        )
+
+        # Analysis Search Button
         btn_search = tk.Button(
             search_frame,
-            text="조회",
+            text="분석 조회",
             bg=BG_BTN,
             fg=FG_WHITE,
             font=FONT_NORMAL,
@@ -138,6 +161,34 @@ class RecViewerTab(tk.Frame):
             command=self._search,
         )
         btn_search.pack(side=tk.LEFT, padx=(15, 0))
+
+        # File Search Button
+        btn_file_search = tk.Button(
+            search_frame,
+            text="파일 검색",
+            bg=BG_BTN_PRIMARY,
+            fg=FG_WHITE,
+            font=FONT_NORMAL,
+            relief=tk.FLAT,
+            padx=12,
+            pady=2,
+            command=self._file_search,
+        )
+        btn_file_search.pack(side=tk.LEFT, padx=(5, 0))
+
+        # Batch Download Button (right side)
+        btn_batch = tk.Button(
+            search_frame,
+            text="일괄 다운로드",
+            bg=BG_BTN,
+            fg=FG_WHITE,
+            font=FONT_NORMAL,
+            relief=tk.FLAT,
+            padx=8,
+            pady=2,
+            command=self._batch_download_dialog,
+        )
+        btn_batch.pack(side=tk.RIGHT, padx=(0, 0))
 
         # Status label (검색 결과 / 에러 표시)
         self._search_status = tk.Label(
@@ -180,6 +231,20 @@ class RecViewerTab(tk.Frame):
             state=tk.DISABLED,
         )
         self._btn_stop.pack(side=tk.LEFT, padx=(5, 0))
+
+        self._btn_download = tk.Button(
+            play_frame,
+            text="\u2b07 다운로드",
+            bg=BG_BTN,
+            fg=FG_WHITE,
+            font=FONT_NORMAL,
+            relief=tk.FLAT,
+            padx=8,
+            pady=2,
+            command=self._download_selected,
+            state=tk.DISABLED,
+        )
+        self._btn_download.pack(side=tk.LEFT, padx=(5, 0))
 
         self._play_slider = tk.Scale(
             play_frame,
@@ -417,6 +482,25 @@ class RecViewerTab(tk.Frame):
             b.pack(side=tk.LEFT, fill=tk.Y)
             self._ratio_bars.append(b)
 
+        # Ratio percentage labels
+        ratio_pct_frame = tk.Frame(ratio_frame, bg=BG_FRAME)
+        ratio_pct_frame.pack(fill=tk.X, pady=(2, 0))
+        self._ratio_pct_labels = []
+        for label_text, color in [
+            ("상담원", "#569cd6"),
+            ("고객", "#4ec9b0"),
+            ("침묵", "#888888"),
+        ]:
+            lbl = tk.Label(
+                ratio_pct_frame,
+                text=f"{label_text} -",
+                bg=BG_FRAME,
+                fg=color,
+                font=("Segoe UI", 8),
+            )
+            lbl.pack(side=tk.LEFT, padx=(0, 12))
+            self._ratio_pct_labels.append(lbl)
+
         # Keywords
         kw_frame = tk.Frame(self._score_section, bg=BG_FRAME)
         kw_frame.pack(fill=tk.X, padx=10, pady=(0, 2))
@@ -462,13 +546,23 @@ class RecViewerTab(tk.Frame):
         stt_outer = tk.Frame(self._right_col, bg=BG_FRAME)
         stt_outer.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
+        stt_header = tk.Frame(stt_outer, bg=BG_FRAME)
+        stt_header.pack(fill=tk.X, padx=10, pady=5)
         tk.Label(
-            stt_outer,
+            stt_header,
             text="STT 대화",
             bg=BG_FRAME,
             fg="#007acc",
             font=("Segoe UI Semibold", 10),
-        ).pack(anchor="w", padx=10, pady=5)
+        ).pack(side=tk.LEFT)
+        self._lbl_seg_count = tk.Label(
+            stt_header,
+            text="",
+            bg=BG_FRAME,
+            fg=FG_DIM,
+            font=("Segoe UI", 8),
+        )
+        self._lbl_seg_count.pack(side=tk.LEFT, padx=(8, 0))
 
         stt_body = tk.Frame(stt_outer, bg="#1e1e1e")
         stt_body.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
@@ -517,6 +611,7 @@ class RecViewerTab(tk.Frame):
         return content
 
     def _search(self) -> None:
+        self._search_mode = "analysis"
         date = self._date_entry.get().strip()
         agent_id = self._agent_entry.get().strip()
         if agent_id in ("(auto)", ""):
@@ -525,7 +620,7 @@ class RecViewerTab(tk.Frame):
         # Save agent_id for subsequent detail calls
         self._current_agent_id = agent_id
 
-        self._search_status.config(text="조회 중...", fg="#cca700")
+        self._search_status.config(text="분석 조회 중...", fg="#cca700")
 
         params = []
         if date:
@@ -537,14 +632,51 @@ class RecViewerTab(tk.Frame):
 
         threading.Thread(target=self._do_search, args=(path,), daemon=True).start()
 
+    def _file_search(self) -> None:
+        """파일 검색: rec_his 직접 조회 (분석 여부 무관)."""
+        self._search_mode = "files"
+        date = self._date_entry.get().strip()
+        search = self._keyword_entry.get().strip()
+        agent_id = self._agent_entry.get().strip()
+        if agent_id in ("(auto)", ""):
+            agent_id = ""
+
+        self._current_agent_id = agent_id
+        self._search_status.config(text="파일 검색 중...", fg="#cca700")
+
+        params = []
+        if date:
+            params.append(f"date={date}")
+        if search:
+            from urllib.parse import quote
+
+            params.append(f"search={quote(search)}")
+        if agent_id:
+            params.append(f"agent_id={agent_id}")
+        query = "&".join(params)
+        path = f"/api/rec/files?{query}" if query else "/api/rec/files"
+
+        threading.Thread(target=self._do_search, args=(path,), daemon=True).start()
+
     def _do_search(self, path: str) -> None:
         resp = self._app.api_get(path)
-        self.after(0, self._update_list, resp)
+        if self._search_mode == "files":
+            self.after(0, self._update_file_list, resp)
+        else:
+            self.after(0, self._update_list, resp)
 
     def _update_list(self, resp: dict[str, Any] | None) -> None:
         # Clear existing
         for item in self._tree.get_children():
             self._tree.delete(item)
+
+        # 분석 조회 모드: 컬럼 헤딩 복원
+        self._tree.heading("filename", text="파일명")
+        self._tree.heading("model", text="STT 모델")
+        self._tree.heading("status", text="상태")
+        self._tree.heading("duration", text="시간")
+        self._tree.heading("score", text="점수")
+        self._tree.heading("analyzed_at", text="분석일시")
 
         if resp is None:
             self._search_status.config(
@@ -585,9 +717,14 @@ class RecViewerTab(tk.Frame):
         filename = str(item["values"][0])
         agent_id = self._current_agent_id or ""
 
-        # 선택된 파일 저장 + 재생 버튼 활성화
+        # 선택된 파일 저장 + 재생/다운로드 버튼 활성화
         self._selected_filename = filename
         self._btn_play.config(state=tk.NORMAL)
+        self._btn_download.config(state=tk.NORMAL)
+
+        # 파일 검색 모드에서는 분석 상세 로드 스킵 (분석 데이터 없을 수 있음)
+        if self._search_mode == "files":
+            return
 
         path = f"/api/rec/detail/{filename}"
         if agent_id:
@@ -661,6 +798,11 @@ class RecViewerTab(tk.Frame):
         self._ratio_bars[1].place(relx=ag, rely=0, relheight=1, relwidth=cu)
         self._ratio_bars[2].place(relx=ag + cu, rely=0, relheight=1, relwidth=si)
 
+        # Ratio percentage labels
+        self._ratio_pct_labels[0].config(text=f"상담원 {round(ag * 100)}%")
+        self._ratio_pct_labels[1].config(text=f"고객 {round(cu * 100)}%")
+        self._ratio_pct_labels[2].config(text=f"침묵 {round(si * 100)}%")
+
         # Keywords
         hit_req = r.get("required_phrase_hit", False)
         req_list = r.get("required_phrase_list", "")
@@ -678,6 +820,10 @@ class RecViewerTab(tk.Frame):
         seg_json = r.get("segments_json", "[]")
         try:
             segments = json.loads(seg_json)
+            # 세그먼트 수 표시
+            self._lbl_seg_count.config(
+                text=f"{len(segments)}개 세그먼트" if segments else ""
+            )
             # Sort by time
             # order 필드 우선 정렬 (기존 데이터는 order 없음 → time 폴백)
             segments.sort(key=lambda x: (x.get("order", 999999), x.get("time", 0)))
@@ -699,6 +845,7 @@ class RecViewerTab(tk.Frame):
 
         except json.JSONDecodeError:
             self._txt_stt.insert(tk.END, "(대화 내용 파싱 실패)")
+            self._lbl_seg_count.config(text="")
 
         self._txt_stt.config(state=tk.DISABLED)
 
@@ -713,7 +860,8 @@ class RecViewerTab(tk.Frame):
         self._aq_labels["r_rms"].config(text=fmt_rms(r.get("right_rms_db")))
         self._aq_labels["l_silence"].config(text=fmt_pct(r.get("left_silence")))
         self._aq_labels["r_silence"].config(text=fmt_pct(r.get("right_silence")))
-        self._aq_labels["dropout"].config(text=str(r.get("dropout_count", "-")))
+        dc = r.get("dropout_count")
+        self._aq_labels["dropout"].config(text=f"{dc}회" if dc is not None else "-")
         self._aq_labels["duration_wav"].config(
             text=self._fmt_duration(r.get("duration_wav"))
         )
@@ -1035,3 +1183,315 @@ class RecViewerTab(tk.Frame):
         total_sec = ms // 1000
         m, s = divmod(total_sec, 60)
         return f"{m}:{s:02d}"
+
+    # ------------------------------------------------------------------
+    # 파일 검색 결과 표시
+    # ------------------------------------------------------------------
+
+    def _update_file_list(self, resp: dict[str, Any] | None) -> None:
+        """파일 검색 결과를 Treeview에 표시."""
+        # Clear
+        for item in self._tree.get_children():
+            self._tree.delete(item)
+
+        if resp is None:
+            self._search_status.config(
+                text="서버 응답 없음 (서버 실행 여부 확인)", fg="#f44747"
+            )
+            return
+
+        if "error" in resp:
+            self._search_status.config(text=f"오류: {resp['error']}", fg="#f44747")
+            return
+
+        records = resp.get("records", [])
+        if not records:
+            self._search_status.config(text="결과 없음", fg=FG_DIM)
+            return
+
+        self._search_status.config(text=f"{len(records)}건 검색됨", fg="#51cf66")
+
+        # 파일 검색 모드: 컬럼 헤딩 변경
+        self._tree.heading("filename", text="파일명")
+        self._tree.heading("model", text="발신자")
+        self._tree.heading("status", text="수신자")
+        self._tree.heading("duration", text="수/발신")
+        self._tree.heading("score", text="대화 미리보기")
+        self._tree.heading("analyzed_at", text="")
+
+        for r in records:
+            fname = r.get("file_name") or r.get("filename", "")
+            caller = r.get("caller") or "-"
+            callee = r.get("callee") or "-"
+            in_out_raw = r.get("in_out")
+            if in_out_raw == 1 or str(in_out_raw) == "1":
+                in_out = "수신"
+            elif in_out_raw == 2 or str(in_out_raw) == "2":
+                in_out = "발신"
+            else:
+                in_out = "-"
+
+            preview = r.get("text_preview") or ""
+
+            self._tree.insert(
+                "",
+                tk.END,
+                values=(fname, caller, callee, in_out, preview, ""),
+            )
+
+    # ------------------------------------------------------------------
+    # 파일 다운로드
+    # ------------------------------------------------------------------
+
+    def _download_selected(self) -> None:
+        """선택된 녹취 파일을 로컬에 다운로드."""
+        if not self._selected_filename:
+            return
+
+        from tkinter import filedialog
+
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".wav",
+            filetypes=[("WAV files", "*.wav"), ("All files", "*.*")],
+            initialfile=self._selected_filename,
+        )
+        if not save_path:
+            return
+
+        self._search_status.config(text="다운로드 중...", fg="#cca700")
+        threading.Thread(
+            target=self._do_download,
+            args=(self._selected_filename, save_path),
+            daemon=True,
+        ).start()
+
+    def _do_download(self, filename: str, save_path: str) -> None:
+        """백그라운드 다운로드 스레드."""
+        try:
+            url = f"{self._app.dashboard_url}/api/rec/stream/{filename}?download=1"
+            req = Request(url)
+            token = self._app.auth_token
+            if token:
+                req.add_header("Authorization", f"Bearer {token}")
+
+            with urlopen(req, timeout=60) as resp:
+                data = resp.read()
+
+            with open(save_path, "wb") as f:
+                f.write(data)
+
+            size_kb = len(data) / 1024
+            self.after(
+                0,
+                lambda: self._search_status.config(
+                    text=f"다운로드 완료: {os.path.basename(save_path)} ({size_kb:.0f}KB)",
+                    fg="#51cf66",
+                ),
+            )
+        except Exception as exc:
+            self.after(
+                0,
+                lambda: self._search_status.config(
+                    text=f"다운로드 실패: {exc}", fg="#f44747"
+                ),
+            )
+
+    # ------------------------------------------------------------------
+    # 일괄 다운로드
+    # ------------------------------------------------------------------
+
+    def _batch_download_dialog(self) -> None:
+        """일괄 다운로드 대화상자 열기."""
+        from tkinter import filedialog
+
+        dlg = tk.Toplevel(self)
+        dlg.title("일괄 다운로드")
+        dlg.geometry("600x500")
+        dlg.configure(bg=BG_DARK)
+        dlg.transient(self)
+
+        # 설명
+        tk.Label(
+            dlg,
+            text="파일 목록 붙여넣기 (줄바꿈 구분, 파일명 또는 전체 경로)",
+            bg=BG_DARK,
+            fg=FG_TEXT,
+            font=FONT_NORMAL,
+        ).pack(anchor="w", padx=10, pady=(10, 5))
+
+        # 텍스트 입력
+        txt_frame = tk.Frame(dlg, bg=BG_DARK)
+        txt_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        txt = tk.Text(
+            txt_frame,
+            bg="#1e1e1e",
+            fg=FG_TEXT,
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+            wrap=tk.NONE,
+        )
+        scroll = ttk.Scrollbar(txt_frame, orient=tk.VERTICAL, command=txt.yview)
+        txt.configure(yscrollcommand=scroll.set)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        txt.pack(fill=tk.BOTH, expand=True)
+
+        # 상태 및 버튼
+        status_lbl = tk.Label(
+            dlg, text="", bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 9)
+        )
+        status_lbl.pack(anchor="w", padx=10)
+
+        btn_frame = tk.Frame(dlg, bg=BG_DARK)
+        btn_frame.pack(fill=tk.X, padx=10, pady=(5, 10))
+
+        def extract_filenames() -> list[str]:
+            """텍스트에서 파일명 추출 (경로에서 basename, 중복 제거)."""
+            raw = txt.get("1.0", tk.END).strip()
+            if not raw:
+                return []
+            seen: set[str] = set()
+            filenames: list[str] = []
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                # 번호 접두사 제거: "1  D:\path\file.wav" or "1. file.wav"
+                import re
+
+                line = re.sub(r"^\d+[\.\)\s]+", "", line).strip()
+                # 전체 경로에서 basename 추출
+                name = line.replace("\\", "/").rsplit("/", 1)[-1].strip()
+                if name.lower().endswith(".wav") and name not in seen:
+                    seen.add(name)
+                    filenames.append(name)
+            return filenames
+
+        def start_batch() -> None:
+            names = extract_filenames()
+            if not names:
+                status_lbl.config(text="WAV 파일이 없습니다.", fg="#f44747")
+                return
+
+            save_dir = filedialog.askdirectory(title="다운로드 폴더 선택")
+            if not save_dir:
+                return
+
+            status_lbl.config(text=f"{len(names)}개 파일 다운로드 시작...", fg="#cca700")
+            btn_start.config(state=tk.DISABLED)
+            threading.Thread(
+                target=self._do_batch_download,
+                args=(names, save_dir, status_lbl, btn_start, dlg),
+                daemon=True,
+            ).start()
+
+        def parse_list() -> None:
+            names = extract_filenames()
+            if names:
+                status_lbl.config(
+                    text=f"{len(names)}개 WAV 파일 확인됨", fg="#51cf66"
+                )
+            else:
+                status_lbl.config(text="WAV 파일이 없습니다.", fg="#f44747")
+
+        tk.Button(
+            btn_frame,
+            text="목록 확인",
+            bg=BG_BTN,
+            fg=FG_WHITE,
+            font=FONT_NORMAL,
+            relief=tk.FLAT,
+            padx=10,
+            command=parse_list,
+        ).pack(side=tk.LEFT, padx=(0, 5))
+
+        btn_start = tk.Button(
+            btn_frame,
+            text="다운로드 시작",
+            bg=BG_BTN_PRIMARY,
+            fg=FG_WHITE,
+            font=FONT_NORMAL,
+            relief=tk.FLAT,
+            padx=10,
+            command=start_batch,
+        )
+        btn_start.pack(side=tk.LEFT, padx=(0, 5))
+
+        tk.Button(
+            btn_frame,
+            text="초기화",
+            bg=BG_BTN,
+            fg=FG_WHITE,
+            font=FONT_NORMAL,
+            relief=tk.FLAT,
+            padx=10,
+            command=lambda: (
+                txt.delete("1.0", tk.END),
+                status_lbl.config(text="", fg=FG_DIM),
+            ),
+        ).pack(side=tk.LEFT, padx=(0, 5))
+
+        tk.Button(
+            btn_frame,
+            text="닫기",
+            bg=BG_BTN,
+            fg=FG_WHITE,
+            font=FONT_NORMAL,
+            relief=tk.FLAT,
+            padx=10,
+            command=dlg.destroy,
+        ).pack(side=tk.RIGHT)
+
+    def _do_batch_download(
+        self,
+        filenames: list[str],
+        save_dir: str,
+        status_lbl: tk.Label,
+        btn_start: tk.Button,
+        dlg: tk.Toplevel,
+    ) -> None:
+        """일괄 다운로드 백그라운드 스레드."""
+        import time
+
+        success = 0
+        fail = 0
+        total = len(filenames)
+
+        for i, fname in enumerate(filenames):
+            self.after(
+                0,
+                lambda _i=i, _f=fname: status_lbl.config(
+                    text=f"[{_i + 1}/{total}] {_f} 다운로드 중...", fg="#cca700"
+                ),
+            )
+            try:
+                url = f"{self._app.dashboard_url}/api/rec/stream/{fname}?download=1"
+                req = Request(url)
+                token = self._app.auth_token
+                if token:
+                    req.add_header("Authorization", f"Bearer {token}")
+
+                with urlopen(req, timeout=60) as resp:
+                    data = resp.read()
+
+                save_path = os.path.join(save_dir, fname)
+                with open(save_path, "wb") as f:
+                    f.write(data)
+                success += 1
+            except Exception:
+                fail += 1
+
+            time.sleep(0.3)
+
+        msg = f"완료: {success}건 성공"
+        if fail:
+            msg += f", {fail}건 실패"
+        color = "#51cf66" if fail == 0 else "#cca700"
+
+        self.after(
+            0,
+            lambda: (
+                status_lbl.config(text=msg, fg=color),
+                btn_start.config(state=tk.NORMAL),
+            ),
+        )

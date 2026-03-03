@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
+from datetime import datetime
 from tkinter import ttk
 from typing import Any
 
@@ -37,6 +38,9 @@ class AgentsTab(tk.Frame):
         self._refresh_after_id: str | None = None  # 에이전트 리스트 타이머
         self._analysis_after_id: str | None = None  # 분석 폴링 타이머
         self._selected_folder: tk.IntVar  # 분석 폴더 선택 (0 또는 1)
+        self._hist_folder: tk.IntVar  # 과거 로그 조회 폴더 (-1=ALL, 0=F0, 1=F1)
+        self._log_mode: tk.StringVar  # "realtime" / "history"
+        self._is_streaming = False  # 실시간 스트리밍 활성 상태
         self._build_ui()
         self._schedule_refresh()
 
@@ -155,6 +159,141 @@ class AgentsTab(tk.Frame):
             padx=8,
             cursor="hand2",
         ).pack(side=tk.RIGHT, padx=4)
+
+        # ── 로그 모드 컨트롤 바 ──
+        mode_bar = tk.Frame(self, bg=BG_FRAME, padx=12, pady=4)
+        mode_bar.pack(fill=tk.X, padx=8, pady=(0, 2))
+
+        # 모드 선택 라디오 버튼
+        self._log_mode = tk.StringVar(value="realtime")
+        for val, label in (("realtime", "실시간"), ("history", "과거 로그")):
+            rb = tk.Radiobutton(
+                mode_bar,
+                text=label,
+                variable=self._log_mode,
+                value=val,
+                command=self._on_mode_changed,
+                bg=BG_FRAME,
+                fg="#9cdcfe",
+                selectcolor="#264f78",
+                activebackground=BG_FRAME,
+                activeforeground="#ffffff",
+                font=("Segoe UI Semibold", 9),
+                relief=tk.FLAT,
+                cursor="hand2",
+            )
+            rb.pack(side=tk.LEFT, padx=(0, 6))
+
+        # 구분선
+        tk.Label(mode_bar, text="|", bg=BG_FRAME, fg="#555555", font=FONT_NORMAL).pack(
+            side=tk.LEFT, padx=(4, 8)
+        )
+
+        # ── 실시간 모드 프레임 ──
+        self._realtime_frame = tk.Frame(mode_bar, bg=BG_FRAME)
+        self._realtime_frame.pack(side=tk.LEFT)
+
+        self._rt_start_btn = tk.Button(
+            self._realtime_frame,
+            text="▶ 시작",
+            command=self._start_realtime,
+            bg="#0e639c",
+            fg=FG_WHITE,
+            activebackground="#1177bb",
+            activeforeground=FG_WHITE,
+            relief=tk.FLAT,
+            font=FONT_NORMAL,
+            padx=10,
+            pady=1,
+            cursor="hand2",
+        )
+        self._rt_start_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        self._rt_stop_btn = tk.Button(
+            self._realtime_frame,
+            text="■ 중지",
+            command=self._stop_realtime,
+            bg="#6c1717",
+            fg=FG_WHITE,
+            activebackground="#8b2020",
+            activeforeground=FG_WHITE,
+            relief=tk.FLAT,
+            font=FONT_NORMAL,
+            padx=10,
+            pady=1,
+            cursor="hand2",
+            state=tk.DISABLED,
+        )
+        self._rt_stop_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        self._rt_status = tk.Label(
+            self._realtime_frame, text="", bg=BG_FRAME, fg=FG_DIM, font=("Segoe UI", 8)
+        )
+        self._rt_status.pack(side=tk.LEFT, padx=4)
+
+        # ── 과거 로그 모드 프레임 (초기 숨김) ──
+        self._history_frame = tk.Frame(mode_bar, bg=BG_FRAME)
+        # pack하지 않음 — _on_mode_changed()에서 토글
+
+        tk.Label(
+            self._history_frame, text="날짜:", bg=BG_FRAME, fg=FG_DIM, font=FONT_NORMAL
+        ).pack(side=tk.LEFT)
+
+        self._hist_date_entry = tk.Entry(
+            self._history_frame,
+            bg="#1e1e1e",
+            fg=FG_TEXT,
+            insertbackground=FG_TEXT,
+            font=FONT_MONO,
+            width=10,
+            relief=tk.FLAT,
+            bd=1,
+        )
+        self._hist_date_entry.pack(side=tk.LEFT, padx=(6, 8))
+        self._hist_date_entry.insert(0, datetime.now().strftime("%Y%m%d"))
+
+        tk.Label(
+            self._history_frame, text="폴더:", bg=BG_FRAME, fg=FG_DIM, font=FONT_NORMAL
+        ).pack(side=tk.LEFT)
+
+        self._hist_folder = tk.IntVar(value=-1)
+        for val, label in ((-1, "ALL"), (0, "F0"), (1, "F1")):
+            rb = tk.Radiobutton(
+                self._history_frame,
+                text=label,
+                variable=self._hist_folder,
+                value=val,
+                bg=BG_FRAME,
+                fg="#9cdcfe",
+                selectcolor="#264f78",
+                activebackground=BG_FRAME,
+                activeforeground="#ffffff",
+                font=("Consolas", 8, "bold"),
+                relief=tk.FLAT,
+                cursor="hand2",
+            )
+            rb.pack(side=tk.LEFT, padx=2)
+
+        self._hist_fetch_btn = tk.Button(
+            self._history_frame,
+            text="⬇ 다운로드",
+            command=self._fetch_history,
+            bg="#0e639c",
+            fg=FG_WHITE,
+            activebackground="#1177bb",
+            activeforeground=FG_WHITE,
+            relief=tk.FLAT,
+            font=FONT_NORMAL,
+            padx=12,
+            pady=1,
+            cursor="hand2",
+        )
+        self._hist_fetch_btn.pack(side=tk.LEFT, padx=(8, 4))
+
+        self._hist_status = tk.Label(
+            self._history_frame, text="", bg=BG_FRAME, fg=FG_DIM, font=("Segoe UI", 8)
+        )
+        self._hist_status.pack(side=tk.LEFT, padx=4)
 
         # ── 하단: 로그(좌) + 분석 패널(우) — PanedWindow ──
         paned = tk.PanedWindow(
@@ -353,8 +492,16 @@ class AgentsTab(tk.Frame):
         self._clear_log()
         self._selected_folder.set(0)  # 에이전트 변경 시 폴더 0으로 리셋
         self._analysis_reset()
-        # 로그 스트리밍 시작 후 WebSocket 연결
-        self._start_log_stream(agent_id)
+        # 모드 초기화: 실시간 모드로 리셋 (스트리밍은 시작하지 않음)
+        self._log_mode.set("realtime")
+        self._is_streaming = False
+        self._rt_start_btn.configure(state=tk.NORMAL)
+        self._rt_stop_btn.configure(state=tk.DISABLED)
+        self._rt_status.configure(text="")
+        self._on_mode_changed()
+        # 새 에이전트의 기존 스트리밍도 중지 (이전 세션 잔류 방지)
+        self._stop_log_stream(agent_id)
+        # WebSocket 연결 (로그 수신 대기만, 스트리밍은 사용자가 시작 버튼 클릭 시)
         self._connect_ws(agent_id)
         # 분석 폴링 시작
         self._start_analysis_polling(agent_id)
@@ -371,8 +518,11 @@ class AgentsTab(tk.Frame):
             if result and result.get("status") == "ok":
                 self.after(
                     0,
-                    lambda: self._append_log(
-                        f"[시스템] 실시간 로그 시작 요청 성공 (agent={agent_id})"
+                    lambda: (
+                        self._append_log(
+                            f"[시스템] 실시간 로그 시작 요청 성공 (agent={agent_id})"
+                        ),
+                        self._rt_status.configure(text="스트리밍 중", fg="#51cf66"),
                     ),
                 )
             else:
@@ -433,6 +583,9 @@ class AgentsTab(tk.Frame):
                     try:
                         msg = ws.recv(timeout=0.5)
                         if isinstance(msg, str):
+                            # 실시간 스트리밍 비활성 시 시스템/HIST 메시지만 표시
+                            if not self._is_streaming and not msg.startswith(("[HIST]", "[시스템]")):
+                                continue
                             msg_count += 1
                             self.after(0, self._append_log, msg)
                             if msg_count % 10 == 1:
@@ -493,6 +646,90 @@ class AgentsTab(tk.Frame):
         self._log_text.delete("1.0", tk.END)
         self._log_text.configure(state=tk.DISABLED)
         self._log_line_count = 0
+
+    # ── 모드 전환 ──
+
+    def _on_mode_changed(self) -> None:
+        """실시간/과거 로그 모드 전환."""
+        mode = self._log_mode.get()
+        if mode == "realtime":
+            self._history_frame.pack_forget()
+            self._realtime_frame.pack(side=tk.LEFT)
+        else:
+            # 실시간 스트리밍 중이면 중지
+            if self._is_streaming and self._selected_agent:
+                self._stop_realtime()
+            self._realtime_frame.pack_forget()
+            self._history_frame.pack(side=tk.LEFT)
+
+    def _start_realtime(self) -> None:
+        """실시간 로그 스트리밍 시작 (사용자 명시적 클릭)."""
+        agent_id = self._selected_agent
+        if not agent_id:
+            self._rt_status.configure(text="에이전트를 선택하세요", fg="#f44747")
+            return
+        self._is_streaming = True
+        self._rt_start_btn.configure(state=tk.DISABLED)
+        self._rt_stop_btn.configure(state=tk.NORMAL)
+        self._rt_status.configure(text="시작 요청 중...", fg="#cca700")
+        self._start_log_stream(agent_id)
+
+    def _stop_realtime(self) -> None:
+        """실시간 로그 스트리밍 중지 (사용자 명시적 클릭)."""
+        agent_id = self._selected_agent
+        if not agent_id:
+            return
+        self._is_streaming = False
+        self._rt_start_btn.configure(state=tk.NORMAL)
+        self._rt_stop_btn.configure(state=tk.DISABLED)
+        self._rt_status.configure(text="중지됨", fg=FG_DIM)
+        self._stop_log_stream(agent_id)
+
+    # ── 과거 로그 다운로드 ──
+
+    def _fetch_history(self) -> None:
+        """과거 로그 다운로드 요청 (에이전트 → 서버 저장)."""
+        agent_id = self._selected_agent
+        if not agent_id:
+            self._hist_status.configure(text="에이전트를 선택하세요", fg="#f44747")
+            return
+
+        date_str = self._hist_date_entry.get().strip()
+        if len(date_str) != 8 or not date_str.isdigit():
+            self._hist_status.configure(text="날짜 형식: YYYYMMDD", fg="#f44747")
+            return
+
+        folder_index = self._hist_folder.get()
+        self._hist_fetch_btn.configure(state=tk.DISABLED)
+        self._hist_status.configure(text="다운로드 요청 중...", fg="#cca700")
+
+        def _do() -> None:
+            result = self._app.api_post(
+                f"/api/logs/{agent_id}/history",
+                {"date": date_str, "folder_index": folder_index},
+            )
+            self.after(0, self._on_hist_done, result, date_str, agent_id)
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _on_hist_done(
+        self, result: dict[str, Any] | None, date_str: str = "", agent_id: str = ""
+    ) -> None:
+        """과거 로그 다운로드 응답 처리."""
+        self._hist_fetch_btn.configure(state=tk.NORMAL)
+        if result is None:
+            self._hist_status.configure(text="응답 없음", fg="#f44747")
+            return
+        if "error" in result:
+            self._hist_status.configure(text=f"실패: {result['error']}", fg="#f44747")
+        else:
+            fi = result.get("folder_index", -1)
+            folder_str = "ALL" if fi < 0 else f"F{fi}"
+            save_dir = f"storage/logs/{agent_id}/{date_str}"
+            self._hist_status.configure(
+                text=f"다운로드 시작: {date_str} [{folder_str}] → {save_dir}/",
+                fg="#51cf66",
+            )
 
     # ── 실시간 분석 폴링 ──
 

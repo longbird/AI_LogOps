@@ -1,4 +1,4 @@
-"""제어 명령 핸들러. CMD_CTRL 수신 시 처리."""
+"""제어 명령 핸들러. CMD_CTRL 수신 시 target별 처리."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from shared.protocol import (
     CmdCtrlPayload,
     CtrlAckStatus,
     CtrlAction,
+    DeployTarget,
     PacketType,
 )
 from shared.utils import setup_logging
@@ -21,17 +22,28 @@ logger = setup_logging("ctrl_handler")
 
 
 class CtrlHandler:
-    """CMD_CTRL 패킷 처리: RESTART / STOP / START."""
+    """CMD_CTRL 패킷 처리: target(PROCESS/REC_CLIENT)별 RESTART/STOP/START."""
 
     def __init__(
         self,
         tcp_client: TCPClient,
         process_mgr: ProcessManager,
         process_args: list[str] | None = None,
+        rec_client_mgr: ProcessManager | None = None,
+        rec_client_args: list[str] | None = None,
     ) -> None:
         self._client = tcp_client
         self._process_mgr = process_mgr
         self._process_args = process_args
+        self._rec_client_mgr = rec_client_mgr
+        self._rec_client_args = rec_client_args
+
+    def _resolve_mgr(self, target: int) -> tuple[ProcessManager | None, list[str] | None, str]:
+        """target 값에 따라 적절한 ProcessManager 반환."""
+        if target == DeployTarget.REC_CLIENT:
+            return self._rec_client_mgr, self._rec_client_args, "rec_client"
+        # PROCESS(1) 또는 기타 → 기본 process_mgr
+        return self._process_mgr, self._process_args, "process"
 
     async def handle_cmd_ctrl(self, payload_data: bytes) -> None:
         """CMD_CTRL 패킷 수신 콜백."""
@@ -41,50 +53,62 @@ class CtrlHandler:
             logger.warning("invalid CMD_CTRL payload")
             return
 
+        mgr, args, label = self._resolve_mgr(cmd.target)
+        if mgr is None:
+            logger.warning(
+                "no process manager for target=%d (%s), ignoring %s",
+                cmd.target, label, cmd.action.name,
+            )
+            await self._send_ack(cmd.action, CtrlAckStatus.FAILED, 0)
+            return
+
+        logger.info(
+            "CMD_CTRL received: action=%s target=%s(%d) process=%s",
+            cmd.action.name, label, cmd.target, mgr.process_name,
+        )
+
         if cmd.action == CtrlAction.RESTART:
-            await self._handle_restart()
+            await self._handle_restart(mgr, args, cmd.action)
         elif cmd.action == CtrlAction.STOP:
-            await self._handle_stop()
+            await self._handle_stop(mgr, cmd.action)
         elif cmd.action == CtrlAction.START:
-            await self._handle_start()
+            await self._handle_start(mgr, args, cmd.action)
         else:
             logger.warning("unknown ctrl action: %s", cmd.action)
 
-    async def _handle_restart(self) -> None:
+    async def _handle_restart(
+        self, mgr: ProcessManager, args: list[str] | None, action: CtrlAction,
+    ) -> None:
         """대상 프로세스 재시작."""
-        logger.info("restart command received, restarting process: %s",
-                     self._process_mgr.process_name)
-
-        killed = self._process_mgr.kill_all()
+        killed = mgr.kill_all()
         if not killed:
             logger.warning("failed to kill process, attempting start anyway")
 
-        pid = 0
         try:
-            pid = self._process_mgr.start(args=self._process_args)
+            pid = mgr.start(args=args)
             logger.info("process restarted: pid=%d", pid)
-            await self._send_ack(CtrlAction.RESTART, CtrlAckStatus.SUCCESS, pid)
+            await self._send_ack(action, CtrlAckStatus.SUCCESS, pid)
         except Exception:
             logger.exception("failed to restart process")
-            await self._send_ack(CtrlAction.RESTART, CtrlAckStatus.FAILED, 0)
+            await self._send_ack(action, CtrlAckStatus.FAILED, 0)
 
-    async def _handle_stop(self) -> None:
+    async def _handle_stop(self, mgr: ProcessManager, action: CtrlAction) -> None:
         """대상 프로세스 정지."""
-        logger.info("stop command received")
-        killed = self._process_mgr.kill_all()
+        killed = mgr.kill_all()
         status = CtrlAckStatus.SUCCESS if killed else CtrlAckStatus.FAILED
-        await self._send_ack(CtrlAction.STOP, status, 0)
+        await self._send_ack(action, status, 0)
 
-    async def _handle_start(self) -> None:
+    async def _handle_start(
+        self, mgr: ProcessManager, args: list[str] | None, action: CtrlAction,
+    ) -> None:
         """대상 프로세스 시작."""
-        logger.info("start command received")
         try:
-            pid = self._process_mgr.start(args=self._process_args)
+            pid = mgr.start(args=args)
             logger.info("process started: pid=%d", pid)
-            await self._send_ack(CtrlAction.START, CtrlAckStatus.SUCCESS, pid)
+            await self._send_ack(action, CtrlAckStatus.SUCCESS, pid)
         except Exception:
             logger.exception("failed to start process")
-            await self._send_ack(CtrlAction.START, CtrlAckStatus.FAILED, 0)
+            await self._send_ack(action, CtrlAckStatus.FAILED, 0)
 
     async def _send_ack(
         self, action: CtrlAction, status: CtrlAckStatus, pid: int

@@ -1,31 +1,141 @@
 {% extends "base.html" %}
 {% block content %}
-<h1 class="text-2xl font-bold mb-6">녹취 조회</h1>
+<h1 class="text-2xl font-bold mb-4">녹취 조회</h1>
 
-<!-- Search Bar -->
-<div class="bg-white rounded-lg shadow p-4 mb-4 flex items-end gap-4 flex-wrap">
-    <div>
-        <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">날짜 (YYYYMMDD)</label>
-        <input id="s-date" type="text" maxlength="8" data-persist="rv_date"
-               class="border border-gray-300 rounded px-3 py-2 text-sm w-40 focus:ring-2 focus:ring-blue-400 focus:outline-none">
-    </div>
-    <div>
-        <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Agent ID</label>
-        <input id="s-agent" type="text" placeholder="(auto)" data-persist="rv_agent"
-               class="border border-gray-300 rounded px-3 py-2 text-sm w-48 focus:ring-2 focus:ring-blue-400 focus:outline-none">
-    </div>
-    <button id="btn-search" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded text-sm font-semibold">
-        조회
-    </button>
-    <span id="search-status" class="text-sm text-gray-400 ml-2"></span>
+<!-- Tab Navigation -->
+<div class="mb-4 border-b border-gray-200">
+    <nav class="flex gap-0 -mb-px" id="tab-nav">
+        <button id="tab-btn-analysis"
+                onclick="switchTab('analysis')"
+                class="tab-btn px-5 py-2.5 text-sm font-semibold border-b-2 border-blue-600 text-blue-700 bg-white -mb-px transition-colors">
+            분석 결과 조회
+        </button>
+        <button id="tab-btn-files"
+                onclick="switchTab('files')"
+                class="tab-btn px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 bg-white -mb-px transition-colors">
+            파일 검색 / 다운로드
+        </button>
+        <button id="tab-btn-batch"
+                onclick="switchTab('batch')"
+                class="tab-btn px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 bg-white -mb-px transition-colors">
+            일괄 다운로드
+        </button>
+    </nav>
 </div>
 
-<!-- Results Table -->
-<div id="table-wrap" class="bg-white rounded-lg shadow overflow-hidden">
-    <div class="p-6 text-gray-400 text-sm">날짜를 입력하고 조회 버튼을 클릭하세요.</div>
+<!-- ══════════════════════════════════════════════════
+     TAB 1: 분석 결과 조회
+════════════════════════════════════════════════════ -->
+<div id="tab-analysis">
+
+    <!-- Search Bar -->
+    <div class="bg-white rounded-lg shadow p-4 mb-4 flex items-end gap-4 flex-wrap">
+        <div>
+            <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">날짜 (YYYYMMDD)</label>
+            <input id="s-date" type="text" maxlength="8" data-persist="rv_date"
+                   class="border border-gray-300 rounded px-3 py-2 text-sm w-40 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+        </div>
+        <div>
+            <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Agent ID</label>
+            <input id="s-agent" type="text" placeholder="(auto)" data-persist="rv_agent"
+                   class="border border-gray-300 rounded px-3 py-2 text-sm w-48 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+        </div>
+        <button id="btn-search" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded text-sm font-semibold">
+            조회
+        </button>
+        <span id="search-status" class="text-sm text-gray-400 ml-2"></span>
+        <div class="ml-auto flex items-end gap-2">
+            <button id="btn-analyze-start" onclick="triggerAnalyze('start')"
+                    class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded text-sm font-semibold">
+                분석 시작
+            </button>
+            <button id="btn-analyze-stop" onclick="triggerAnalyze('stop')"
+                    class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded text-sm font-semibold">
+                분석 중지
+            </button>
+            <span id="analyze-status" class="text-sm text-gray-400"></span>
+        </div>
+    </div>
+
+    <!-- Results Table -->
+    <div id="table-wrap" class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="p-6 text-gray-400 text-sm">날짜를 입력하고 조회 버튼을 클릭하세요.</div>
+    </div>
+
 </div>
 
-<!-- Detail Modal (fullscreen overlay) -->
+<!-- ══════════════════════════════════════════════════
+     TAB 2: 파일 검색 / 다운로드
+════════════════════════════════════════════════════ -->
+<div id="tab-files" class="hidden">
+
+    <!-- File Search Bar -->
+    <div class="bg-white rounded-lg shadow p-4 mb-4 flex items-end gap-4 flex-wrap">
+        <div>
+            <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">날짜 (YYYYMMDD)</label>
+            <input id="f-date" type="text" maxlength="8" data-persist="rv_fdate"
+                   class="border border-gray-300 rounded px-3 py-2 text-sm w-40 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+        </div>
+        <div class="flex-1 min-w-[200px]">
+            <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">검색어</label>
+            <input id="f-search" type="text" placeholder="전화번호, 파일명 또는 대화 내용" data-persist="rv_fsearch"
+                   class="border border-gray-300 rounded px-3 py-2 text-sm w-full focus:ring-2 focus:ring-blue-400 focus:outline-none">
+        </div>
+        <div>
+            <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Agent ID</label>
+            <input id="f-agent" type="text" placeholder="(auto)" data-persist="rv_fagent"
+                   class="border border-gray-300 rounded px-3 py-2 text-sm w-48 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+        </div>
+        <button id="btn-file-search" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded text-sm font-semibold">
+            검색
+        </button>
+        <span id="file-search-status" class="text-sm text-gray-400 ml-2"></span>
+    </div>
+
+    <!-- File Results Table -->
+    <div id="file-table-wrap" class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="p-6 text-gray-400 text-sm">날짜 또는 검색어를 입력하고 검색 버튼을 클릭하세요.</div>
+    </div>
+
+</div>
+
+<!-- ══════════════════════════════════════════════════
+     TAB 3: 일괄 다운로드
+════════════════════════════════════════════════════ -->
+<div id="tab-batch" class="hidden">
+
+    <div class="bg-white rounded-lg shadow p-4 mb-4">
+        <div class="flex items-start gap-4">
+            <div class="flex-1">
+                <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">파일 목록 붙여넣기</label>
+                <textarea id="b-filelist" rows="8" placeholder="파일명 또는 전체 경로를 붙여넣으세요 (줄바꿈 구분)&#10;&#10;예:&#10;000514.2._.01098662212.3286._._.6002.wav&#10;D:\AirSoft\SERVER2\Record\20260302\001328.1.xxx.wav"
+                          class="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-400 focus:outline-none resize-y"></textarea>
+            </div>
+            <div class="flex flex-col gap-2 pt-5">
+                <button id="btn-batch-parse" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded text-sm font-semibold whitespace-nowrap">
+                    목록 확인
+                </button>
+                <button id="btn-batch-download-all" class="bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded text-sm font-semibold whitespace-nowrap hidden">
+                    전체 다운로드
+                </button>
+                <button id="btn-batch-clear" class="bg-gray-400 hover:bg-gray-500 text-white px-5 py-2 rounded text-sm font-semibold whitespace-nowrap hidden">
+                    초기화
+                </button>
+                <span id="batch-status" class="text-sm text-gray-400"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Batch Results Table -->
+    <div id="batch-table-wrap" class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="p-6 text-gray-400 text-sm">파일 목록을 붙여넣고 "목록 확인" 버튼을 클릭하세요.</div>
+    </div>
+
+</div>
+
+<!-- ══════════════════════════════════════════════════
+     Detail Modal (fullscreen overlay — shared)
+════════════════════════════════════════════════════ -->
 <div id="modal-overlay" class="fixed inset-0 bg-black/50 z-50 hidden flex items-start justify-center overflow-y-auto py-6">
     <div class="bg-gray-100 rounded-xl shadow-2xl w-[95vw] max-w-6xl mx-4 relative" onclick="event.stopPropagation()">
 
@@ -143,24 +253,38 @@
 
 <script>
 (function() {
-    var dateEl = document.getElementById('s-date');
-    var agentEl = document.getElementById('s-agent');
-    var btnSearch = document.getElementById('btn-search');
-    var statusEl = document.getElementById('search-status');
-    var tableWrap = document.getElementById('table-wrap');
-    var modalOverlay = document.getElementById('modal-overlay');
-    var audioEl = document.getElementById('audio');
 
-    // Default date = today
-    if (!dateEl.value) {
-        var t = new Date();
-        dateEl.value = t.getFullYear() + String(t.getMonth()+1).padStart(2,'0') + String(t.getDate()).padStart(2,'0');
+    /* ══════════════════════════════════════════════════
+       Tab switching
+    ════════════════════════════════════════════════════ */
+    function switchTab(name) {
+        var tabs = ['analysis', 'files', 'batch'];
+        tabs.forEach(function(t) {
+            var panel = document.getElementById('tab-' + t);
+            var btn   = document.getElementById('tab-btn-' + t);
+            if (t === name) {
+                panel.classList.remove('hidden');
+                btn.classList.add('border-blue-600', 'text-blue-700');
+                btn.classList.remove('border-transparent', 'text-gray-500');
+            } else {
+                panel.classList.add('hidden');
+                btn.classList.remove('border-blue-600', 'text-blue-700');
+                btn.classList.add('border-transparent', 'text-gray-500');
+            }
+        });
     }
+    // Expose globally for onclick attributes
+    window.switchTab = switchTab;
 
-    btnSearch.addEventListener('click', loadList);
-    dateEl.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadList(); });
+    /* ══════════════════════════════════════════════════
+       Shared DOM refs
+    ════════════════════════════════════════════════════ */
+    var modalOverlay = document.getElementById('modal-overlay');
+    var audioEl      = document.getElementById('audio');
 
-    /* ── Modal Close ── */
+    /* ══════════════════════════════════════════════════
+       Modal Close
+    ════════════════════════════════════════════════════ */
     function closeModal() {
         modalOverlay.classList.add('hidden');
         if (audioEl) { audioEl.pause(); audioEl.removeAttribute('src'); audioEl.load(); }
@@ -169,7 +293,9 @@
     modalOverlay.addEventListener('click', function(e) { if (e.target === modalOverlay) closeModal(); });
     document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && !modalOverlay.classList.contains('hidden')) closeModal(); });
 
-    /* ── Formatters ── */
+    /* ══════════════════════════════════════════════════
+       Shared Formatters
+    ════════════════════════════════════════════════════ */
     function fmtDur(sec) {
         if (sec == null || sec <= 0) return '-';
         var m = Math.floor(sec / 60), s = Math.round(sec % 60);
@@ -196,16 +322,75 @@
     }
     function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-    /* ── Load List ── */
+    /* ══════════════════════════════════════════════════
+       TAB 1 — Analysis List
+    ════════════════════════════════════════════════════ */
+    var dateEl    = document.getElementById('s-date');
+    var agentEl   = document.getElementById('s-agent');
+    var btnSearch = document.getElementById('btn-search');
+    var statusEl  = document.getElementById('search-status');
+    var tableWrap = document.getElementById('table-wrap');
+
+    // Default date = today
+    if (!dateEl.value) {
+        var t = new Date();
+        dateEl.value = t.getFullYear() + String(t.getMonth()+1).padStart(2,'0') + String(t.getDate()).padStart(2,'0');
+    }
+
+    btnSearch.addEventListener('click', loadList);
+    dateEl.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadList(); });
+
+    /* 녹취 분석 시작/중지 */
+    window.triggerAnalyze = async function(action) {
+        var date  = dateEl.value.trim();
+        var agent = agentEl.value.trim();
+        var statusEl = document.getElementById('analyze-status');
+        var btnStart = document.getElementById('btn-analyze-start');
+        var btnStop  = document.getElementById('btn-analyze-stop');
+
+        statusEl.textContent = action === 'start' ? '분석 시작 요청 중...' : '분석 중지 요청 중...';
+        statusEl.className = 'text-sm text-yellow-600';
+        btnStart.disabled = true;
+        btnStop.disabled = true;
+
+        try {
+            var body = { action: action };
+            if (agent) body.agent_id = agent;
+            if (date)  body.date = date;
+
+            var resp = await fetch('/api/rec/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            var data = await resp.json();
+            if (resp.ok) {
+                statusEl.textContent = action === 'start'
+                    ? '분석 시작됨 (' + (data.date || '오늘') + ')'
+                    : '분석 중지됨';
+                statusEl.className = 'text-sm font-semibold ' + (action === 'start' ? 'text-green-600' : 'text-gray-500');
+            } else {
+                statusEl.textContent = '오류: ' + (data.error || resp.statusText);
+                statusEl.className = 'text-sm text-red-500';
+            }
+        } catch (err) {
+            statusEl.textContent = '네트워크 오류: ' + err.message;
+            statusEl.className = 'text-sm text-red-500';
+        } finally {
+            btnStart.disabled = false;
+            btnStop.disabled = false;
+        }
+    };
+
     async function loadList() {
-        var date = dateEl.value.trim();
+        var date  = dateEl.value.trim();
         var agent = agentEl.value.trim();
         var params = new URLSearchParams();
-        if (date) params.set('date', date);
+        if (date)  params.set('date', date);
         if (agent) params.set('agent_id', agent);
 
         statusEl.textContent = '조회 중...';
-        statusEl.className = 'text-sm text-yellow-600 ml-2';
+        statusEl.className   = 'text-sm text-yellow-600 ml-2';
         closeModal();
 
         try {
@@ -213,25 +398,26 @@
             var data = await resp.json();
             if (!resp.ok) {
                 statusEl.textContent = '오류: ' + (data.error || resp.statusText);
-                statusEl.className = 'text-sm text-red-500 ml-2';
-                tableWrap.innerHTML = '<div class="p-6 text-red-500">오류: ' + (data.error || resp.statusText) + '</div>';
+                statusEl.className   = 'text-sm text-red-500 ml-2';
+                tableWrap.innerHTML  = '<div class="p-6 text-red-500">오류: ' + escapeHtml(data.error || resp.statusText) + '</div>';
                 return;
             }
 
             var records = data.records || [];
             if (!records.length) {
                 statusEl.textContent = '결과 없음';
-                statusEl.className = 'text-sm text-gray-400 ml-2';
-                tableWrap.innerHTML = '<div class="p-6 text-gray-400">조회 결과가 없습니다.</div>';
+                statusEl.className   = 'text-sm text-gray-400 ml-2';
+                tableWrap.innerHTML  = '<div class="p-6 text-gray-400">조회 결과가 없습니다.</div>';
                 return;
             }
 
             statusEl.textContent = records.length + '건 조회됨';
-            statusEl.className = 'text-sm text-green-600 ml-2 font-semibold';
+            statusEl.className   = 'text-sm text-green-600 ml-2 font-semibold';
 
             var html = '<table class="min-w-full divide-y divide-gray-200">';
             html += '<thead class="bg-gray-50"><tr>';
             html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">파일명</th>';
+            html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">STT 모델</th>';
             html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">상태</th>';
             html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">시간</th>';
             html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">점수</th>';
@@ -241,10 +427,14 @@
             for (var i = 0; i < records.length; i++) {
                 var r = records[i];
                 var fname = r.filename || '';
-                var sc = r.score_total != null ? Math.round(r.score_total) : null;
-                var scHtml = sc != null ? '<span class="font-semibold ' + scoreClass(sc) + '">' + sc + '</span>' : '<span class="text-gray-400">-</span>';
+                var sc    = r.score_total != null ? Math.round(r.score_total) : null;
+                var scHtml = sc != null
+                    ? '<span class="font-semibold ' + scoreClass(sc) + '">' + sc + '</span>'
+                    : '<span class="text-gray-400">-</span>';
+                var modelName = r.model_name || '-';
                 html += '<tr class="hover:bg-blue-50 cursor-pointer transition-colors rec-row" data-filename="' + escapeHtml(fname) + '">';
                 html += '<td class="px-4 py-2.5 text-sm font-mono text-gray-800">' + escapeHtml(fname) + '</td>';
+                html += '<td class="px-4 py-2.5 text-sm text-gray-600">' + escapeHtml(modelName) + '</td>';
                 html += '<td class="px-4 py-2.5 text-sm">' + statusBadge(r.status) + '</td>';
                 html += '<td class="px-4 py-2.5 text-sm text-gray-700">' + fmtDur(r.duration_wav || r.duration_sec) + '</td>';
                 html += '<td class="px-4 py-2.5 text-sm">' + scHtml + '</td>';
@@ -254,37 +444,216 @@
             html += '</tbody></table>';
             tableWrap.innerHTML = html;
 
-            // Attach row click
             tableWrap.querySelectorAll('.rec-row').forEach(function(row) {
                 row.addEventListener('click', function() {
-                    // Highlight selected row
                     tableWrap.querySelectorAll('.rec-row').forEach(function(r) { r.classList.remove('bg-blue-100'); });
                     row.classList.add('bg-blue-100');
-                    loadDetail(row.getAttribute('data-filename'));
+                    loadDetail(row.getAttribute('data-filename'), agentEl.value.trim());
                 });
             });
         } catch (err) {
             statusEl.textContent = '네트워크 오류';
-            statusEl.className = 'text-sm text-red-500 ml-2';
-            tableWrap.innerHTML = '<div class="p-6 text-red-500">오류: ' + err.message + '</div>';
+            statusEl.className   = 'text-sm text-red-500 ml-2';
+            tableWrap.innerHTML  = '<div class="p-6 text-red-500">오류: ' + escapeHtml(err.message) + '</div>';
         }
     }
 
-    /* ── Load Detail ── */
-    async function loadDetail(filename) {
-        var agent = agentEl.value.trim();
-        var qp = new URLSearchParams();
+    /* ══════════════════════════════════════════════════
+       TAB 2 — File Search
+    ════════════════════════════════════════════════════ */
+    var fDateEl       = document.getElementById('f-date');
+    var fSearchEl     = document.getElementById('f-search');
+    var fAgentEl      = document.getElementById('f-agent');
+    var btnFileSearch = document.getElementById('btn-file-search');
+    var fileStatusEl  = document.getElementById('file-search-status');
+    var fileTableWrap = document.getElementById('file-table-wrap');
+
+    // Default date = today (mirror Tab 1 behaviour)
+    if (!fDateEl.value) {
+        var td = new Date();
+        fDateEl.value = td.getFullYear() + String(td.getMonth()+1).padStart(2,'0') + String(td.getDate()).padStart(2,'0');
+    }
+
+    btnFileSearch.addEventListener('click', loadFileList);
+    fDateEl.addEventListener('keydown',   function(e) { if (e.key === 'Enter') loadFileList(); });
+    fSearchEl.addEventListener('keydown', function(e) { if (e.key === 'Enter') loadFileList(); });
+
+    async function loadFileList() {
+        var date   = fDateEl.value.trim();
+        var search = fSearchEl.value.trim();
+        var agent  = fAgentEl.value.trim();
+        var params = new URLSearchParams();
+        if (date)   params.set('date', date);
+        if (search) params.set('search', search);
+        if (agent)  params.set('agent_id', agent);
+
+        fileStatusEl.textContent = '검색 중...';
+        fileStatusEl.className   = 'text-sm text-yellow-600 ml-2';
+
+        try {
+            var resp = await fetch('/api/rec/files?' + params.toString());
+            var data = await resp.json();
+            if (!resp.ok) {
+                fileStatusEl.textContent = '오류: ' + (data.error || resp.statusText);
+                fileStatusEl.className   = 'text-sm text-red-500 ml-2';
+                fileTableWrap.innerHTML  = '<div class="p-6 text-red-500">오류: ' + escapeHtml(data.error || resp.statusText) + '</div>';
+                return;
+            }
+
+            var records = data.records || [];
+            if (!records.length) {
+                fileStatusEl.textContent = '결과 없음';
+                fileStatusEl.className   = 'text-sm text-gray-400 ml-2';
+                fileTableWrap.innerHTML  = '<div class="p-6 text-gray-400">검색 결과가 없습니다.</div>';
+                return;
+            }
+
+            fileStatusEl.textContent = records.length + '건 검색됨';
+            fileStatusEl.className   = 'text-sm text-green-600 ml-2 font-semibold';
+            renderFileTable(records, agent);
+        } catch (err) {
+            fileStatusEl.textContent = '네트워크 오류';
+            fileStatusEl.className   = 'text-sm text-red-500 ml-2';
+            fileTableWrap.innerHTML  = '<div class="p-6 text-red-500">오류: ' + escapeHtml(err.message) + '</div>';
+        }
+    }
+
+    // Direction badge helper (in_out: 1=수신, 2=발신, 0=unknown)
+    function directionBadge(val) {
+        if (val == null || val === '') return '<span class="text-gray-400">-</span>';
+        var v = String(val).trim();
+        var isInbound  = v === '1' || /^(수신|in|inbound)$/i.test(v);
+        var isOutbound = v === '2' || /^(발신|out|outbound)$/i.test(v);
+        if (isInbound)  return '<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-sky-100 text-sky-800">수신</span>';
+        if (isOutbound) return '<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-violet-100 text-violet-800">발신</span>';
+        if (v === '0')  return '<span class="text-gray-400">-</span>';
+        return '<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">' + escapeHtml(v) + '</span>';
+    }
+
+    function renderFileTable(records, currentAgent) {
+
+        // SVG icons (inline, no external deps)
+        var iconDownload = '<svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>';
+        var iconPlay     = '<svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 inline-block" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+
+        var html = '<table class="min-w-full divide-y divide-gray-200">';
+        html += '<thead class="bg-gray-50"><tr>';
+        html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">파일명</th>';
+        html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">발신자</th>';
+        html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">수신자</th>';
+        html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">수/발신</th>';
+        html += '<th class="px-4 py-2.5 text-right text-xs font-semibold text-gray-600 uppercase">작업</th>';
+        html += '</tr></thead><tbody class="bg-white divide-y divide-gray-100">';
+
+        for (var i = 0; i < records.length; i++) {
+            var r     = records[i];
+            var fname = r.filename || r.file_name || r.name || '';
+            var encFname = encodeURIComponent(fname);
+            var downloadUrl = '/api/rec/stream/' + encFname + '?download=1';
+
+            var preview = r.text_preview || '';
+            html += '<tr class="hover:bg-gray-50 transition-colors">';
+
+            // Filename cell (+ text preview if available)
+            html += '<td class="px-4 py-2.5 text-sm max-w-xs">';
+            html += '<div class="font-mono text-gray-800 truncate" title="' + escapeHtml(fname) + '">' + escapeHtml(fname) + '</div>';
+            if (preview) {
+                html += '<div class="text-xs text-gray-400 truncate mt-0.5" title="' + escapeHtml(preview) + '">' + escapeHtml(preview) + '</div>';
+            }
+            html += '</td>';
+
+            // caller / callee columns (hardcoded)
+            html += '<td class="px-4 py-2.5 text-sm text-gray-700 font-mono">' + escapeHtml(r.caller != null ? String(r.caller) : '-') + '</td>';
+            html += '<td class="px-4 py-2.5 text-sm text-gray-700 font-mono">' + escapeHtml(r.callee != null ? String(r.callee) : '-') + '</td>';
+
+            // Direction column (in_out)
+            html += '<td class="px-4 py-2.5 text-sm">' + directionBadge(r.in_out) + '</td>';
+
+            // Action buttons
+            html += '<td class="px-4 py-2.5 text-right whitespace-nowrap">';
+            // Play button — triggers modal audio only
+            html += '<button class="file-play-btn inline-flex items-center gap-1 px-2.5 py-1 rounded border border-blue-400 text-blue-600 hover:bg-blue-50 text-xs font-medium transition-colors mr-1.5" '
+                  + 'data-filename="' + escapeHtml(fname) + '" '
+                  + 'data-agent="' + escapeHtml(currentAgent) + '">'
+                  + iconPlay + ' 재생</button>';
+            // Download button — anchor tag
+            html += '<a href="' + escapeHtml(downloadUrl) + '" download '
+                  + 'class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-green-500 text-green-700 hover:bg-green-50 text-xs font-medium transition-colors">'
+                  + iconDownload + ' 다운로드</a>';
+            html += '</td>';
+
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        fileTableWrap.innerHTML = html;
+
+        // Attach play button handlers
+        fileTableWrap.querySelectorAll('.file-play-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var fname = btn.getAttribute('data-filename');
+                var agent = btn.getAttribute('data-agent');
+                openAudioModal(fname, agent);
+            });
+        });
+    }
+
+    /* Open modal in audio-only mode (no STT data required) */
+    function openAudioModal(filename, agentId) {
+        // Set audio source directly — no detail fetch needed for play-only
+        audioEl.src = '/api/rec/stream/' + encodeURIComponent(filename);
+        document.getElementById('d-filename').textContent = filename;
+        // Clear stale analysis data shown in info panels
+        clearDetailPanels();
+        modalOverlay.classList.remove('hidden');
+        // Attempt to also load analysis detail in background; populate if available
+        loadDetail(filename, agentId, /* silent */ true);
+    }
+
+    function clearDetailPanels() {
+        var ids = ['d-agent','d-status','d-duration','d-channel','d-analyzed','d-words',
+                   'd-score-total','d-score-resp-v','d-score-phrase-v','d-score-silence-v',
+                   'd-ratio-a-p','d-ratio-c-p','d-ratio-s-p',
+                   'd-kw-req','d-kw-forb',
+                   'd-aq-lrms','d-aq-rrms','d-aq-lsil','d-aq-rsil','d-aq-drop','d-aq-dur'];
+        ids.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.textContent = '-';
+        });
+        ['d-bar-resp','d-bar-phrase','d-bar-silence'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) { el.style.width = '0%'; }
+        });
+        ['d-ratio-a','d-ratio-c','d-ratio-s'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.style.width = '0%';
+        });
+        var conv = document.getElementById('d-conv');
+        if (conv) conv.innerHTML = '<div class="text-gray-400 text-sm text-center py-8">분석 데이터 없음</div>';
+        var seg = document.getElementById('d-seg-cnt');
+        if (seg) seg.textContent = '';
+    }
+
+    /* ══════════════════════════════════════════════════
+       Load Detail (shared between both tabs)
+    ════════════════════════════════════════════════════ */
+    async function loadDetail(filename, agentOverride, silent) {
+        var agent = agentOverride !== undefined ? agentOverride : agentEl.value.trim();
+        var qp    = new URLSearchParams();
         if (agent) qp.set('agent_id', agent);
 
         try {
             var resp = await fetch('/api/rec/detail/' + encodeURIComponent(filename) + '?' + qp.toString());
             var data = await resp.json();
             if (!resp.ok || !data.record) return;
+            // If called silently (from file tab play button), only populate panels if modal still open
+            if (silent && modalOverlay.classList.contains('hidden')) return;
             renderDetail(data.record);
         } catch(e) { /* ignore */ }
     }
 
-    /* ── Render Detail ── */
+    /* ══════════════════════════════════════════════════
+       Render Detail
+    ════════════════════════════════════════════════════ */
     function renderDetail(r) {
         // Open modal
         modalOverlay.classList.remove('hidden');
@@ -295,23 +664,23 @@
         }
 
         // Info
-        document.getElementById('d-filename').textContent = r.filename || '-';
-        document.getElementById('d-agent').textContent = r.agent_id || '-';
-        document.getElementById('d-status').innerHTML = statusBadge(r.status);
-        document.getElementById('d-duration').textContent = fmtDur(r.duration_wav || r.duration_sec);
-        document.getElementById('d-channel').textContent = r.is_stereo ? 'Stereo' : 'Mono';
-        document.getElementById('d-analyzed').textContent = fmtDatetime(r.aq_analyzed_at || r.transcribed_at);
-        document.getElementById('d-words').textContent = r.word_count != null ? r.word_count + ' words' : '-';
+        document.getElementById('d-filename').textContent  = r.filename || '-';
+        document.getElementById('d-agent').textContent     = r.agent_id || '-';
+        document.getElementById('d-status').innerHTML      = statusBadge(r.status);
+        document.getElementById('d-duration').textContent  = fmtDur(r.duration_wav || r.duration_sec);
+        document.getElementById('d-channel').textContent   = r.is_stereo ? 'Stereo' : 'Mono';
+        document.getElementById('d-analyzed').textContent  = fmtDatetime(r.aq_analyzed_at || r.transcribed_at);
+        document.getElementById('d-words').textContent     = r.word_count != null ? r.word_count + ' words' : '-';
 
         // Score total
-        var sc = r.score_total != null ? Math.round(r.score_total) : null;
+        var sc   = r.score_total != null ? Math.round(r.score_total) : null;
         var scEl = document.getElementById('d-score-total');
         scEl.textContent = sc != null ? sc : '-';
         if (sc != null) scEl.style.color = scoreColor(sc);
 
         // Score bars
-        setBar('resp', r.score_response);
-        setBar('phrase', r.score_phrase);
+        setBar('resp',    r.score_response);
+        setBar('phrase',  r.score_phrase);
         setBar('silence', r.score_silence);
 
         // Talk ratios
@@ -326,21 +695,29 @@
         document.getElementById('d-ratio-s-p').textContent = fmtPct(sR);
 
         // Keywords
-        var reqHit = r.required_phrase_hit;
+        var reqHit  = r.required_phrase_hit;
         var reqList = r.required_phrase_list || '';
-        document.getElementById('d-kw-req').innerHTML = '필수문구: ' + (reqHit ? '<span class="text-green-600 font-semibold">O</span>' : '<span class="text-red-500 font-semibold">X</span>') + ' <span class="text-gray-400">(' + escapeHtml(reqList) + ')</span>';
+        document.getElementById('d-kw-req').innerHTML =
+            '필수문구: ' + (reqHit
+                ? '<span class="text-green-600 font-semibold">O</span>'
+                : '<span class="text-red-500 font-semibold">X</span>')
+            + ' <span class="text-gray-400">(' + escapeHtml(reqList) + ')</span>';
 
-        var forbHit = r.forbidden_word_hit;
+        var forbHit  = r.forbidden_word_hit;
         var forbList = r.forbidden_word_list || '';
-        document.getElementById('d-kw-forb').innerHTML = '금지어: ' + (forbHit ? '<span class="text-red-600 font-semibold">O</span>' : '<span class="text-green-600 font-semibold">X</span>') + ' <span class="text-gray-400">(' + escapeHtml(forbList || '없음') + ')</span>';
+        document.getElementById('d-kw-forb').innerHTML =
+            '금지어: ' + (forbHit
+                ? '<span class="text-red-600 font-semibold">O</span>'
+                : '<span class="text-green-600 font-semibold">X</span>')
+            + ' <span class="text-gray-400">(' + escapeHtml(forbList || '없음') + ')</span>';
 
         // Audio Quality
-        document.getElementById('d-aq-lrms').textContent = r.left_rms_db != null ? r.left_rms_db.toFixed(1) + ' dB' : '-';
+        document.getElementById('d-aq-lrms').textContent = r.left_rms_db  != null ? r.left_rms_db.toFixed(1)  + ' dB' : '-';
         document.getElementById('d-aq-rrms').textContent = r.right_rms_db != null ? r.right_rms_db.toFixed(1) + ' dB' : '-';
-        document.getElementById('d-aq-lsil').textContent = r.left_silence != null ? fmtPct(r.left_silence) : '-';
+        document.getElementById('d-aq-lsil').textContent = r.left_silence  != null ? fmtPct(r.left_silence)  : '-';
         document.getElementById('d-aq-rsil').textContent = r.right_silence != null ? fmtPct(r.right_silence) : '-';
         document.getElementById('d-aq-drop').textContent = r.dropout_count != null ? r.dropout_count + '회' : '-';
-        document.getElementById('d-aq-dur').textContent = fmtDur(r.duration_wav);
+        document.getElementById('d-aq-dur').textContent  = fmtDur(r.duration_wav);
 
         // STT Conversation
         renderConversation(r.segments_json);
@@ -351,8 +728,8 @@
         var barEl = document.getElementById('d-bar-' + name);
         if (value != null) {
             var v = Math.round(value);
-            valEl.textContent = v;
-            valEl.style.color = scoreColor(v);
+            valEl.textContent  = v;
+            valEl.style.color  = scoreColor(v);
             setTimeout(function() { barEl.style.width = v + '%'; barEl.style.background = scoreColor(v); }, 50);
         } else {
             valEl.textContent = '-';
@@ -360,10 +737,12 @@
         }
     }
 
-    /* ── STT Conversation ── */
+    /* ══════════════════════════════════════════════════
+       STT Conversation
+    ════════════════════════════════════════════════════ */
     function renderConversation(segmentsJson) {
         var container = document.getElementById('d-conv');
-        var countEl = document.getElementById('d-seg-cnt');
+        var countEl   = document.getElementById('d-seg-cnt');
 
         if (!segmentsJson) {
             container.innerHTML = '<div class="text-gray-400 text-sm text-center py-8">STT 데이터 없음</div>';
@@ -392,12 +771,12 @@
 
         var html = '';
         for (var i = 0; i < segments.length; i++) {
-            var seg = segments[i];
+            var seg     = segments[i];
             var speaker = (seg.speaker || '').toLowerCase();
             var isAgent = speaker.indexOf('agent') >= 0 || speaker === 'left' || speaker === 'l';
             var timeStr = fmtTs(seg.time) + '~' + fmtTs(seg.end);
-            var text = escapeHtml(seg.text || '');
-            var label = isAgent ? '상담원' : '고객';
+            var text    = escapeHtml(seg.text || '');
+            var label   = isAgent ? '상담원' : '고객';
 
             if (isAgent) {
                 html += '<div class="flex items-start gap-2 max-w-[85%]">';
@@ -412,6 +791,178 @@
             }
         }
         container.innerHTML = html;
+    }
+
+    /* ══════════════════════════════════════════════════
+       TAB 3 — Batch Download
+    ════════════════════════════════════════════════════ */
+    var bFilelistEl      = document.getElementById('b-filelist');
+    var btnBatchParse    = document.getElementById('btn-batch-parse');
+    var btnBatchAll      = document.getElementById('btn-batch-download-all');
+    var btnBatchClear    = document.getElementById('btn-batch-clear');
+    var batchStatusEl    = document.getElementById('batch-status');
+    var batchTableWrap   = document.getElementById('batch-table-wrap');
+
+    btnBatchParse.addEventListener('click', parseBatchList);
+    btnBatchClear.addEventListener('click', clearBatch);
+
+    function clearBatch() {
+        bFilelistEl.value = '';
+        batchTableWrap.innerHTML = '<div class="p-6 text-gray-400 text-sm">파일 목록을 붙여넣고 "목록 확인" 버튼을 클릭하세요.</div>';
+        batchStatusEl.textContent = '';
+        btnBatchAll.classList.add('hidden');
+        btnBatchClear.classList.add('hidden');
+    }
+
+    function extractFilenames(text) {
+        var lines = text.split(/\r?\n/);
+        var filenames = [];
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (!line) continue;
+            // Skip header/comment lines
+            if (/^[=#\-]/.test(line) || /^서버:/.test(line) || /^경로:/.test(line)
+                || /^날짜:/.test(line) || /^#\s+Gap/.test(line) || /^\d+\s+\+/.test(line.replace(/^#\d+/, ''))) {
+                // Check if it's a numbered list line: "1   +7s    54s   47s  filename.wav"
+                var numMatch = line.match(/^\d+\s+\+\d+s\s+\d+s\s+\d+s\s+(\S+\.wav)/i);
+                if (numMatch) {
+                    filenames.push(numMatch[1]);
+                    continue;
+                }
+                continue;
+            }
+            // Full path: extract filename
+            var pathMatch = line.match(/([^\\\/]+\.wav)\s*$/i);
+            if (pathMatch) {
+                filenames.push(pathMatch[1]);
+                continue;
+            }
+            // Bare filename ending with .wav
+            if (/\.wav$/i.test(line)) {
+                filenames.push(line);
+            }
+        }
+        // Deduplicate
+        var seen = {};
+        return filenames.filter(function(f) {
+            if (seen[f]) return false;
+            seen[f] = true;
+            return true;
+        });
+    }
+
+    function parseBatchList() {
+        var text = bFilelistEl.value.trim();
+        if (!text) {
+            batchStatusEl.textContent = '내용을 입력하세요';
+            batchStatusEl.className = 'text-sm text-red-500';
+            return;
+        }
+
+        var filenames = extractFilenames(text);
+        if (!filenames.length) {
+            batchStatusEl.textContent = 'WAV 파일명을 찾을 수 없습니다';
+            batchStatusEl.className = 'text-sm text-red-500';
+            return;
+        }
+
+        batchStatusEl.textContent = filenames.length + '개 파일 확인';
+        batchStatusEl.className = 'text-sm text-green-600 font-semibold';
+        btnBatchAll.classList.remove('hidden');
+        btnBatchClear.classList.remove('hidden');
+        renderBatchTable(filenames);
+    }
+
+    function renderBatchTable(filenames) {
+        var iconDownload = '<svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>';
+        var iconPlay     = '<svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 inline-block" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+
+        var html = '<table class="min-w-full divide-y divide-gray-200">';
+        html += '<thead class="bg-gray-50"><tr>';
+        html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase w-10">#</th>';
+        html += '<th class="px-4 py-2.5 text-left text-xs font-semibold text-gray-600 uppercase">파일명</th>';
+        html += '<th class="px-4 py-2.5 text-right text-xs font-semibold text-gray-600 uppercase">작업</th>';
+        html += '</tr></thead><tbody class="bg-white divide-y divide-gray-100">';
+
+        for (var i = 0; i < filenames.length; i++) {
+            var fname = filenames[i];
+            var encFname = encodeURIComponent(fname);
+            var downloadUrl = '/api/rec/stream/' + encFname + '?download=1';
+
+            html += '<tr class="hover:bg-gray-50 transition-colors">';
+            html += '<td class="px-4 py-2 text-sm text-gray-400">' + (i + 1) + '</td>';
+            html += '<td class="px-4 py-2 text-sm font-mono text-gray-800">' + escapeHtml(fname) + '</td>';
+            html += '<td class="px-4 py-2 text-right whitespace-nowrap">';
+            html += '<button class="batch-play-btn inline-flex items-center gap-1 px-2.5 py-1 rounded border border-blue-400 text-blue-600 hover:bg-blue-50 text-xs font-medium transition-colors mr-1.5" '
+                  + 'data-filename="' + escapeHtml(fname) + '">'
+                  + iconPlay + ' 재생</button>';
+            html += '<a href="' + escapeHtml(downloadUrl) + '" download '
+                  + 'class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-green-500 text-green-700 hover:bg-green-50 text-xs font-medium transition-colors">'
+                  + iconDownload + ' 다운로드</a>';
+            html += '</td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        batchTableWrap.innerHTML = html;
+
+        // Play button handlers
+        batchTableWrap.querySelectorAll('.batch-play-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                openAudioModal(btn.getAttribute('data-filename'), '');
+            });
+        });
+
+        // "전체 다운로드" button handler
+        btnBatchAll.onclick = function() {
+            batchDownloadAll(filenames);
+        };
+    }
+
+    function batchDownloadAll(filenames) {
+        // Sequential download with small delay to avoid browser blocking
+        var idx = 0;
+        var success = 0;
+        var fail = 0;
+        btnBatchAll.disabled = true;
+        btnBatchAll.textContent = '다운로드 중...';
+
+        function downloadNext() {
+            if (idx >= filenames.length) {
+                btnBatchAll.disabled = false;
+                btnBatchAll.textContent = '전체 다운로드';
+                var msg = '완료: ' + success + '건 성공';
+                if (fail > 0) msg += ', ' + fail + '건 실패';
+                batchStatusEl.textContent = msg;
+                batchStatusEl.className = 'text-sm font-semibold ' + (fail > 0 ? 'text-yellow-600' : 'text-green-600');
+                return;
+            }
+            var fname = filenames[idx];
+            var url = '/api/rec/stream/' + encodeURIComponent(fname) + '?download=1';
+
+            // Use fetch to detect failures, then trigger download on success
+            fetch(url).then(function(resp) {
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                return resp.blob();
+            }).then(function(blob) {
+                var a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = fname;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(a.href);
+                success++;
+            }).catch(function() {
+                fail++;
+            }).finally(function() {
+                idx++;
+                batchStatusEl.textContent = idx + '/' + filenames.length + ' 다운로드 중...';
+                batchStatusEl.className = 'text-sm text-yellow-600';
+                setTimeout(downloadNext, 500);
+            });
+        }
+        downloadNext();
     }
 
 })();

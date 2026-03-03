@@ -464,6 +464,13 @@ def create_stream_router(storage: RecordingStorage) -> APIRouter:
         full_path = str(file_path)
         file_name = file_path.name
 
+        # download=1 이면 Content-Disposition: attachment (파일 다운로드)
+        disposition = (
+            "attachment"
+            if request.query_params.get("download") == "1"
+            else "inline"
+        )
+
         # µ-law → PCM 트랜스코딩 (브라우저 호환)
         if _is_ulaw_wav(full_path):
             try:
@@ -489,7 +496,7 @@ def create_stream_router(storage: RecordingStorage) -> APIRouter:
                             "Content-Range": f"bytes {start}-{end}/{pcm_size}",
                             "Accept-Ranges": "bytes",
                             "Content-Length": str(length),
-                            "Content-Disposition": f'inline; filename="{file_name}"',
+                            "Content-Disposition": f'{disposition}; filename="{file_name}"',
                         },
                     )
 
@@ -499,7 +506,7 @@ def create_stream_router(storage: RecordingStorage) -> APIRouter:
                     headers={
                         "Accept-Ranges": "bytes",
                         "Content-Length": str(pcm_size),
-                        "Content-Disposition": f'inline; filename="{file_name}"',
+                        "Content-Disposition": f'{disposition}; filename="{file_name}"',
                     },
                 )
 
@@ -534,7 +541,7 @@ def create_stream_router(storage: RecordingStorage) -> APIRouter:
                     "Content-Range": f"bytes {start}-{end}/{file_size}",
                     "Accept-Ranges": "bytes",
                     "Content-Length": str(length),
-                    "Content-Disposition": f'inline; filename="{file_name}"',
+                    "Content-Disposition": f'{disposition}; filename="{file_name}"',
                 },
             )
 
@@ -552,7 +559,7 @@ def create_stream_router(storage: RecordingStorage) -> APIRouter:
             headers={
                 "Accept-Ranges": "bytes",
                 "Content-Length": str(file_size),
-                "Content-Disposition": f'inline; filename="{file_name}"',
+                "Content-Disposition": f'{disposition}; filename="{file_name}"',
             },
         )
 

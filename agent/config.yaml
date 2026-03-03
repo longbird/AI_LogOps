@@ -72,6 +72,11 @@ llm:
     key: ""                         # 구독 키 (config에 미리 설정하거나, Telegram /subscribe로 입력)
     revalidate_hours: 24            # 구독 재검증 주기 (시간)
 
+rec_client:
+  name: ""                              # 녹취 클라이언트 프로세스명 (예: "AirREC_Client.exe")
+  path: ""                              # 녹취 클라이언트 실행 경로
+  args: []                              # 시작 인수
+
 recording:
   enabled: false
   watch_dir: "D:/AirSoft/Server2/Record"

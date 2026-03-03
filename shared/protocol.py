@@ -476,22 +476,31 @@ class RecUploadAckPayload:
 
 @dataclass(slots=True)
 class CmdCtrlPayload:
-    """CMD_CTRL: [Action(1B)] = 1B."""
+    """CMD_CTRL: [Action(1B)] [Target(1B)] = 2B.
+
+    target: DeployTarget 값 (0=AGENT, 1=PROCESS, 2=REC_CLIENT).
+    레거시(1B) 수신 시 target=1(PROCESS) 기본값.
+    """
 
     action: CtrlAction
+    target: int = 1  # DeployTarget.PROCESS
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!B")
-    _SIZE: ClassVar[int] = 1
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!BB")
+    _SIZE: ClassVar[int] = 2
+    _LEGACY_SIZE: ClassVar[int] = 1
 
     def pack(self) -> bytes:
-        return self._STRUCT.pack(CtrlAction(self.action))
+        return self._STRUCT.pack(CtrlAction(self.action), self.target)
 
     @classmethod
     def unpack(cls, data: bytes) -> CmdCtrlPayload:
-        if len(data) != cls._SIZE:
-            raise ValueError("cmd_ctrl payload must be exactly 1 byte")
-        (action_raw,) = cast(tuple[int], cls._STRUCT.unpack(data))
-        return cls(action=CtrlAction(action_raw))
+        if len(data) == cls._SIZE:
+            action_raw, target_raw = cast(tuple[int, int], cls._STRUCT.unpack(data))
+            return cls(action=CtrlAction(action_raw), target=target_raw)
+        if len(data) == cls._LEGACY_SIZE:
+            (action_raw,) = cast(tuple[int], struct.unpack("!B", data))
+            return cls(action=CtrlAction(action_raw), target=1)
+        raise ValueError(f"cmd_ctrl payload: expected {cls._SIZE} or {cls._LEGACY_SIZE} bytes, got {len(data)}")
 
 
 @dataclass(slots=True)
@@ -909,15 +918,17 @@ class SttResultPayload:
 class RecDataReqPayload:
     """REC_DATA_REQ: 서버 → 에이전트. 녹취 데이터 조회 요청."""
 
-    query_type: str  # "list" | "detail"
+    query_type: str  # "list" | "detail" | "file_search" | "wav_file"
     date_str: str  # YYYYMMDD (list 필터)
-    filename: str = ""  # detail 조회 시
+    filename: str = ""  # detail / wav_file 조회 시
+    search: str = ""  # file_search: 전화번호/파일명 검색어
 
     def pack(self) -> bytes:
         data: dict[str, object] = {
             "query_type": self.query_type,
             "date_str": self.date_str,
             "filename": self.filename,
+            "search": self.search,
         }
         return json.dumps(data, separators=(",", ":")).encode("utf-8")
 
@@ -928,6 +939,7 @@ class RecDataReqPayload:
             query_type=str(d.get("query_type", "list")),
             date_str=str(d.get("date_str", "")),
             filename=str(d.get("filename", "")),
+            search=str(d.get("search", "")),
         )
 
 

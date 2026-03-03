@@ -18,6 +18,12 @@
     </button>
     <span id="ws-status" class="text-sm text-gray-400">Disconnected</span>
     <span id="stream-status" class="text-sm text-gray-400"></span>
+    <div class="ml-auto">
+        <button onclick="exportLogs()" class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1.5 rounded text-sm font-semibold"
+                title="표시된 로그를 텍스트 파일로 다운로드">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 inline-block mr-1 -mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>로그 내보내기
+        </button>
+    </div>
 </div>
 
 <!-- History controls -->
@@ -329,6 +335,24 @@ function renderAnalysis(d, folder) {
                    row('종료', g.terminated || 0, 'gray');
     html += section('Grace Period', gContent);
 
+    /* IA no-RTP (SMDR IA 신호 후 RTP 미매칭) */
+    var ia = d.ia_no_rtp || {};
+    var iaPending = ia.pending || 0;
+    var iaExpired = ia.expired_5min || 0;
+    var iaContent = row('대기 중 (RTP 미수신)', iaPending, iaPending > 0 ? 'yellow' : 'gray') +
+                    row('미매칭 만료 (5min)', iaExpired, iaExpired > 0 ? 'red' : 'gray');
+    if (ia.pending_list && ia.pending_list.length > 0) {
+        iaContent += '<div class="mt-1 space-y-0.5">';
+        ia.pending_list.forEach(function(p) {
+            iaContent += '<div class="flex justify-between items-baseline py-0.5 border-b border-gray-700">' +
+                '<span class="text-yellow-400 font-mono">' + esc(p.ext) + '</span>' +
+                '<span class="text-gray-400 text-xs">' + esc(p.action) + ' @ ' + esc(p.time) + '</span>' +
+                '<span class="font-mono text-orange-300">' + esc(p.elapsed) + 's</span></div>';
+        });
+        iaContent += '</div>';
+    }
+    html += section('IA → RTP 매칭', iaContent);
+
     /* Recent Mismatches */
     if (d.recent_mismatches && d.recent_mismatches.length > 0) {
         var rmRows = d.recent_mismatches.slice(-5).reverse().map(function(r) {
@@ -418,6 +442,34 @@ async function fetchHistory() {
         histStatus.textContent = 'Network error: ' + err.message;
         histStatus.className = 'text-sm text-red-400';
     }
+}
+
+/* 로그 내보내기 */
+function exportLogs() {
+    var container = document.getElementById('log-container');
+    var text = container.innerText || container.textContent || '';
+    if (!text.trim()) {
+        alert('내보낼 로그가 없습니다.');
+        return;
+    }
+    var agentId = currentAgentId || 'unknown';
+    var now = new Date();
+    var ts = now.getFullYear()
+        + String(now.getMonth()+1).padStart(2,'0')
+        + String(now.getDate()).padStart(2,'0')
+        + '_' + String(now.getHours()).padStart(2,'0')
+        + String(now.getMinutes()).padStart(2,'0');
+    var filename = 'log_' + agentId + '_' + ts + '.txt';
+
+    var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
 }
 
 /* Auto-connect if agent was previously selected */

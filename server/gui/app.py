@@ -170,18 +170,21 @@ class ServerGUI:
         from server.gui.tabs.deploy_tab import DeployTab
         from server.gui.tabs.recording_tab import RecordingTab
         from server.gui.tabs.rec_viewer_tab import RecViewerTab
+        from server.gui.tabs.admin_tab import AdminTab
 
         self._server_tab = ServerTab(self._notebook, self)
         self._agents_tab = AgentsTab(self._notebook, self)
         self._deploy_tab = DeployTab(self._notebook, self)
         self._recording_tab = RecordingTab(self._notebook, self)
         self._rec_viewer_tab = RecViewerTab(self._notebook, self)
+        self._admin_tab = AdminTab(self._notebook, self)
 
         self._notebook.add(self._server_tab, text=" 서버 ")
         self._notebook.add(self._agents_tab, text=" 에이전트 ")
         self._notebook.add(self._deploy_tab, text=" 배포 ")
         self._notebook.add(self._recording_tab, text=" 녹취 ")
         self._notebook.add(self._rec_viewer_tab, text=" 녹취 조회 ")
+        self._notebook.add(self._admin_tab, text=" 계정 관리 ")
 
         # ── 하단 바 ──
         footer = tk.Frame(root, bg="#1e1e1e", height=24)
@@ -389,6 +392,28 @@ class ServerGUI:
             method="POST",
         )
         req.add_header("Content-Type", "application/json")
+        if self._jwt_cookie:
+            req.add_header("Cookie", f"access_token={self._jwt_cookie}")
+        return self._do_request(req)
+
+    def api_put(self, path: str, body: dict[str, Any]) -> dict[str, Any] | None:
+        """대시보드 API PUT (JSON) 요청."""
+        self._ensure_auth()
+        data = json.dumps(body).encode()
+        req = Request(
+            f"{self._dashboard_url}{path}",
+            data=data,
+            method="PUT",
+        )
+        req.add_header("Content-Type", "application/json")
+        if self._jwt_cookie:
+            req.add_header("Cookie", f"access_token={self._jwt_cookie}")
+        return self._do_request(req)
+
+    def api_delete(self, path: str) -> dict[str, Any] | None:
+        """대시보드 API DELETE 요청."""
+        self._ensure_auth()
+        req = Request(f"{self._dashboard_url}{path}", method="DELETE")
         if self._jwt_cookie:
             req.add_header("Cookie", f"access_token={self._jwt_cookie}")
         return self._do_request(req)

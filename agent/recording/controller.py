@@ -226,6 +226,11 @@ class RecordingController:
             await self._handle_wav_file_req(req)
             return
 
+        # 녹취 파일 검색 (rec_his 직접 조회)
+        if req.query_type == "file_search":
+            await self._handle_file_search(req)
+            return
+
         db_cfg = dict(self._cfg.sub("db").raw())
         if not db_cfg:
             self._logger.warning("recording.db not configured, cannot query recordings")
@@ -326,6 +331,44 @@ class RecordingController:
         with contextlib.suppress(ConnectionError, OSError):
             await self._tcp_client.send_packet(PacketType.REC_DATA_RESP, resp.pack())
         self._logger.info("wav_file sent: filename=%s size=%d", req.filename, file_size)
+
+    async def _handle_file_search(self, req: RecDataReqPayload) -> None:
+        """rec_his 테이블에서 녹취 파일 목록 검색 (분석 여부 무관)."""
+        db_cfg = dict(self._cfg.sub("db").raw())
+        if not db_cfg:
+            self._logger.warning("recording.db not configured for file_search")
+            resp = RecDataRespPayload(query_type="file_search", records=[])
+            with contextlib.suppress(ConnectionError, OSError):
+                await self._tcp_client.send_packet(
+                    PacketType.REC_DATA_RESP, resp.pack()
+                )
+            return
+
+        try:
+            from agent.db.connection import get_connection
+            from agent.db.helpers import query_rec_file_list
+
+            def _query() -> list[dict[str, object]]:
+                conn = get_connection(db_cfg)
+                return query_rec_file_list(conn, req.date_str, req.search)
+
+            records = await asyncio.to_thread(_query)
+            serializable = self._to_serializable_records(records)
+            resp = RecDataRespPayload(
+                query_type="file_search", records=serializable
+            )
+            with contextlib.suppress(ConnectionError, OSError):
+                await self._tcp_client.send_packet(
+                    PacketType.REC_DATA_RESP, resp.pack()
+                )
+            self._logger.info(
+                "file_search sent: date=%s search=%s records=%d",
+                req.date_str,
+                req.search,
+                len(serializable),
+            )
+        except Exception:
+            self._logger.exception("Failed to handle file_search")
 
     async def on_connection_lost(self) -> None:
         await self._stop_watcher()

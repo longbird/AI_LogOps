@@ -139,6 +139,11 @@ class MonitorState:
         # Active sessions: chan -> {cid, file, open_time}
         self.active_sessions: dict[str, dict[str, Any]] = {}
 
+        # SMDR IA → RTP 매칭 추적: ext -> {time, flag, action, duration}
+        # IA 신호 후 RTP START/FILE OPEN이 매칭되지 않은 세션 카운트용
+        self.ia_pending: dict[str, dict[str, Any]] = {}
+        self.ia_no_rtp_events: _EventDeque = deque()  # 매칭 실패 이력
+
         # Recent items for display
         self.recent_mismatches: deque[dict[str, Any]] = deque(maxlen=10)
         self.recent_thread_events: deque[tuple[datetime, str]] = deque(maxlen=20)
@@ -155,12 +160,16 @@ class MonitorState:
         while dq and dq[0][0] < cutoff:
             dq.popleft()
 
+    IA_TIMEOUT_SECONDS = 60  # IA 후 60초 내 RTP 없으면 미매칭 처리
+
     def prune_all(self) -> None:
         now = datetime.now()
         hour_ago = now - timedelta(seconds=self.WINDOW_SECONDS)
         five_min_ago = now - timedelta(seconds=self.ACTIVITY_SECONDS)
+        ia_cutoff = now - timedelta(seconds=self.IA_TIMEOUT_SECONDS)
 
         self._prune(self.mismatch_events, hour_ago)
+        self._prune(self.ia_no_rtp_events, five_min_ago)
         for dq in (
             self.rtp_start_events,
             self.rtp_match_events,
@@ -176,6 +185,15 @@ class MonitorState:
             self.sspp_events,
         ):
             self._prune(dq, five_min_ago)
+
+        # IA 타임아웃: 60초 지난 미매칭 IA를 ia_no_rtp_events로 이동
+        expired_exts = [
+            ext for ext, info in self.ia_pending.items()
+            if info["time"] < ia_cutoff
+        ]
+        for ext in expired_exts:
+            info = self.ia_pending.pop(ext)
+            self.ia_no_rtp_events.append((info["time"], {"ext": ext, **info}))
 
     # ------------------------------------------------------------------
     # Public API
@@ -255,9 +273,16 @@ class MonitorState:
         # RTP events
         m = RE_RTP_START.search(line)
         if m:
+            chan = m.group(1)
             self.rtp_start_events.append(
-                (event_time, {"chan": m.group(1), "cid": m.group(2)})
+                (event_time, {"chan": chan, "cid": m.group(2)})
             )
+            # IA → RTP 매칭 성공: 가장 오래된 대기 IA 소비 (ext≠chan이므로 FIFO)
+            if self.ia_pending:
+                oldest_ext = min(
+                    self.ia_pending, key=lambda k: self.ia_pending[k]["time"]
+                )
+                self.ia_pending.pop(oldest_ext)
             return
         m = RE_RTP_MATCH.search(line)
         if m:
@@ -282,6 +307,12 @@ class MonitorState:
                 "file": fname,
                 "open_time": event_time.strftime("%H:%M:%S"),
             }
+            # IA → FILE OPEN 매칭 성공: 가장 오래된 대기 IA 소비
+            if self.ia_pending:
+                oldest_ext = min(
+                    self.ia_pending, key=lambda k: self.ia_pending[k]["time"]
+                )
+                self.ia_pending.pop(oldest_ext)
             return
         m = RE_FILE_CLOSE.search(line)
         if m:
@@ -296,17 +327,22 @@ class MonitorState:
         # SMDR events
         m = RE_SMDR_EVENT.search(line)
         if m:
+            flag = m.group(1)
+            action = m.group(2)
+            ext = m.group(3)
+            duration = int(m.group(4))
             self.smdr_events.append(
-                (
-                    event_time,
-                    {
-                        "flag": m.group(1),
-                        "action": m.group(2),
-                        "ext": m.group(3),
-                        "duration": int(m.group(4)),
-                    },
-                )
+                (event_time, {"flag": flag, "action": action, "ext": ext, "duration": duration})
             )
+            # IA 신호 추적: 통화 연결 신호(IA)가 있으면 RTP 매칭 대기열에 추가
+            if flag == "IA":
+                self.ia_pending[ext] = {
+                    "time": event_time,
+                    "flag": flag,
+                    "action": action,
+                    "ext": ext,
+                    "duration": duration,
+                }
             return
         m = RE_SMDR_PENDING.search(line)
         if m:
@@ -432,6 +468,24 @@ class MonitorState:
         # --- Active sessions ---
         active_sessions = list(self.active_sessions.values())
 
+        # --- IA no-RTP tracking ---
+        ia_pending_list = [
+            {
+                "ext": ext,
+                "time": info["time"].strftime("%H:%M:%S"),
+                "action": info.get("action", ""),
+                "elapsed": int((now - info["time"]).total_seconds()),
+            }
+            for ext, info in sorted(
+                self.ia_pending.items(), key=lambda x: x[1]["time"]
+            )
+        ]
+        ia_no_rtp: dict[str, Any] = {
+            "pending": len(self.ia_pending),
+            "expired_5min": len(self.ia_no_rtp_events),
+            "pending_list": ia_pending_list,
+        }
+
         # --- Recent mismatches (last 5) ---
         recent_mm = list(self.recent_mismatches)[-5:]
 
@@ -459,6 +513,7 @@ class MonitorState:
             "mismatch_1h": mismatch,
             "activity_5min": activity,
             "grace": grace,
+            "ia_no_rtp": ia_no_rtp,
             "active_sessions": active_sessions,
             "recent_mismatches": recent_mm,
             "recent_thread_events": recent_ev,

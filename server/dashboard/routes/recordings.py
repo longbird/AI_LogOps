@@ -37,6 +37,7 @@ class _TCPServerLike(Protocol):
         query_type: str,
         date_str: str = ...,
         filename: str = ...,
+        search: str = ...,
         timeout: float = ...,
     ) -> Any | None: ...
 
@@ -127,6 +128,41 @@ async def api_rec_list(
         agent_id=agent_id,
         query_type="list",
         date_str=date,
+    )
+    if resp is None:
+        return JSONResponse(
+            {"error": "agent timeout or not connected"}, status_code=504
+        )
+
+    return JSONResponse({"records": resp.records})
+
+
+@router.get("/api/rec/files")
+async def api_rec_files(
+    request: Request,
+    agent_id: str = "",
+    date: str = "",
+    search: str = "",
+) -> JSONResponse:
+    """녹취 파일 검색 (rec_his 직접 조회, 분석 여부 무관)."""
+    state = _state(request)
+    tcp_server = state.tcp_server
+    session_mgr = state.session_mgr
+
+    if tcp_server is None or session_mgr is None:
+        return JSONResponse({"error": "server not configured"}, status_code=503)
+
+    if not agent_id:
+        sessions = session_mgr.get_all_sessions()
+        if not sessions:
+            return JSONResponse({"error": "no agent connected"}, status_code=503)
+        agent_id = sessions[0].agent_info.agent_id
+
+    resp = await tcp_server.send_rec_data_req(
+        agent_id=agent_id,
+        query_type="file_search",
+        date_str=date,
+        search=search,
     )
     if resp is None:
         return JSONResponse(
