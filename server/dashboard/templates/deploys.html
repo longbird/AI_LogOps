@@ -11,8 +11,11 @@
         <div class="space-y-3">
             <div>
                 <label class="block text-xs text-gray-500 mb-1">Agent ID</label>
-                <input id="agent-id-1" type="text" placeholder="(auto: 첫 번째 연결된 에이전트)" data-persist="deploy_agent1"
-                       class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                <select id="agent-id-1" data-persist="deploy_agent1"
+                        class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                    <option value="">(auto)</option>
+                    {% for agent_id in agents %}<option value="{{ agent_id }}">{{ agent_id }}</option>{% endfor %}
+                </select>
             </div>
             <div>
                 <label class="block text-xs text-gray-500 mb-1">배포 파일 (ZIP)</label>
@@ -31,8 +34,11 @@
         <div class="space-y-3">
             <div>
                 <label class="block text-xs text-gray-500 mb-1">Agent ID</label>
-                <input id="agent-id-2" type="text" placeholder="(auto)" data-persist="deploy_agent2"
-                       class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                <select id="agent-id-2" data-persist="deploy_agent2"
+                        class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                    <option value="">(auto)</option>
+                    {% for agent_id in agents %}<option value="{{ agent_id }}">{{ agent_id }}</option>{% endfor %}
+                </select>
             </div>
             <div>
                 <label class="block text-xs text-gray-500 mb-1">배포 파일 (ZIP)</label>
@@ -51,8 +57,11 @@
         <div class="space-y-3">
             <div>
                 <label class="block text-xs text-gray-500 mb-1">Agent ID</label>
-                <input id="agent-id-3" type="text" placeholder="(auto)" data-persist="deploy_agent3"
-                       class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                <select id="agent-id-3" data-persist="deploy_agent3"
+                        class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                    <option value="">(auto)</option>
+                    {% for agent_id in agents %}<option value="{{ agent_id }}">{{ agent_id }}</option>{% endfor %}
+                </select>
             </div>
             <div>
                 <label class="block text-xs text-gray-500 mb-1">배포 파일 (ZIP)</label>

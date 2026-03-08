@@ -316,7 +316,7 @@ async def _run_telegram(
 class _PollingAccessLogFilter(logging.Filter):
     """고빈도 폴링 엔드포인트를 uvicorn access log에서 제외."""
 
-    _SUPPRESS = ("/api/deploy/status",)
+    _SUPPRESS = ("/api/deploy/status", "/api/analysis/", "/api/agents")
 
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()

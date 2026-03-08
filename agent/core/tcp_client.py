@@ -159,14 +159,17 @@ class TCPClient:
 
         await self._close_connection()
 
-    async def send_heartbeat(self) -> None:
-        """HEARTBEAT 패킷 전송. psutil로 CPU/MEM 수집."""
+    async def send_heartbeat(self, process_status: int = 0) -> None:
+        """HEARTBEAT 패킷 전송. psutil로 CPU/MEM 수집, 프로세스 상태 포함."""
 
         cpu = max(0, min(100, int(psutil.cpu_percent(interval=None))))
         mem_percent = cast(float, psutil.virtual_memory().percent)
         mem = max(0, min(100, int(mem_percent)))
         payload = HeartbeatPayload(
-            timestamp=int(time.time()), cpu_percent=cpu, mem_percent=mem
+            timestamp=int(time.time()),
+            cpu_percent=cpu,
+            mem_percent=mem,
+            process_status=process_status,
         ).pack()
         await self.send_packet(PacketType.HEARTBEAT, payload)
 
@@ -186,9 +189,13 @@ class TCPClient:
         payload = LogHistPayload(filename=filename, data=data)
         await self.send_packet(PacketType.LOG_HIST, payload.pack())
 
-    async def send_log_line(self, filename: str, line: str, folder_index: int = 0) -> None:
+    async def send_log_line(
+        self, filename: str, line: str, folder_index: int = 0
+    ) -> None:
         """LOG_REAL 패킷으로 실시간 로그 라인 전송."""
-        payload = LogRealPayload(filename=filename, line=line, folder_index=folder_index)
+        payload = LogRealPayload(
+            filename=filename, line=line, folder_index=folder_index
+        )
         await self.send_packet(PacketType.LOG_REAL, payload.pack())
 
     async def send_log_file_list(self, entries: list[LogFileEntry]) -> None:

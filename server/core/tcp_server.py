@@ -38,6 +38,7 @@ from shared.protocol import (
     RecDataReqPayload,
     RecDataRespPayload,
     RecUploadAckPayload,
+    HeartbeatPayload,
     SttResultPayload,
 )
 from shared.utils import compute_sha256, setup_logging
@@ -381,7 +382,10 @@ class TCPServer:
                 break
 
             if packet_type == PacketType.HEARTBEAT:
-                self.session_mgr.update_heartbeat(agent_id)
+                hb = HeartbeatPayload.unpack(payload)
+                self.session_mgr.update_heartbeat(
+                    agent_id, process_status=hb.process_status
+                )
                 writer.write(Packet.build(PacketType.HEARTBEAT, payload))
                 await writer.drain()
                 self._logger.debug("heartbeat echoed: agent_id=%s", agent_id)
@@ -510,6 +514,7 @@ class TCPServer:
                 self._monitor_states[agent_id] = {}
             if folder_idx not in self._monitor_states[agent_id]:
                 from server.analysis.monitor_state import MonitorState
+
                 self._monitor_states[agent_id][folder_idx] = MonitorState()
             self._monitor_states[agent_id][folder_idx].process_line(
                 message.line, filename=message.filename
@@ -568,7 +573,10 @@ class TCPServer:
             asyncio.create_task(self._notify(f"⚠️ 배포 롤백: {agent_id}"))
 
     async def send_ctrl_command(
-        self, agent_id: str, action: CtrlAction, target: int = 1,
+        self,
+        agent_id: str,
+        action: CtrlAction,
+        target: int = 1,
     ) -> bool:
         """CMD_CTRL 패킷을 에이전트에 전송.
 
@@ -579,17 +587,23 @@ class TCPServer:
             return False
         writer = cast(_WriterLike, session.writer)
         from shared.protocol import CmdCtrlPayload
+
         cmd = CmdCtrlPayload(action=action, target=target)
         writer.write(Packet.build(PacketType.CMD_CTRL, cmd.pack()))
         await writer.drain()
         self._logger.info(
             "CMD_CTRL sent: agent_id=%s action=%s target=%d",
-            agent_id, action.name, target,
+            agent_id,
+            action.name,
+            target,
         )
         return True
 
     async def send_log_command(
-        self, agent_id: str, action: LogAction, date: str = "",
+        self,
+        agent_id: str,
+        action: LogAction,
+        date: str = "",
         folder_index: int = -1,
     ) -> bool:
         """CMD_LOG 패킷을 에이전트에 전송."""
@@ -741,7 +755,9 @@ class TCPServer:
 
         # HIST 진행률 초기화
         self._hist_progress[agent_id] = {
-            "total": len(selected), "received": 0, "total_bytes": 0,
+            "total": len(selected),
+            "received": 0,
+            "total_bytes": 0,
         }
 
         # 진행 메시지를 log_buffer에 추가
@@ -758,11 +774,16 @@ class TCPServer:
         await writer.drain()
 
     async def send_deploy(
-        self, agent_id: str, file_path: str, deploy_target: str = "agent"
+        self,
+        agent_id: str,
+        file_path: str,
+        deploy_target: str = "agent",
+        original_filename: str = "",
     ) -> bool:
         """에이전트에 파일 배포. CMD_DEPLOY + FILE_CHUNKs 전송.
 
         대용량 파일(zip 등)을 위해 64KB 청크와 배치 drain을 사용한다.
+        original_filename이 지정되면 에이전트에 해당 이름으로 전송한다.
         """
         session = self.session_mgr.get_session(agent_id)
         if session is None or session.writer is None:
@@ -786,7 +807,7 @@ class TCPServer:
         cmd = CmdDeployPayload(
             file_size=len(data),
             sha256=sha256_hash,
-            filename=path.name,
+            filename=original_filename or path.name,
             deploy_target=target,
         )
         writer.write(Packet.build(PacketType.CMD_DEPLOY, cmd.pack()))
@@ -1189,8 +1210,10 @@ class TCPServer:
         self._rec_data_futures[agent_id] = future
 
         req = RecDataReqPayload(
-            query_type=query_type, date_str=date_str,
-            filename=filename, search=search,
+            query_type=query_type,
+            date_str=date_str,
+            filename=filename,
+            search=search,
         )
         writer.write(Packet.build(PacketType.REC_DATA_REQ, req.pack()))
         await writer.drain()

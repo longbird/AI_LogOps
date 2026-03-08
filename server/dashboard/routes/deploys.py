@@ -22,13 +22,20 @@ DEPLOY_DIR = Path("storage/deploys")
 
 class _TCPServerLike(Protocol):
     async def send_deploy(
-        self, agent_id: str, file_path: str, deploy_target: str = "agent"
+        self,
+        agent_id: str,
+        file_path: str,
+        deploy_target: str = "agent",
+        original_filename: str = "",
     ) -> bool: ...
 
     def get_deploy_result_future(self, agent_id: str) -> asyncio.Future[Any] | None: ...
 
     async def send_ctrl_command(
-        self, agent_id: str, action: Any, target: int = ...,
+        self,
+        agent_id: str,
+        action: Any,
+        target: int = ...,
     ) -> bool: ...
 
 
@@ -53,11 +60,15 @@ async def deploys_page(request: Request) -> HTMLResponse:
     """배포 관리 페이지."""
     state = _state(request)
     templates = state.templates
+    session_mgr = state.session_mgr
+    agents: list[str] = []
+    if session_mgr:
+        agents = [s.agent_info.agent_id for s in session_mgr.get_all_sessions()]
     return cast(
         HTMLResponse,
         templates.TemplateResponse(
             "deploys.html",
-            {"request": request, "title": "배포"},
+            {"request": request, "title": "배포", "agents": agents},
         ),
     )
 
@@ -147,7 +158,10 @@ async def api_deploy_upload(
     async def _push() -> None:
         try:
             ok = await tcp_server.send_deploy(
-                agent_id, str(temp_path), deploy_target=deploy_target
+                agent_id,
+                str(temp_path),
+                deploy_target=deploy_target,
+                original_filename=filename,
             )
             if ok:
                 logger.info("deploy done: %s → %s", deploy_id, agent_id)
@@ -254,21 +268,33 @@ async def api_ctrl_restart(request: Request) -> JSONResponse:
             agent_id = sessions[0].agent_info.agent_id
 
     if not agent_id:
-        return JSONResponse({"error": "에이전트가 연결되어 있지 않습니다"}, status_code=404)
+        return JSONResponse(
+            {"error": "에이전트가 연결되어 있지 않습니다"}, status_code=404
+        )
 
     from shared.protocol import CtrlAction, DeployTarget
 
-    target_map = {"agent": DeployTarget.AGENT, "process": DeployTarget.PROCESS, "rec_client": DeployTarget.REC_CLIENT}
+    target_map = {
+        "agent": DeployTarget.AGENT,
+        "process": DeployTarget.PROCESS,
+        "rec_client": DeployTarget.REC_CLIENT,
+    }
     target_int = target_map.get(target, DeployTarget.PROCESS)
 
-    success = await tcp_server.send_ctrl_command(agent_id, CtrlAction.RESTART, target=target_int)
+    success = await tcp_server.send_ctrl_command(
+        agent_id, CtrlAction.RESTART, target=target_int
+    )
     if success:
-        logger.info("restart command sent: agent=%s target=%s(%d)", agent_id, target, target_int)
-        return JSONResponse({
-            "status": "ok",
-            "agent_id": agent_id,
-            "target": target,
-        })
+        logger.info(
+            "restart command sent: agent=%s target=%s(%d)", agent_id, target, target_int
+        )
+        return JSONResponse(
+            {
+                "status": "ok",
+                "agent_id": agent_id,
+                "target": target,
+            }
+        )
     return JSONResponse(
         {"error": f"에이전트 {agent_id}에 명령 전송 실패"}, status_code=502
     )

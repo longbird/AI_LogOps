@@ -16,9 +16,28 @@
     <button id="btn-stream-stop" class="bg-red-600 hover:bg-red-700 text-white px-4 py-1.5 rounded text-sm font-semibold hidden">
         Stop Streaming
     </button>
+    <!-- 실시간 로그 폴더 필터 -->
+    <div id="realtime-folder-bar" class="hidden flex items-center gap-1">
+        <span class="text-gray-400 text-xs">로그:</span>
+        <button id="btn-rt-all" onclick="setRealtimeFolder('all')"
+            class="px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-blue-700 text-white">ALL</button>
+        <button id="btn-rt-f0" onclick="setRealtimeFolder('f0')"
+            class="px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-gray-600 text-gray-300 hover:bg-gray-500">F0</button>
+        <button id="btn-rt-f1" onclick="setRealtimeFolder('f1')"
+            class="px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-gray-600 text-gray-300 hover:bg-gray-500">F1</button>
+    </div>
     <span id="ws-status" class="text-sm text-gray-400">Disconnected</span>
     <span id="stream-status" class="text-sm text-gray-400"></span>
-    <div class="ml-auto">
+    <span class="text-gray-600">|</span>
+    <label class="text-xs text-gray-400">스트리밍중</label>
+    <div class="ml-auto flex items-center gap-2">
+        <button id="btn-toggle-analysis" onclick="toggleAnalysisPanel()"
+            class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1.5 rounded text-sm font-semibold"
+            title="실시간 분석 패널 보기/숨기기">
+            <svg id="icon-analysis-hide" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 inline-block mr-1 -mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M3 3l18 18"/></svg>
+            <svg id="icon-analysis-show" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 inline-block mr-1 -mt-0.5 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+            <span id="btn-analysis-text">분석 숨기기</span>
+        </button>
         <button onclick="exportLogs()" class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1.5 rounded text-sm font-semibold"
                 title="표시된 로그를 텍스트 파일로 다운로드">
             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 inline-block mr-1 -mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/></svg>로그 내보내기
@@ -42,17 +61,17 @@
     <span id="hist-status" class="text-sm text-gray-400"></span>
 </div>
 
-<!-- Main layout: log (left 60%) + analysis (right 40%) -->
-<div class="flex gap-4">
+<!-- Main layout: log (left 60%) + analysis (right 40%), 모바일: 세로 배치 -->
+<div class="flex flex-col lg:flex-row gap-4">
     <!-- Log panel -->
-    <div class="flex-[3] min-w-0">
-        <div id="log-container" class="bg-gray-900 text-green-400 font-mono text-sm p-4 rounded-lg h-[600px] overflow-y-auto">
+    <div class="w-full lg:flex-[3] min-w-0">
+        <div id="log-container" class="bg-gray-900 text-green-400 font-mono text-sm p-4 rounded-lg h-[70vh] lg:h-[600px] overflow-y-auto">
             <p class="text-gray-500">Select an agent to view logs...</p>
         </div>
     </div>
 
     <!-- Analysis panel -->
-    <div class="flex-[2] min-w-0">
+    <div id="analysis-wrapper" class="w-full lg:flex-[2] min-w-0">
         <!-- 폴더 선택 바 (스트리밍 시작 후 표시) -->
         <div id="folder-bar" class="hidden mb-1 flex items-center gap-2 bg-gray-700 rounded-lg px-3 py-1.5">
             <span class="text-gray-400 text-xs">분석 폴더:</span>
@@ -76,6 +95,8 @@ var analysisTimer = null;
 var currentAgentId = null;
 var currentFolder = 0;  // 현재 선택된 분석 폴더 인덱스
 var histFolderIndex = -1;  // History 폴더 선택: -1=ALL
+var realtimeFolder = 'all';  // 실시간 로그 폴더 필터: 'all', 'f0', 'f1'
+var analysisVisible = true;  // 분석 패널 표시 여부
 
 function switchAgent(agentId) {
     if (ws) { ws.close(); ws = null; }
@@ -90,8 +111,10 @@ function switchAgent(agentId) {
     var btnStop = document.getElementById('btn-stream-stop');
     var folderBar = document.getElementById('folder-bar');
     var historyBar = document.getElementById('history-bar');
+    var rtFolderBar = document.getElementById('realtime-folder-bar');
     container.innerHTML = '';
     streaming = false;
+    realtimeFolder = 'all';
 
     if (!agentId) {
         container.innerHTML = '<p class="text-gray-500">Select an agent to view logs...</p>';
@@ -102,6 +125,7 @@ function switchAgent(agentId) {
         btnStop.classList.add('hidden');
         folderBar.classList.add('hidden');
         historyBar.classList.add('hidden');
+        rtFolderBar.classList.add('hidden');
         localStorage.removeItem(STREAM_KEY);
         resetAnalysisPanel();
         return;
@@ -109,6 +133,7 @@ function switchAgent(agentId) {
 
     btnStart.classList.remove('hidden');
     btnStop.classList.add('hidden');
+    rtFolderBar.classList.remove('hidden');
     streamStatus.textContent = '';
 
     // History bar 표시 + 날짜 기본값 설정
@@ -135,9 +160,19 @@ function switchAgent(agentId) {
         btnStop.classList.add('hidden');
     };
     ws.onmessage = function(e) {
+        var line = e.data;
+        // 폴더 필터 적용
+        if (realtimeFolder !== 'all') {
+            var prefix = '[F' + (realtimeFolder === 'f0' ? '0' : '1') + ']';
+            if (line.indexOf(prefix) !== 0 && line.indexOf('[F') === 0) return;
+        }
         var div = document.createElement('div');
         div.className = 'text-sm font-mono';
-        div.textContent = e.data;
+        div.textContent = line;
+        // 폴더 태그를 data 속성에 저장 (필터 전환 시 사용)
+        if (line.indexOf('[F0]') === 0) div.dataset.folder = 'f0';
+        else if (line.indexOf('[F1]') === 0) div.dataset.folder = 'f1';
+        else div.dataset.folder = 'other';
         container.appendChild(div);
         while (container.children.length > 2000) container.removeChild(container.firstChild);
         scrollToBottom();
@@ -166,6 +201,7 @@ async function toggleStream(action) {
         var data = await resp.json();
         if (resp.ok) {
             var folderBar = document.getElementById('folder-bar');
+            var rtFolderBar = document.getElementById('realtime-folder-bar');
             if (action === 'start') {
                 streaming = true;
                 streamStatus.textContent = 'Streaming';
@@ -173,6 +209,7 @@ async function toggleStream(action) {
                 btnStart.classList.add('hidden');
                 btnStop.classList.remove('hidden');
                 folderBar.classList.remove('hidden');
+                rtFolderBar.classList.remove('hidden');
                 setFolderButtonStyles(currentFolder);
                 startAnalysisPolling(agentId);
             } else {
@@ -393,6 +430,36 @@ function renderAnalysis(d, folder) {
     document.getElementById('analysis-panel').innerHTML = html;
 }
 
+/* ───────── Realtime folder filter ───────── */
+
+function setRealtimeFolder(folder) {
+    realtimeFolder = folder;
+    // 버튼 스타일 업데이트
+    ['all', 'f0', 'f1'].forEach(function(f) {
+        var btn = document.getElementById('btn-rt-' + f);
+        if (!btn) return;
+        if (f === folder) {
+            btn.className = 'px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-blue-700 text-white';
+        } else {
+            btn.className = 'px-2.5 py-0.5 rounded text-xs font-mono font-semibold bg-gray-600 text-gray-300 hover:bg-gray-500';
+        }
+    });
+    // 기존 로그 라인 필터링 (표시/숨김 토글)
+    var container = document.getElementById('log-container');
+    var children = container.children;
+    for (var i = 0; i < children.length; i++) {
+        var el = children[i];
+        var elFolder = el.dataset.folder;
+        if (!elFolder) { el.style.display = ''; continue; }
+        if (folder === 'all') {
+            el.style.display = '';
+        } else {
+            el.style.display = (elFolder === folder || elFolder === 'other') ? '' : 'none';
+        }
+    }
+    scrollToBottom();
+}
+
 /* ───────── History controls ───────── */
 
 function setHistFolder(index) {
@@ -470,6 +537,27 @@ function exportLogs() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(a.href);
+}
+
+/* ───────── Analysis panel toggle ───────── */
+
+function toggleAnalysisPanel() {
+    var wrapper = document.getElementById('analysis-wrapper');
+    var btnText = document.getElementById('btn-analysis-text');
+    var iconHide = document.getElementById('icon-analysis-hide');
+    var iconShow = document.getElementById('icon-analysis-show');
+    analysisVisible = !analysisVisible;
+    if (analysisVisible) {
+        wrapper.classList.remove('hidden');
+        btnText.textContent = '분석 숨기기';
+        iconHide.classList.remove('hidden');
+        iconShow.classList.add('hidden');
+    } else {
+        wrapper.classList.add('hidden');
+        btnText.textContent = '분석 보기';
+        iconHide.classList.add('hidden');
+        iconShow.classList.remove('hidden');
+    }
 }
 
 /* Auto-connect if agent was previously selected */

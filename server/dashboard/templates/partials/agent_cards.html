@@ -12,6 +12,15 @@
             <p>Version: {{ agent.version }}</p>
             <p>Session: {{ agent.session_id[:8] }}...</p>
             <p>Heartbeat: {{ agent.last_heartbeat_ago }}</p>
+            <p>Process:
+                {% if agent.process_status == "Running" %}
+                <span class="text-green-600 font-medium">● Running</span>
+                {% elif agent.process_status == "Down" %}
+                <span class="text-red-600 font-medium">● Down</span>
+                {% else %}
+                <span class="text-gray-400">-</span>
+                {% endif %}
+            </p>
             <p>Logs: {{ agent.log_count }} | Deploys: {{ agent.deploy_count }}</p>
         </div>
     </div>

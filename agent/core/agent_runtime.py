@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from agent.core.log_cmd_handler import LogCmdHandler
     from agent.core.log_watcher import LogWatcher
     from agent.core.process_mgr import ProcessManager
+    from agent.core.process_monitor import ProcessMonitorLoop
     from agent.core.tcp_client import TCPClient
     from agent.recording.controller import RecordingController
 
@@ -60,6 +61,7 @@ class AgentRuntime:
         # Exposed so GUI can access for force-reconnect
         self.tcp_client: TCPClient | None = None
         self._connections: list[ServerConnection] = []
+        self._process_monitor: ProcessMonitorLoop | None = None
 
     @property
     def connections(self) -> list[ServerConnection]:
@@ -71,6 +73,7 @@ class AgentRuntime:
 
     async def run(self) -> None:  # noqa: C901, PLR0912, PLR0915
         """Main agent lifecycle."""
+        from agent.core.log_alert_detector import LogAlertDetector
         from agent.core.log_watcher import LogWatcher
         from agent.core.process_mgr import (
             ProcessManager,
@@ -137,8 +140,15 @@ class AgentRuntime:
                 await self._stop_event.wait()
                 return
 
-            # 5. Shared LogWatcher + fan-out callback
+            # 5. Shared LogWatcher + fan-out callback + alert detector
+            alert_cfg = monitoring_cfg.sub("alert")
+            alert_detector: LogAlertDetector | None = None
+
             async def _send_log(filename: str, line: str, folder_index: int) -> None:
+                # 이상 패턴 감지 (alert detector가 활성화된 경우)
+                if alert_detector is not None:
+                    await alert_detector.check_line(filename, line)
+
                 tasks: list[Awaitable[None]] = []
                 for conn in connections:
                     if (
@@ -326,19 +336,34 @@ class AgentRuntime:
                     f"Agent started.\nID: {agent_id}\nVersion: {agent_ver}"
                 )
 
-            # 19. ProcessMonitorLoop
+            # 19. Notification callback + Log alert detector
             async def _notify(message: str) -> None:
                 with contextlib.suppress(Exception):
                     await poller.send_message(message)
 
-            if auto_restart:
+            alert_enabled = alert_cfg.b("enabled", True)
+            custom_patterns = alert_cfg.raw().get("patterns")
+            pattern_list = (
+                list(custom_patterns) if isinstance(custom_patterns, list) else None
+            )
+            alert_detector = LogAlertDetector(
+                on_notify=_notify,
+                patterns=pattern_list,
+                cooldown=float(alert_cfg.i("cooldown", 300)),
+                enabled=alert_enabled,
+            )
+
+            process_name = process_cfg.s("name", "")
+            if process_name:
                 monitor_loop = ProcessMonitorLoop(
                     process_mgr=process_mgr,
                     check_interval=float(check_interval),
                     process_args=process_args or None,
                     on_notify=_notify,
                     enabled=True,
+                    auto_restart=auto_restart,
                 )
+                self._process_monitor = monitor_loop
                 monitor_task = asyncio.create_task(monitor_loop.run())
 
             # 20. ProcessScheduler
@@ -451,7 +476,15 @@ class AgentRuntime:
                 if now >= next_heartbeat:
                     next_heartbeat = now + interval
                     try:
-                        await asyncio.wait_for(tcp_client.send_heartbeat(), timeout=5.0)
+                        ps = (
+                            self._process_monitor.process_status
+                            if self._process_monitor is not None
+                            else 0
+                        )
+                        await asyncio.wait_for(
+                            tcp_client.send_heartbeat(process_status=ps),
+                            timeout=5.0,
+                        )
                     except (ConnectionError, OSError, asyncio.TimeoutError):
                         logger.warning(
                             "[%s] heartbeat failed — closing connection", srv.name

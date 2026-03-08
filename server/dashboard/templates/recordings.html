@@ -8,8 +8,11 @@
     <div class="flex items-end gap-4 flex-wrap">
         <div>
             <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Agent ID</label>
-            <input id="ctrl-agent" type="text" placeholder="(auto: first connected)" data-persist="rec_ctrl_agent"
-                   class="border border-gray-300 rounded px-3 py-2 text-sm w-48 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+            <select id="ctrl-agent" data-persist="rec_ctrl_agent"
+                    class="border border-gray-300 rounded px-3 py-2 text-sm w-48 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                <option value="">(auto)</option>
+                {% for agent_id in agents %}<option value="{{ agent_id }}">{{ agent_id }}</option>{% endfor %}
+            </select>
         </div>
         <div>
             <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Date (YYYYMMDD)</label>
@@ -50,8 +53,11 @@
     </div>
     <div>
         <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Agent ID</label>
-        <input id="rec-agent" type="text" placeholder="(auto)" data-persist="rec_search_agent"
-               class="border border-gray-300 rounded px-3 py-2 text-sm w-48 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+        <select id="rec-agent" data-persist="rec_search_agent"
+                class="border border-gray-300 rounded px-3 py-2 text-sm w-48 focus:ring-2 focus:ring-blue-400 focus:outline-none">
+            <option value="">(auto)</option>
+            {% for agent_id in agents %}<option value="{{ agent_id }}">{{ agent_id }}</option>{% endfor %}
+        </select>
     </div>
     <button id="rec-search" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm font-semibold">
         Search

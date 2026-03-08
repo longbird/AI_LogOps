@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from shared.utils import setup_logging
@@ -19,7 +20,11 @@ class _TCPServerLike(Protocol):
     auth_token: str
 
     async def send_deploy(
-        self, agent_id: str, file_path: str, deploy_target: str = "agent"
+        self,
+        agent_id: str,
+        file_path: str,
+        deploy_target: str = "agent",
+        original_filename: str = "",
     ) -> bool: ...
 
     def get_deploy_result_future(self, agent_id: str) -> asyncio.Future[Any] | None: ...
@@ -61,8 +66,8 @@ DEPLOY_DIR = Path("storage/deploys")
 async def upload_deploy(
     request: Request,
     file: UploadFile = File(...),
-    agent_id: str = "",
-    target: str = "",
+    agent_id: str = Form(""),
+    target: str = Form(""),
     authorization: str = Header(""),
 ) -> JSONResponse:
     """deploy.py에서 zip 업로드 → TCP로 에이전트에 배포.
@@ -72,16 +77,17 @@ async def upload_deploy(
     Form:
         file: zip 파일
         agent_id: 대상 에이전트 (비어있으면 첫 번째 연결된 에이전트)
-        target: 배포 대상 ("agent"|"process", 기본값: "agent")
+        target: 배포 대상 ("agent"|"process"|"rec_client", 기본값: "agent")
     """
     _verify_api_token(request, authorization)
 
-    if target not in ("", "agent", "process"):
+    if target not in ("", "agent", "process", "rec_client"):
         return JSONResponse(
-            {"error": "invalid target, must be 'agent' or 'process'"}, status_code=400
+            {"error": "invalid target, must be 'agent', 'process' or 'rec_client'"},
+            status_code=400,
         )
 
-    deploy_target = target if target else "agent"
+    deploy_target = "process" if target == "process" else "agent"
 
     state = _state(request)
     tcp_server = state.tcp_server
@@ -123,7 +129,10 @@ async def upload_deploy(
     async def _push_and_cleanup() -> None:
         try:
             ok = await tcp_server.send_deploy(
-                agent_id, str(temp_path), deploy_target=deploy_target
+                agent_id,
+                str(temp_path),
+                deploy_target=deploy_target,
+                original_filename=filename,
             )
             if not ok:
                 logger.error(
@@ -190,14 +199,19 @@ async def deploy_status(
         return JSONResponse({"error": "server not configured"}, status_code=503)
 
     sessions = session_mgr.get_all_sessions()
+    now = time.time()
     agents = []
     for s in sessions:
         info = s.agent_info  # type: ignore[union-attr]
+        hb_ago = int(now - s.last_heartbeat)
         agents.append(
             {
                 "agent_id": info.agent_id,
                 "version": info.version,
+                "state": info.state.value,
                 "connected": True,
+                "last_heartbeat_ago": (f"{hb_ago}s ago" if hb_ago < 300 else "offline"),
+                "process_status": s.process_status,
             }
         )
 

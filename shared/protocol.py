@@ -220,12 +220,14 @@ class LogHistPayload:
 @dataclass(slots=True)
 class LogRealPayload:
     """LOG_REAL: [FolderIndex(1B)] [FileName(256B)] [LineLen(2B)] [Line(variable)]."""
+
     filename: str
     line: str
     folder_index: int = 0  # 0-based index into agent's watch_dirs list
     _NAME_SIZE: ClassVar[int] = 256
     _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct("!B256sH")
     _HEADER_SIZE: ClassVar[int] = 259
+
     def pack(self) -> bytes:
         line_bytes = self.line.encode("utf-8")
         line_len = len(line_bytes)
@@ -241,6 +243,7 @@ class LogRealPayload:
             )
             + line_bytes
         )
+
     # Legacy format (no folder_index): [FileName(256B)] [LineLen(2B)] [Line(variable)]
     _LEGACY_STRUCT: ClassVar[struct.Struct] = struct.Struct("!256sH")
     _LEGACY_HEADER_SIZE: ClassVar[int] = 258
@@ -250,7 +253,8 @@ class LogRealPayload:
         # Try new format first: [FolderIndex(1B)] [FileName(256B)] [LineLen(2B)] [Line]
         if len(data) >= cls._HEADER_SIZE:
             folder_index, filename_raw, line_len = cast(
-                tuple[int, bytes, int], cls._HEADER_STRUCT.unpack(data[: cls._HEADER_SIZE])
+                tuple[int, bytes, int],
+                cls._HEADER_STRUCT.unpack(data[: cls._HEADER_SIZE]),
             )
             line_bytes = data[cls._HEADER_SIZE :]
             if len(line_bytes) == line_len:
@@ -262,7 +266,8 @@ class LogRealPayload:
         # Fallback: legacy format without folder_index
         if len(data) >= cls._LEGACY_HEADER_SIZE:
             filename_raw, line_len = cast(
-                tuple[bytes, int], cls._LEGACY_STRUCT.unpack(data[: cls._LEGACY_HEADER_SIZE])
+                tuple[bytes, int],
+                cls._LEGACY_STRUCT.unpack(data[: cls._LEGACY_HEADER_SIZE]),
             )
             line_bytes = data[cls._LEGACY_HEADER_SIZE :]
             if len(line_bytes) == line_len:
@@ -500,7 +505,9 @@ class CmdCtrlPayload:
         if len(data) == cls._LEGACY_SIZE:
             (action_raw,) = cast(tuple[int], struct.unpack("!B", data))
             return cls(action=CtrlAction(action_raw), target=1)
-        raise ValueError(f"cmd_ctrl payload: expected {cls._SIZE} or {cls._LEGACY_SIZE} bytes, got {len(data)}")
+        raise ValueError(
+            f"cmd_ctrl payload: expected {cls._SIZE} or {cls._LEGACY_SIZE} bytes, got {len(data)}"
+        )
 
 
 @dataclass(slots=True)
@@ -754,31 +761,61 @@ class LogFileSelectPayload:
         return cls(filenames=filenames)
 
 
+class ProcessStatus(IntEnum):
+    """프로세스 모니터링 상태 (heartbeat에 포함)."""
+
+    NOT_MONITORED = 0  # target_process 미설정
+    RUNNING = 1  # 프로세스 실행 중
+    DOWN = 2  # 프로세스 종료됨
+
+
 @dataclass(slots=True)
 class HeartbeatPayload:
     timestamp: int
     cpu_percent: int
     mem_percent: int
+    process_status: int = 0  # ProcessStatus (0=미설정, 1=실행중, 2=다운)
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("!QBB")
-    _SIZE: ClassVar[int] = 10
+    _STRUCT_V1: ClassVar[struct.Struct] = struct.Struct("!QBB")
+    _STRUCT_V2: ClassVar[struct.Struct] = struct.Struct("!QBBB")
+    _SIZE_V1: ClassVar[int] = 10
+    _SIZE_V2: ClassVar[int] = 11
 
     def pack(self) -> bytes:
         if not 0 <= self.cpu_percent <= 100:
             raise ValueError("cpu_percent must be between 0 and 100")
         if not 0 <= self.mem_percent <= 100:
             raise ValueError("mem_percent must be between 0 and 100")
-        return self._STRUCT.pack(self.timestamp, self.cpu_percent, self.mem_percent)
+        return self._STRUCT_V2.pack(
+            self.timestamp, self.cpu_percent, self.mem_percent, self.process_status
+        )
 
     @classmethod
     def unpack(cls, data: bytes) -> HeartbeatPayload:
-        if len(data) != cls._SIZE:
-            raise ValueError("heartbeat payload must be exactly 10 bytes")
-        timestamp, cpu_percent, mem_percent = cast(
-            tuple[int, int, int], cls._STRUCT.unpack(data)
-        )
-        return cls(
-            timestamp=timestamp, cpu_percent=cpu_percent, mem_percent=mem_percent
+        if len(data) == cls._SIZE_V1:
+            # 구버전 에이전트 (process_status 없음)
+            timestamp, cpu_percent, mem_percent = cast(
+                tuple[int, int, int], cls._STRUCT_V1.unpack(data)
+            )
+            return cls(
+                timestamp=timestamp,
+                cpu_percent=cpu_percent,
+                mem_percent=mem_percent,
+                process_status=ProcessStatus.NOT_MONITORED,
+            )
+        if len(data) == cls._SIZE_V2:
+            timestamp, cpu_percent, mem_percent, process_status = cast(
+                tuple[int, int, int, int], cls._STRUCT_V2.unpack(data)
+            )
+            return cls(
+                timestamp=timestamp,
+                cpu_percent=cpu_percent,
+                mem_percent=mem_percent,
+                process_status=process_status,
+            )
+        raise ValueError(
+            f"heartbeat payload must be {cls._SIZE_V1} or {cls._SIZE_V2} bytes, "
+            f"got {len(data)}"
         )
 
 

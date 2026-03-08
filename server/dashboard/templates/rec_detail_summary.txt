@@ -1,0 +1,15 @@
+The `rec_detail.html` file has been redesigned to use a 2-column layout as requested.
+
+### Key Changes:
+- **Layout**: Implemented a `grid-cols-12` layout.
+    - **Left Column (5 cols)**: Contains recording info, scores, talk ratios, keywords, and audio quality. This column is scrollable if content exceeds the viewport.
+    - **Right Column (7 cols)**: Dedicated to the STT conversation, filling the full height of the container with independent scrolling.
+- **Audio Player**: Placed at the top, spanning the full width above the columns.
+- **Styling**: Used Tailwind CSS for a clean, modern look with rounded corners, subtle shadows, and consistent spacing.
+- **Functionality**:
+    - Kept all existing element IDs and JavaScript logic intact.
+    - Added `SMDR 길이` field back to the Audio Quality section to ensure no data loss.
+    - Ensured responsiveness (stacks on mobile, 2-column on desktop).
+    - Added custom scrollbar styling for a polished feel.
+
+The page now efficiently uses screen real estate, allowing users to view the transcript alongside the analysis metrics without excessive scrolling.

@@ -17,7 +17,7 @@ NotifyCallback = Callable[[str], Awaitable[None]]
 
 
 class ProcessMonitorLoop:
-    """지정 간격으로 대상 프로세스 생존 여부 확인, 없으면 자동 재시작."""
+    """지정 간격으로 대상 프로세스 생존 여부 확인, 다운 시 알림 및 선택적 자동 재시작."""
 
     def __init__(
         self,
@@ -26,13 +26,23 @@ class ProcessMonitorLoop:
         process_args: list[str] | None = None,
         on_notify: NotifyCallback | None = None,
         enabled: bool = True,
+        auto_restart: bool = True,
     ):
         self._mgr = process_mgr
         self._interval = check_interval
         self._args = process_args
         self._notify = on_notify
         self._enabled = enabled
+        self._auto_restart = auto_restart
         self._running = False
+        self._prev_alive: bool | None = None  # None = 첫 체크 전
+
+    @property
+    def process_status(self) -> int:
+        """현재 프로세스 상태. 0=미설정/첫체크전, 1=실행중, 2=다운."""
+        if self._prev_alive is None:
+            return 0
+        return 1 if self._prev_alive else 2
 
     def stop(self) -> None:
         """루프 중지 요청."""
@@ -47,7 +57,20 @@ class ProcessMonitorLoop:
         while self._running:
             try:
                 pid = self._mgr.find_pid()
-                if pid is None:
+                is_alive = pid is not None
+
+                # 프로세스 다운 감지 (running → not running 전환)
+                if self._prev_alive is True and not is_alive:
+                    down_msg = (
+                        f"[프로세스 다운] {self._mgr.process_name} "
+                        f"프로세스가 종료되었습니다."
+                    )
+                    logger.warning(down_msg)
+                    if self._notify is not None:
+                        await self._notify(down_msg)
+
+                # 자동 재시작 (활성화 시)
+                if not is_alive and self._auto_restart:
                     logger.warning(
                         "target process '%s' not found, auto-restarting",
                         self._mgr.process_name,
@@ -60,6 +83,10 @@ class ProcessMonitorLoop:
                     logger.info(msg)
                     if self._notify is not None:
                         await self._notify(msg)
+                    # 재시작 성공 시 상태 갱신
+                    is_alive = new_pid is not None
+
+                self._prev_alive = is_alive
             except Exception:
                 logger.exception("process monitor check failed")
 

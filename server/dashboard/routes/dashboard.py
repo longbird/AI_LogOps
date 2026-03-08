@@ -30,6 +30,7 @@ class AgentCardData(TypedDict):
     log_count: int
     deploy_count: int
     state_color: str
+    process_status: str
 
 
 def _state(request: Request) -> DashboardState:
@@ -97,6 +98,9 @@ def _get_agent_data(session_mgr: SessionManagerLike | None) -> list[AgentCardDat
                 "log_count": len(session.log_buffer),
                 "deploy_count": len(session.deploy_history),
                 "state_color": _state_color(info.state.value),
+                "process_status": {0: "-", 1: "Running", 2: "Down"}.get(
+                    session.process_status, "-"
+                ),
             }
         )
     return agents

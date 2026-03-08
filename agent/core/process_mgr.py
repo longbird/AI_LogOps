@@ -122,19 +122,189 @@ class ProcessManager:
         self._logger.info("kill_all: all processes terminated successfully")
         return True
 
+    # ── Task Scheduler 기반 권한 상승 (UAC 우회) ──────────────
+
+    def _schtask_name(self) -> str:
+        """예약 작업 이름 생성."""
+        safe = self.process_name.replace(".", "_").replace(" ", "_")
+        return f"AILogOps_{safe}"
+
+    def register_schtask(self, args: list[str] | None = None) -> bool:
+        """관리자 권한 실행용 예약 작업 등록.
+
+        **최초 1회, 관리자 권한 콘솔에서 실행 필요.**
+        등록 후에는 비관리자 콘솔에서도 UAC 없이 프로세스 시작 가능.
+        """
+        import subprocess as sp
+
+        task_name = self._schtask_name()
+        exe = str(self.process_path)
+        cwd = str(self.process_path.parent)
+        arg_str = " ".join(args) if args else ""
+
+        # PowerShell: WorkingDirectory 지원
+        action_parts = [
+            f"New-ScheduledTaskAction -Execute '{exe}'",
+            f"-WorkingDirectory '{cwd}'",
+        ]
+        if arg_str:
+            action_parts.insert(1, f"-Argument '{arg_str}'")
+
+        ps_script = (
+            f"$action = {' '.join(action_parts)}; "
+            f"$principal = New-ScheduledTaskPrincipal"
+            f" -UserId $env:USERNAME -RunLevel Highest"
+            f" -LogonType Interactive; "
+            f"Register-ScheduledTask -TaskName '{task_name}'"
+            f" -Action $action -Principal $principal -Force"
+        )
+
+        result = sp.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode == 0:
+            self._logger.info("schtask '%s' registered", task_name)
+            return True
+
+        self._logger.warning("schtask registration failed: %s", result.stderr.strip())
+        return False
+
+    def _schtask_exists(self) -> bool:
+        """예약 작업 존재 여부 확인."""
+        import subprocess as sp
+
+        r = sp.run(
+            ["schtasks", "/Query", "/TN", self._schtask_name()],
+            capture_output=True,
+        )
+        return r.returncode == 0
+
+    def _start_via_schtask(self) -> int:
+        """예약 작업으로 프로세스 시작 (UAC 없음). PID 반환."""
+        import subprocess as sp
+        import time
+
+        task_name = self._schtask_name()
+        r = sp.run(
+            ["schtasks", "/Run", "/TN", task_name],
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            raise OSError(f"schtasks /Run failed: {r.stderr.strip()}")
+
+        # 프로세스 기동 대기 후 PID 확인
+        for _ in range(10):
+            time.sleep(0.5)
+            pid = self.find_pid()
+            if pid is not None:
+                self._logger.info(
+                    "started '%s' via schtask, pid=%d",
+                    self.process_name,
+                    pid,
+                )
+                return pid
+
+        raise OSError(f"process '{self.process_name}' not found after schtasks /Run")
+
+    # ── 프로세스 시작 (fallback chain) ─────────────────────
+
     def start(self, args: list[str] | None = None) -> int:
-        """프로세스 시작. PID 반환. args: 추가 실행 인수."""
+        """프로세스 시작. PID 반환.
+
+        Fallback chain:
+        1. subprocess.Popen (일반 실행)
+        2. Task Scheduler (UAC 없이 관리자 실행, 사전 등록 필요)
+        3. ShellExecuteEx runas (UAC 프롬프트 발생)
+        """
         import subprocess
 
         cmd = [str(self.process_path)]
         if args:
             cmd.extend(args)
 
-        proc = subprocess.Popen(
-            cmd,
-            creationflags=subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0,
-        )
-        return proc.pid
+        cwd = str(self.process_path.parent)
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                creationflags=(
+                    subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0
+                ),
+            )
+            return proc.pid
+        except OSError as exc:
+            # Windows ERROR_ELEVATION_REQUIRED (740)
+            if sys.platform == "win32" and getattr(exc, "winerror", 0) == 740:
+                self._logger.info("elevation required for '%s'", self.process_name)
+                # 1순위: Task Scheduler (UAC 없음)
+                if self._schtask_exists():
+                    return self._start_via_schtask()
+                # 2순위: ShellExecuteEx runas (UAC 발생)
+                self._logger.warning(
+                    "schtask '%s' not registered — "
+                    "falling back to ShellExecuteEx runas (UAC)",
+                    self._schtask_name(),
+                )
+                return self._start_elevated(args, cwd)
+            raise
+
+    def _start_elevated(self, args: list[str] | None, cwd: str) -> int:
+        """Windows ShellExecuteEx runas로 관리자 권한 프로세스 시작 (UAC 발생)."""
+        import ctypes
+        from ctypes import wintypes
+
+        SEE_MASK_NOCLOSEPROCESS = 0x00000040
+
+        class SHELLEXECUTEINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("fMask", wintypes.ULONG),
+                ("hwnd", wintypes.HWND),
+                ("lpVerb", wintypes.LPCWSTR),
+                ("lpFile", wintypes.LPCWSTR),
+                ("lpParameters", wintypes.LPCWSTR),
+                ("lpDirectory", wintypes.LPCWSTR),
+                ("nShow", ctypes.c_int),
+                ("hInstApp", wintypes.HINSTANCE),
+                ("lpIDList", ctypes.c_void_p),
+                ("lpClass", wintypes.LPCWSTR),
+                ("hkeyClass", wintypes.HKEY),
+                ("dwHotKey", wintypes.DWORD),
+                ("hIconOrMonitor", wintypes.HANDLE),
+                ("hProcess", wintypes.HANDLE),
+            ]
+
+        params = " ".join(args) if args else ""
+
+        sei = SHELLEXECUTEINFO()
+        sei.cbSize = ctypes.sizeof(sei)
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS
+        sei.hwnd = None
+        sei.lpVerb = "runas"
+        sei.lpFile = str(self.process_path)
+        sei.lpParameters = params or None
+        sei.lpDirectory = cwd
+        sei.nShow = 1  # SW_SHOWNORMAL
+
+        if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)):
+            err = ctypes.windll.kernel32.GetLastError()
+            raise OSError(f"ShellExecuteExW failed (error={err})")
+
+        pid = 0
+        if sei.hProcess:
+            pid = ctypes.windll.kernel32.GetProcessId(sei.hProcess)
+            ctypes.windll.kernel32.CloseHandle(sei.hProcess)
+
+        if not pid:
+            raise OSError("ShellExecuteExW: failed to obtain PID")
+
+        self._logger.info("started '%s' elevated, pid=%d", self.process_name, pid)
+        return pid
 
     async def health_check(self, timeout: int = 30) -> bool:
         """프로세스 기동 확인. timeout초 내에 PID 발견 시 True."""

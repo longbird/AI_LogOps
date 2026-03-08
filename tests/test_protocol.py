@@ -173,7 +173,29 @@ def test_heartbeat_payload_pack_unpack_roundtrip() -> None:
     packed = payload.pack()
     unpacked = HeartbeatPayload.unpack(packed)
     assert unpacked == payload
-    assert len(packed) == 10
+    assert len(packed) == 11  # V2: timestamp(8) + cpu(1) + mem(1) + process_status(1)
+
+
+def test_heartbeat_payload_v1_backward_compat() -> None:
+    """구버전(10바이트) heartbeat도 정상 파싱되는지 확인."""
+    v1_data = HeartbeatPayload._STRUCT_V1.pack(1_700_000_000, 45, 72)
+    assert len(v1_data) == 10
+    unpacked = HeartbeatPayload.unpack(v1_data)
+    assert unpacked.timestamp == 1_700_000_000
+    assert unpacked.cpu_percent == 45
+    assert unpacked.mem_percent == 72
+    assert unpacked.process_status == 0  # 구버전은 NOT_MONITORED
+
+
+def test_heartbeat_payload_with_process_status() -> None:
+    """process_status 포함된 heartbeat 라운드트립."""
+    payload = HeartbeatPayload(
+        timestamp=1_700_000_000, cpu_percent=50, mem_percent=60, process_status=1
+    )
+    packed = payload.pack()
+    unpacked = HeartbeatPayload.unpack(packed)
+    assert unpacked.process_status == 1
+    assert unpacked == payload
 
 
 @pytest.mark.parametrize(

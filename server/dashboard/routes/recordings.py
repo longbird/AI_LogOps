@@ -66,6 +66,13 @@ def _ws_state(websocket: WebSocket) -> _DashState:
     return cast(_DashState, websocket.app.state)
 
 
+def _get_agent_ids(state: _DashState) -> list[str]:
+    session_mgr = state.session_mgr
+    if session_mgr is None:
+        return []
+    return [s.agent_info.agent_id for s in session_mgr.get_all_sessions()]
+
+
 @router.get("/rec-viewer", response_class=HTMLResponse)
 async def rec_viewer_page(request: Request) -> HTMLResponse:
     """녹취 조회 전용 페이지."""
@@ -74,7 +81,7 @@ async def rec_viewer_page(request: Request) -> HTMLResponse:
         HTMLResponse,
         state.templates.TemplateResponse(
             "rec_viewer.html",
-            {"request": request, "title": "녹취 조회"},
+            {"request": request, "title": "녹취 조회", "agents": _get_agent_ids(state)},
         ),
     )
 
@@ -87,7 +94,11 @@ async def recordings_page(request: Request) -> HTMLResponse:
         HTMLResponse,
         templates.TemplateResponse(
             "recordings.html",
-            {"request": request, "title": "Recordings"},
+            {
+                "request": request,
+                "title": "Recordings",
+                "agents": _get_agent_ids(state),
+            },
         ),
     )
 
@@ -318,10 +329,12 @@ async def api_rec_stt_engine_get(request: Request) -> JSONResponse:
     tcp_server = state.tcp_server
     if tcp_server is None:
         return JSONResponse({"error": "server not configured"}, status_code=503)
-    return JSONResponse({
-        "stt_engine": tcp_server.stt_engine,
-        "openai_prompt": tcp_server.openai_prompt,
-    })
+    return JSONResponse(
+        {
+            "stt_engine": tcp_server.stt_engine,
+            "openai_prompt": tcp_server.openai_prompt,
+        }
+    )
 
 
 @router.post("/api/rec/stt-engine")
@@ -338,7 +351,13 @@ async def api_rec_stt_engine_set(request: Request) -> JSONResponse:
         return JSONResponse({"error": "invalid JSON body"}, status_code=400)
 
     engine = body.get("engine", "")
-    valid_engines = ("local", "openai-whisper", "openai-gpt4o", "openai-diarize", "rtzr")
+    valid_engines = (
+        "local",
+        "openai-whisper",
+        "openai-gpt4o",
+        "openai-diarize",
+        "rtzr",
+    )
     if engine not in valid_engines:
         return JSONResponse(
             {"error": f"engine must be one of {valid_engines}"}, status_code=400
@@ -351,11 +370,13 @@ async def api_rec_stt_engine_set(request: Request) -> JSONResponse:
         await tcp_server.set_openai_prompt(str(prompt))
 
     logger.info("stt_engine changed to %s via API", engine)
-    return JSONResponse({
-        "status": "ok",
-        "stt_engine": tcp_server.stt_engine,
-        "openai_prompt": tcp_server.openai_prompt,
-    })
+    return JSONResponse(
+        {
+            "status": "ok",
+            "stt_engine": tcp_server.stt_engine,
+            "openai_prompt": tcp_server.openai_prompt,
+        }
+    )
 
 
 @router.websocket("/ws/rec/status/{agent_id}")

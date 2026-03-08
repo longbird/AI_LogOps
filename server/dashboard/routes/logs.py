@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
@@ -23,7 +25,10 @@ class SessionManagerLike(Protocol):
 
 class _TCPServerLike(Protocol):
     async def send_log_command(
-        self, agent_id: str, action: LogAction, date: str = ...,
+        self,
+        agent_id: str,
+        action: LogAction,
+        date: str = ...,
         folder_index: int = ...,
     ) -> bool: ...
 
@@ -74,8 +79,17 @@ async def get_agent_logs(request: Request, agent_id: str) -> HTMLResponse:
     if session is None:
         return HTMLResponse(f"<p>Agent {agent_id} not found.</p>")
     lines = session.log_buffer[-200:]
+
+    def _folder_attr(line: str) -> str:
+        if line.startswith("[F0]"):
+            return "data-folder='f0'"
+        elif line.startswith("[F1]"):
+            return "data-folder='f1'"
+        return "data-folder='other'"
+
     log_html = "\n".join(
-        f"<div class='text-sm font-mono'>{line}</div>" for line in lines
+        f"<div class='text-sm font-mono' {_folder_attr(line)}>{line}</div>"
+        for line in lines
     )
     if not lines:
         log_html = "<p class='text-gray-400'>No logs yet.</p>"
@@ -141,6 +155,14 @@ async def request_log_history(request: Request, agent_id: str) -> JSONResponse:
         )
 
     folder_index: int = int(body.get("folder_index", -1))
+    clear_existing: bool = bool(body.get("clear_existing", False))
+
+    # 기존 로그 삭제
+    if clear_existing:
+        log_dir = Path("storage/logs") / agent_id / date
+        if log_dir.is_dir():
+            shutil.rmtree(log_dir, ignore_errors=True)
+            logger.info("cleared existing logs: %s", log_dir)
 
     success = await tcp_server.send_log_command(
         agent_id, LogAction.HIST_REQUEST, date, folder_index=folder_index
@@ -148,14 +170,18 @@ async def request_log_history(request: Request, agent_id: str) -> JSONResponse:
     if success:
         logger.info(
             "history request sent: agent=%s date=%s folder=%d",
-            agent_id, date, folder_index,
+            agent_id,
+            date,
+            folder_index,
         )
-        return JSONResponse({
-            "status": "ok",
-            "agent_id": agent_id,
-            "date": date,
-            "folder_index": folder_index,
-        })
+        return JSONResponse(
+            {
+                "status": "ok",
+                "agent_id": agent_id,
+                "date": date,
+                "folder_index": folder_index,
+            }
+        )
     return JSONResponse(
         {"error": f"failed to send command to {agent_id}"}, status_code=502
     )

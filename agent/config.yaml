@@ -16,6 +16,14 @@ monitoring:
     - "C:/Apps/TargetApp/error_logs"
   history_max_mb: 10
   watch_extensions: [".log", ".txt"]
+  alert:
+    enabled: true               # 로그 이상 패턴 감지 활성화
+    cooldown: 300               # 동일 패턴 재알림 억제 시간 (초, 기본 5분)
+    # patterns:                 # 커스텀 패턴 (미설정 시 기본 패턴 사용)
+    #   - name: "deadlock"
+    #     pattern: "deadlock|데드락"
+    #   - name: "lock_timeout"
+    #     pattern: "lock\\s*timeout|잠금\\s*시간\\s*초과"
 
 target_process:
   name: "TargetApp.exe"
