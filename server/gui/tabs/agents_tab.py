@@ -15,8 +15,13 @@ from server.gui.constants import (
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
+    FONT_HEADING,
     FONT_MONO,
+    FONT_MONO_BOLD,
+    FONT_MONO_SMALL,
     FONT_NORMAL,
+    FONT_SMALL,
+    FONT_SUBHEADING,
     ServerAppLike,
 )
 
@@ -41,6 +46,7 @@ class AgentsTab(tk.Frame):
         self._hist_folder: tk.IntVar  # 과거 로그 조회 폴더 (-1=ALL, 0=F0, 1=F1)
         self._log_mode: tk.StringVar  # "realtime" / "history"
         self._is_streaming = False  # 실시간 스트리밍 활성 상태
+        self._analysis_visible = True  # 분석 패널 표시 여부
         self._build_ui()
         self._schedule_refresh()
 
@@ -57,7 +63,7 @@ class AgentsTab(tk.Frame):
             text="접속 에이전트",
             bg=BG_FRAME,
             fg=FG_TEXT,
-            font=("Segoe UI Semibold", 10),
+            font=FONT_HEADING,
         ).pack(side=tk.LEFT)
 
         self._count_label = tk.Label(
@@ -65,7 +71,7 @@ class AgentsTab(tk.Frame):
             text="0 agents",
             bg=BG_FRAME,
             fg=FG_DIM,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
         )
         self._count_label.pack(side=tk.RIGHT)
 
@@ -76,7 +82,7 @@ class AgentsTab(tk.Frame):
             bg=BG_BTN,
             fg=FG_DIM,
             relief=tk.FLAT,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
             padx=8,
             cursor="hand2",
         ).pack(side=tk.RIGHT, padx=4)
@@ -95,11 +101,11 @@ class AgentsTab(tk.Frame):
             "Agent.Treeview.Heading",
             background=BG_BTN,
             foreground=FG_TEXT,
-            font=("Segoe UI Semibold", 9),
+            font=FONT_SUBHEADING,
         )
         style.map("Agent.Treeview", background=[("selected", "#264f78")])
 
-        columns = ("agent_id", "version", "state", "heartbeat")
+        columns = ("agent_id", "version", "state", "process", "heartbeat")
         self._tree = ttk.Treeview(
             list_frame,
             columns=columns,
@@ -110,11 +116,13 @@ class AgentsTab(tk.Frame):
         self._tree.heading("agent_id", text="Agent ID")
         self._tree.heading("version", text="Version")
         self._tree.heading("state", text="State")
+        self._tree.heading("process", text="Process")
         self._tree.heading("heartbeat", text="Heartbeat")
 
         self._tree.column("agent_id", width=180, minwidth=120)
         self._tree.column("version", width=80, minwidth=60)
         self._tree.column("state", width=100, minwidth=80)
+        self._tree.column("process", width=80, minwidth=60)
         self._tree.column("heartbeat", width=100, minwidth=80)
 
         tree_scroll = ttk.Scrollbar(
@@ -135,7 +143,7 @@ class AgentsTab(tk.Frame):
             text="에이전트 로그 (선택하세요)",
             bg=BG_FRAME,
             fg=FG_TEXT,
-            font=("Segoe UI Semibold", 10),
+            font=FONT_HEADING,
         )
         self._log_title.pack(side=tk.LEFT)
 
@@ -144,9 +152,22 @@ class AgentsTab(tk.Frame):
             text="",
             bg=BG_FRAME,
             fg=FG_DIM,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
         )
         self._ws_status.pack(side=tk.RIGHT)
+
+        self._toggle_analysis_btn = tk.Button(
+            log_header,
+            text="분석 숨기기",
+            command=self._toggle_analysis_panel,
+            bg=BG_BTN,
+            fg=FG_DIM,
+            relief=tk.FLAT,
+            font=FONT_SMALL,
+            padx=8,
+            cursor="hand2",
+        )
+        self._toggle_analysis_btn.pack(side=tk.RIGHT, padx=4)
 
         tk.Button(
             log_header,
@@ -155,7 +176,7 @@ class AgentsTab(tk.Frame):
             bg=BG_BTN,
             fg=FG_DIM,
             relief=tk.FLAT,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
             padx=8,
             cursor="hand2",
         ).pack(side=tk.RIGHT, padx=4)
@@ -178,7 +199,7 @@ class AgentsTab(tk.Frame):
                 selectcolor="#264f78",
                 activebackground=BG_FRAME,
                 activeforeground="#ffffff",
-                font=("Segoe UI Semibold", 9),
+                font=FONT_SUBHEADING,
                 relief=tk.FLAT,
                 cursor="hand2",
             )
@@ -226,8 +247,35 @@ class AgentsTab(tk.Frame):
         )
         self._rt_stop_btn.pack(side=tk.LEFT, padx=(0, 4))
 
+        # 실시간 폴더 필터
+        tk.Label(
+            self._realtime_frame,
+            text="폴더:",
+            bg=BG_FRAME,
+            fg=FG_DIM,
+            font=FONT_NORMAL,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        self._rt_folder = tk.StringVar(value="all")
+        for val, label in (("all", "ALL"), ("f0", "F0"), ("f1", "F1")):
+            rb = tk.Radiobutton(
+                self._realtime_frame,
+                text=label,
+                variable=self._rt_folder,
+                value=val,
+                bg=BG_FRAME,
+                fg="#9cdcfe",
+                selectcolor="#264f78",
+                activebackground=BG_FRAME,
+                activeforeground="#ffffff",
+                font=FONT_MONO_BOLD,
+                relief=tk.FLAT,
+                cursor="hand2",
+            )
+            rb.pack(side=tk.LEFT, padx=2)
+
         self._rt_status = tk.Label(
-            self._realtime_frame, text="", bg=BG_FRAME, fg=FG_DIM, font=("Segoe UI", 8)
+            self._realtime_frame, text="", bg=BG_FRAME, fg=FG_DIM, font=FONT_SMALL
         )
         self._rt_status.pack(side=tk.LEFT, padx=4)
 
@@ -268,11 +316,26 @@ class AgentsTab(tk.Frame):
                 selectcolor="#264f78",
                 activebackground=BG_FRAME,
                 activeforeground="#ffffff",
-                font=("Consolas", 8, "bold"),
+                font=FONT_MONO_BOLD,
                 relief=tk.FLAT,
                 cursor="hand2",
             )
             rb.pack(side=tk.LEFT, padx=2)
+
+        self._hist_clear_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            self._history_frame,
+            text="기존 삭제",
+            variable=self._hist_clear_var,
+            bg=BG_FRAME,
+            fg="#e89b47",
+            selectcolor="#264f78",
+            activebackground=BG_FRAME,
+            activeforeground="#e89b47",
+            font=FONT_SMALL,
+            relief=tk.FLAT,
+            cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
         self._hist_fetch_btn = tk.Button(
             self._history_frame,
@@ -288,15 +351,15 @@ class AgentsTab(tk.Frame):
             pady=1,
             cursor="hand2",
         )
-        self._hist_fetch_btn.pack(side=tk.LEFT, padx=(8, 4))
+        self._hist_fetch_btn.pack(side=tk.LEFT, padx=(4, 4))
 
         self._hist_status = tk.Label(
-            self._history_frame, text="", bg=BG_FRAME, fg=FG_DIM, font=("Segoe UI", 8)
+            self._history_frame, text="", bg=BG_FRAME, fg=FG_DIM, font=FONT_SMALL
         )
         self._hist_status.pack(side=tk.LEFT, padx=4)
 
         # ── 하단: 로그(좌) + 분석 패널(우) — PanedWindow ──
-        paned = tk.PanedWindow(
+        self._paned = paned = tk.PanedWindow(
             self,
             orient=tk.HORIZONTAL,
             bg=BG_DARK,
@@ -332,7 +395,7 @@ class AgentsTab(tk.Frame):
         self._log_text.pack(fill=tk.BOTH, expand=True)
 
         # ── 오른쪽: 분석 패널 ──
-        analysis_outer = tk.Frame(paned, bg=BG_FRAME)
+        self._analysis_outer = analysis_outer = tk.Frame(paned, bg=BG_FRAME)
         paned.add(analysis_outer, stretch="never", minsize=220, width=300)
 
         analysis_header = tk.Frame(analysis_outer, bg=BG_FRAME)
@@ -342,7 +405,7 @@ class AgentsTab(tk.Frame):
             text="실시간 분석",
             bg=BG_FRAME,
             fg=FG_TEXT,
-            font=("Segoe UI Semibold", 9),
+            font=FONT_SUBHEADING,
             padx=8,
             pady=3,
         ).pack(side=tk.LEFT)
@@ -363,7 +426,7 @@ class AgentsTab(tk.Frame):
                 selectcolor="#264f78",
                 activebackground=BG_FRAME,
                 activeforeground="#ffffff",
-                font=("Consolas", 8, "bold"),
+                font=FONT_MONO_BOLD,
                 relief=tk.FLAT,
                 cursor="hand2",
             )
@@ -374,7 +437,7 @@ class AgentsTab(tk.Frame):
             wrap=tk.WORD,
             bg="#1e1e1e",
             fg=FG_TEXT,
-            font=("Consolas", 8),
+            font=FONT_MONO_SMALL,
             padx=6,
             pady=4,
             state=tk.DISABLED,
@@ -391,10 +454,10 @@ class AgentsTab(tk.Frame):
 
         # 분석 텍스트 색상 태그
         self._analysis_text.tag_configure(
-            "header", foreground="#d4d4d4", font=("Consolas", 8, "bold")
+            "header", foreground="#d4d4d4", font=FONT_MONO_BOLD
         )
         self._analysis_text.tag_configure(
-            "section", foreground="#569cd6", font=("Consolas", 8, "bold")
+            "section", foreground="#569cd6", font=FONT_MONO_BOLD
         )
         self._analysis_text.tag_configure("label", foreground="#888888")
         self._analysis_text.tag_configure("val_green", foreground="#4ec9b0")
@@ -405,6 +468,19 @@ class AgentsTab(tk.Frame):
         self._analysis_text.tag_configure("dim", foreground="#555555")
 
         self._analysis_reset()
+
+    # ── 분석 패널 토글 ──
+
+    def _toggle_analysis_panel(self) -> None:
+        """분석 패널 보기/숨기기 토글."""
+        if self._analysis_visible:
+            self._paned.forget(self._analysis_outer)
+            self._toggle_analysis_btn.configure(text="분석 보기")
+            self._analysis_visible = False
+        else:
+            self._paned.add(self._analysis_outer, stretch="never", minsize=220, width=300)
+            self._toggle_analysis_btn.configure(text="분석 숨기기")
+            self._analysis_visible = True
 
     # ── 에이전트 리스트 갱신 ──
 
@@ -459,20 +535,31 @@ class AgentsTab(tk.Frame):
         agents = data.get("agents", [])
         self._count_label.configure(text=f"{len(agents)} agents")
 
+        _PROCESS_LABELS = {0: "-", 1: "Running", 2: "Down"}
+
         for agent in agents:
             agent_id = agent.get("agent_id", "?")
             version = agent.get("version", "?")
             state = agent.get("state", agent.get("connected", "?"))
             if state is True:
                 state = "CONNECTED"
+            ps = agent.get("process_status", 0)
+            process_text = _PROCESS_LABELS.get(ps, "-")
             heartbeat = agent.get("last_heartbeat_ago", "-")
             self._tree.insert(
-                "", tk.END, iid=agent_id, values=(agent_id, version, state, heartbeat)
+                "",
+                tk.END,
+                iid=agent_id,
+                values=(agent_id, version, state, process_text, heartbeat),
             )
 
         # 이전 선택 복원
         if sel and self._tree.exists(sel):
             self._tree.selection_set(sel)
+
+    def get_agent_ids(self) -> list[str]:
+        """현재 Treeview에 표시된 에이전트 ID 목록 반환."""
+        return [str(iid) for iid in self._tree.get_children()]
 
     def _on_agent_selected(self, _event: Any) -> None:
         selection = self._tree.selection()
@@ -584,8 +671,16 @@ class AgentsTab(tk.Frame):
                         msg = ws.recv(timeout=0.5)
                         if isinstance(msg, str):
                             # 실시간 스트리밍 비활성 시 시스템/HIST 메시지만 표시
-                            if not self._is_streaming and not msg.startswith(("[HIST]", "[시스템]")):
+                            if not self._is_streaming and not msg.startswith(
+                                ("[HIST]", "[시스템]")
+                            ):
                                 continue
+                            # 폴더 필터 적용
+                            rt_f = self._rt_folder.get()
+                            if rt_f != "all" and msg.startswith("[F"):
+                                prefix = "[F0]" if rt_f == "f0" else "[F1]"
+                                if not msg.startswith(prefix):
+                                    continue
                             msg_count += 1
                             self.after(0, self._append_log, msg)
                             if msg_count % 10 == 1:
@@ -700,13 +795,18 @@ class AgentsTab(tk.Frame):
             return
 
         folder_index = self._hist_folder.get()
+        clear_existing = self._hist_clear_var.get()
         self._hist_fetch_btn.configure(state=tk.DISABLED)
         self._hist_status.configure(text="다운로드 요청 중...", fg="#cca700")
 
         def _do() -> None:
             result = self._app.api_post(
                 f"/api/logs/{agent_id}/history",
-                {"date": date_str, "folder_index": folder_index},
+                {
+                    "date": date_str,
+                    "folder_index": folder_index,
+                    "clear_existing": clear_existing,
+                },
             )
             self.after(0, self._on_hist_done, result, date_str, agent_id)
 

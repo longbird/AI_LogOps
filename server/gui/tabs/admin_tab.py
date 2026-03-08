@@ -16,7 +16,9 @@ from server.gui.constants import (
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
+    FONT_FAMILY_BOLD,
     FONT_NORMAL,
+    FONT_SMALL,
     ServerAppLike,
 )
 
@@ -39,7 +41,7 @@ class AdminTab(tk.Frame):
             text="계정 관리",
             bg=BG_DARK,
             fg=FG_WHITE,
-            font=("Segoe UI Semibold", 12),
+            font=(FONT_FAMILY_BOLD, 12),
         ).pack(side=tk.LEFT)
 
         tk.Button(
@@ -65,7 +67,7 @@ class AdminTab(tk.Frame):
         ).pack(side=tk.RIGHT)
 
         self._status = tk.Label(
-            top, text="", bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 8)
+            top, text="", bg=BG_DARK, fg=FG_DIM, font=FONT_SMALL
         )
         self._status.pack(side=tk.RIGHT, padx=10)
 
@@ -259,12 +261,12 @@ class AdminTab(tk.Frame):
                 perm_frame, text=perm_label, variable=var,
                 bg=BG_DARK, fg=FG_TEXT, selectcolor=BG_FRAME,
                 activebackground=BG_DARK, activeforeground=FG_TEXT,
-                font=("Segoe UI", 8),
+                font=FONT_SMALL,
             ).pack(anchor="w")
 
         # 상태 라벨
         status_lbl = tk.Label(
-            dlg, text="", bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 8)
+            dlg, text="", bg=BG_DARK, fg=FG_DIM, font=FONT_SMALL
         )
         status_lbl.pack(anchor="w", padx=15, pady=(5, 0))
 

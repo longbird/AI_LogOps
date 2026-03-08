@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
@@ -15,8 +16,11 @@ from server.gui.constants import (
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
+    FONT_HEADING,
     FONT_MONO,
     FONT_NORMAL,
+    FONT_SMALL,
+    FONT_SUBHEADING,
     ServerAppLike,
 )
 
@@ -42,7 +46,7 @@ class _DeploySection:
             text=f"  {title}  ",
             bg=BG_FRAME,
             fg=FG_TEXT,
-            font=("Segoe UI Semibold", 9),
+            font=FONT_SUBHEADING,
             padx=8,
             pady=8,
             relief=tk.GROOVE,
@@ -62,19 +66,16 @@ class _DeploySection:
             font=FONT_NORMAL,
         ).pack(side=tk.LEFT)
 
-        self._agent_entry = tk.Entry(
+        self._agent_combo = ttk.Combobox(
             row1,
-            bg="#1e1e1e",
-            fg=FG_TEXT,
-            insertbackground=FG_TEXT,
+            values=["(auto)"],
+            state="readonly",
+            width=22,
             font=FONT_NORMAL,
-            width=24,
-            relief=tk.FLAT,
-            bd=1,
         )
-        self._agent_entry.pack(side=tk.LEFT, padx=8)
-        self._agent_entry.insert(0, "(auto: first connected)")
-        self._agent_entry.bind("<FocusIn>", self._clear_placeholder)
+        self._agent_combo.set("(auto)")
+        self._agent_combo.pack(side=tk.LEFT, padx=8)
+        self._agent_combo.bind("<Button-1>", self._refresh_agents)
 
         # 2행: 파일 선택
         row2 = tk.Frame(frame, bg=BG_FRAME)
@@ -105,7 +106,7 @@ class _DeploySection:
             bg=BG_BTN,
             fg=FG_TEXT,
             relief=tk.FLAT,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
             padx=8,
             cursor="hand2",
         ).pack(side=tk.RIGHT)
@@ -151,13 +152,14 @@ class _DeploySection:
             text="",
             bg=BG_FRAME,
             fg=FG_DIM,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
         )
         self._status_label.pack(side=tk.RIGHT)
 
-    def _clear_placeholder(self, _event: Any) -> None:
-        if self._agent_entry.get() == "(auto: first connected)":
-            self._agent_entry.delete(0, tk.END)
+    def _refresh_agents(self, _event: Any = None) -> None:
+        """에이전트 탭의 접속 목록에서 콤보박스 갱신."""
+        ids = self._app.get_connected_agent_ids()
+        self._agent_combo["values"] = ["(auto)"] + ids
 
     def _select_file(self) -> None:
         path = filedialog.askopenfilename(
@@ -191,8 +193,8 @@ class _DeploySection:
             self._status_label.configure(text="서버가 실행 중이 아닙니다", fg="#f44747")
             return
 
-        agent_id = self._agent_entry.get().strip()
-        if agent_id == "(auto: first connected)":
+        agent_id = self._agent_combo.get().strip()
+        if agent_id == "(auto)":
             agent_id = ""
 
         self._deploy_btn.configure(state=tk.DISABLED)
@@ -231,8 +233,8 @@ class _DeploySection:
             self._status_label.configure(text="서버가 실행 중이 아닙니다", fg="#f44747")
             return
 
-        agent_id = self._agent_entry.get().strip()
-        if agent_id == "(auto: first connected)":
+        agent_id = self._agent_combo.get().strip()
+        if agent_id == "(auto)":
             agent_id = ""
 
         self._restart_btn.configure(state=tk.DISABLED)
@@ -280,11 +282,17 @@ class DeployTab(tk.Frame):
         canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        # 마우스 휠 바인딩
+        # 마우스 휠 바인딩 (크로스 플랫폼)
         def _on_mousewheel(event: Any) -> None:
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            if sys.platform == "darwin":
+                canvas.yview_scroll(int(-1 * event.delta), "units")
+            else:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        if sys.platform.startswith("linux"):
+            canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+            canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
 
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -300,7 +308,7 @@ class DeployTab(tk.Frame):
             text="배포 로그",
             bg=BG_FRAME,
             fg=FG_TEXT,
-            font=("Segoe UI Semibold", 10),
+            font=FONT_HEADING,
         ).pack(side=tk.LEFT)
 
         self._log_text = tk.Text(

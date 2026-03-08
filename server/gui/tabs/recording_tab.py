@@ -15,8 +15,10 @@ from server.gui.constants import (
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
+    FONT_HEADING,
     FONT_MONO,
     FONT_NORMAL,
+    FONT_SMALL,
     ServerAppLike,
 )
 
@@ -47,7 +49,7 @@ class RecordingTab(tk.Frame):
             text="녹취 분석 제어",
             bg=BG_FRAME,
             fg=FG_TEXT,
-            font=("Segoe UI Semibold", 10),
+            font=FONT_HEADING,
         ).pack(anchor="w")
 
         # 입력 행
@@ -62,26 +64,16 @@ class RecordingTab(tk.Frame):
             font=FONT_NORMAL,
         ).pack(side=tk.LEFT)
 
-        self._agent_entry = tk.Entry(
+        self._agent_combo = ttk.Combobox(
             input_frame,
-            bg="#1e1e1e",
-            fg=FG_TEXT,
-            insertbackground=FG_TEXT,
+            values=["(auto)"],
+            state="readonly",
+            width=18,
             font=FONT_NORMAL,
-            width=20,
-            relief=tk.FLAT,
-            bd=1,
         )
-        self._agent_entry.pack(side=tk.LEFT, padx=8)
-        self._agent_entry.insert(0, "(auto)")
-        self._agent_entry.bind(
-            "<FocusIn>",
-            lambda e: (
-                self._agent_entry.delete(0, tk.END)
-                if self._agent_entry.get() == "(auto)"
-                else None
-            ),
-        )
+        self._agent_combo.set("(auto)")
+        self._agent_combo.pack(side=tk.LEFT, padx=8)
+        self._agent_combo.bind("<Button-1>", self._refresh_agents)
 
         tk.Label(
             input_frame,
@@ -174,7 +166,6 @@ class RecordingTab(tk.Frame):
         )
         self._max_concurrent_spin.pack(side=tk.LEFT)
 
-
         # ── STT 엔진 선택 ──
         tk.Label(
             btn_frame,
@@ -204,15 +195,13 @@ class RecordingTab(tk.Frame):
             font=FONT_NORMAL,
         )
         self._stt_engine_combo.pack(side=tk.LEFT)
-        self._stt_engine_combo.bind(
-            "<<ComboboxSelected>>", self._on_stt_engine_changed
-        )
+        self._stt_engine_combo.bind("<<ComboboxSelected>>", self._on_stt_engine_changed)
         self._status_label = tk.Label(
             btn_frame,
             text="",
             bg=BG_FRAME,
             fg=FG_DIM,
-            font=("Segoe UI", 9),
+            font=FONT_NORMAL,
         )
         self._status_label.pack(side=tk.LEFT, padx=16)
 
@@ -225,7 +214,7 @@ class RecordingTab(tk.Frame):
             text="분석 진행상황",
             bg=BG_FRAME,
             fg=FG_TEXT,
-            font=("Segoe UI Semibold", 10),
+            font=FONT_HEADING,
         ).pack(side=tk.LEFT)
 
         self._ws_status = tk.Label(
@@ -233,7 +222,7 @@ class RecordingTab(tk.Frame):
             text="",
             bg=BG_FRAME,
             fg=FG_DIM,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
         )
         self._ws_status.pack(side=tk.RIGHT)
 
@@ -244,7 +233,7 @@ class RecordingTab(tk.Frame):
             bg=BG_BTN,
             fg=FG_DIM,
             relief=tk.FLAT,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
             padx=8,
             cursor="hand2",
         ).pack(side=tk.RIGHT, padx=4)
@@ -280,8 +269,13 @@ class RecordingTab(tk.Frame):
     # ── 분석 제어 ──
 
     def _get_agent_id(self) -> str:
-        val = self._agent_entry.get().strip()
+        val = self._agent_combo.get().strip()
         return "" if val in ("(auto)", "") else val
+
+    def _refresh_agents(self, _event: Any = None) -> None:
+        """에이전트 탭의 접속 목록에서 콤보박스 갱신."""
+        ids = self._app.get_connected_agent_ids()
+        self._agent_combo["values"] = ["(auto)"] + ids
 
     def _get_date(self) -> str:
         val = self._date_entry.get().strip()
@@ -405,9 +399,7 @@ class RecordingTab(tk.Frame):
             result = self._app.api_get("/api/rec/stt-engine")
             if result and "stt_engine" in result:
                 engine_key = result["stt_engine"]
-                display = self._engine_reverse.get(
-                    engine_key, "로컬 (faster-whisper)"
-                )
+                display = self._engine_reverse.get(engine_key, "로컬 (faster-whisper)")
                 self.after(0, lambda: self._stt_engine_var.set(display))
 
         threading.Thread(target=_do, daemon=True).start()
@@ -421,9 +413,7 @@ class RecordingTab(tk.Frame):
         engine_key = self._engine_map.get(display, "local")
 
         def _do() -> None:
-            result = self._app.api_post(
-                "/api/rec/stt-engine", {"engine": engine_key}
-            )
+            result = self._app.api_post("/api/rec/stt-engine", {"engine": engine_key})
             if result and result.get("status") == "ok":
                 actual = result.get("stt_engine", engine_key)
                 self.after(

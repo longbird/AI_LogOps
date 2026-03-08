@@ -14,8 +14,10 @@ from server.gui.constants import (
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
+    FONT_HEADING,
     FONT_MONO,
     FONT_NORMAL,
+    FONT_SMALL,
     ServerAppLike,
 )
 
@@ -44,7 +46,7 @@ class ServerTab(tk.Frame):
             text="서버 제어",
             bg=BG_FRAME,
             fg=FG_TEXT,
-            font=("Segoe UI Semibold", 10),
+            font=FONT_HEADING,
         ).pack(side=tk.LEFT)
 
         self._stop_btn = tk.Button(
@@ -138,7 +140,7 @@ class ServerTab(tk.Frame):
             text="서버 로그",
             bg=BG_FRAME,
             fg=FG_TEXT,
-            font=("Segoe UI Semibold", 10),
+            font=FONT_HEADING,
         ).pack(side=tk.LEFT)
 
         tk.Button(
@@ -148,7 +150,7 @@ class ServerTab(tk.Frame):
             bg=BG_BTN,
             fg=FG_DIM,
             relief=tk.FLAT,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
             padx=8,
             cursor="hand2",
         ).pack(side=tk.RIGHT, padx=4)
@@ -164,7 +166,7 @@ class ServerTab(tk.Frame):
             selectcolor=BG_BTN,
             activebackground=BG_FRAME,
             activeforeground=FG_DIM,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
         ).pack(side=tk.RIGHT, padx=4)
 
         self._line_label = tk.Label(
@@ -172,7 +174,7 @@ class ServerTab(tk.Frame):
             text="0 lines",
             bg=BG_FRAME,
             fg=FG_DIM,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
         )
         self._line_label.pack(side=tk.RIGHT, padx=8)
 

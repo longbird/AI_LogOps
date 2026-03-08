@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import ctypes
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
+import time as _time
 import tkinter as tk
 import wave
 from datetime import datetime
@@ -22,19 +24,116 @@ from server.gui.constants import (
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
+    FONT_FAMILY_BOLD,
+    FONT_HEADING,
+    FONT_MONO,
     FONT_NORMAL,
+    FONT_SMALL,
+    FONT_SUBHEADING,
     ServerAppLike,
 )
 
-# ── Windows MCI 오디오 제어 ──
+# ── 크로스 플랫폼 오디오 제어 ──
 _MCI_ALIAS = "logops_play"
 
 
 def _mci(cmd: str) -> str:
-    """MCI 명령 전송. 성공 시 결과 문자열, 실패 시 빈 문자열."""
+    """MCI 명령 전송 (Windows 전용). 비-Windows에서는 빈 문자열 반환."""
+    if sys.platform != "win32":
+        return ""
+    import ctypes
+
     buf = ctypes.create_unicode_buffer(256)
-    err = ctypes.windll.winmm.mciSendStringW(cmd, buf, 255, 0)
+    err = ctypes.windll.winmm.mciSendStringW(cmd, buf, 255, 0)  # type: ignore[attr-defined]
     return buf.value if err == 0 else ""
+
+
+class _SubprocessPlayer:
+    """macOS/Linux용 subprocess 기반 오디오 플레이어."""
+
+    def __init__(self) -> None:
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._start_time: float = 0.0
+        self._duration_ms: int = 0
+        self._playing: bool = False
+
+    def open_and_play(self, wav_path: str) -> int:
+        """WAV 재생 시작. duration_ms 반환."""
+        self.stop()
+        with wave.open(wav_path, "rb") as wf:
+            frames = wf.getnframes()
+            rate = wf.getframerate()
+            self._duration_ms = int(frames * 1000 / rate) if rate > 0 else 0
+
+        if sys.platform == "darwin":
+            self._proc = subprocess.Popen(
+                ["afplay", wav_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            # Linux — aplay 또는 paplay
+            self._proc = subprocess.Popen(
+                ["aplay", "-q", wav_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        self._start_time = _time.monotonic()
+        self._playing = True
+        return self._duration_ms
+
+    def get_position_ms(self) -> int:
+        if not self._playing:
+            return 0
+        # 프로세스 종료 확인
+        if self._proc is not None and self._proc.poll() is not None:
+            self._playing = False
+            return self._duration_ms
+        return int((_time.monotonic() - self._start_time) * 1000)
+
+    def is_finished(self) -> bool:
+        if self._proc is not None and self._proc.poll() is not None:
+            return True
+        return False
+
+    def seek(self, wav_path: str, ms: int) -> None:
+        """지정 위치로 이동 (재시작 방식)."""
+        # afplay/aplay는 seek 미지원 — 처음부터 재시작 후 시간 오프셋 추적
+        self.stop()
+        if sys.platform == "darwin":
+            # afplay -t <seconds> 로 재생 시작 오프셋은 불가하지만
+            # 파일을 처음부터 재생하고 시간만 추적
+            self._proc = subprocess.Popen(
+                ["afplay", wav_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            self._proc = subprocess.Popen(
+                ["aplay", "-q", wav_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        # seek 오프셋을 시작 시간에서 빼서 UI에 반영
+        self._start_time = _time.monotonic() - (ms / 1000.0)
+        self._playing = True
+
+    def stop(self) -> None:
+        self._playing = False
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+            self._proc = None
+
+    def close(self) -> None:
+        self.stop()
+        self._duration_ms = 0
 
 
 class RecViewerTab(tk.Frame):
@@ -49,16 +148,19 @@ class RecViewerTab(tk.Frame):
         self._selected_filename: str = ""
         self._play_tmp_path: str = ""
         self._is_playing: bool = False
-        self._mci_opened: bool = False
+        self._mci_opened: bool = False  # Windows MCI 전용
         self._play_duration_ms: int = 0
         self._update_timer_id: str = ""
         self._user_seeking: bool = False
+        self._sp_player: _SubprocessPlayer | None = (
+            _SubprocessPlayer() if sys.platform != "win32" else None
+        )
 
         self._search_mode: str = "analysis"  # "analysis" | "files"
 
         # UI Components
         self._date_entry: tk.Entry
-        self._agent_entry: tk.Entry
+        self._agent_combo: ttk.Combobox
         self._keyword_entry: tk.Entry
         self._search_status: tk.Label
         self._tree: ttk.Treeview
@@ -104,30 +206,21 @@ class RecViewerTab(tk.Frame):
         self._date_entry.pack(side=tk.LEFT)
         self._date_entry.insert(0, datetime.now().strftime("%Y%m%d"))
 
-        # Agent Entry
+        # Agent Combo
         tk.Label(
             search_frame, text="Agent:", bg=BG_FRAME, fg=FG_TEXT, font=FONT_NORMAL
         ).pack(side=tk.LEFT, padx=(15, 5))
 
-        self._agent_entry = tk.Entry(
+        self._agent_combo = ttk.Combobox(
             search_frame,
-            width=20,
-            bg="#1e1e1e",
-            fg=FG_TEXT,
-            insertbackground=FG_TEXT,
+            values=["(auto)"],
+            state="readonly",
+            width=18,
             font=FONT_NORMAL,
-            relief=tk.FLAT,
         )
-        self._agent_entry.pack(side=tk.LEFT)
-        self._agent_entry.insert(0, "(auto)")
-        self._agent_entry.bind(
-            "<FocusIn>",
-            lambda e: (
-                self._agent_entry.delete(0, tk.END)
-                if self._agent_entry.get() == "(auto)"
-                else None
-            ),
-        )
+        self._agent_combo.set("(auto)")
+        self._agent_combo.pack(side=tk.LEFT)
+        self._agent_combo.bind("<Button-1>", self._refresh_agents)
 
         # Search Keyword Entry
         tk.Label(
@@ -144,9 +237,7 @@ class RecViewerTab(tk.Frame):
             relief=tk.FLAT,
         )
         self._keyword_entry.pack(side=tk.LEFT)
-        self._keyword_entry.bind(
-            "<Return>", lambda _e: self._file_search()
-        )
+        self._keyword_entry.bind("<Return>", lambda _e: self._file_search())
 
         # Analysis Search Button
         btn_search = tk.Button(
@@ -196,7 +287,7 @@ class RecViewerTab(tk.Frame):
             text="",
             bg=BG_FRAME,
             fg=FG_DIM,
-            font=("Segoe UI", 9),
+            font=FONT_NORMAL,
         )
         self._search_status.pack(side=tk.LEFT, padx=(12, 0))
 
@@ -273,7 +364,7 @@ class RecViewerTab(tk.Frame):
             text="0:00 / 0:00",
             bg=BG_FRAME,
             fg=FG_DIM,
-            font=("Consolas", 9),
+            font=FONT_MONO,
         )
         self._lbl_play_time.pack(side=tk.LEFT)
 
@@ -311,7 +402,7 @@ class RecViewerTab(tk.Frame):
             "RecViewer.Treeview.Heading",
             background=BG_BTN,
             foreground=FG_TEXT,
-            font=("Segoe UI Semibold", 9),
+            font=FONT_SUBHEADING,
             relief="flat",
         )
         style.map("RecViewer.Treeview", background=[("selected", "#264f78")])
@@ -371,7 +462,7 @@ class RecViewerTab(tk.Frame):
                 text=label_text,
                 bg=BG_FRAME,
                 fg=FG_DIM,
-                font=("Segoe UI", 8),
+                font=FONT_SMALL,
             ).grid(row=0, column=col, columnspan=span, sticky="w", padx=10, pady=(2, 0))
             lbl = tk.Label(
                 self._info_section,
@@ -400,7 +491,7 @@ class RecViewerTab(tk.Frame):
                 text=label_text,
                 bg=BG_FRAME,
                 fg=FG_DIM,
-                font=("Segoe UI", 8),
+                font=FONT_SMALL,
             ).grid(row=2, column=c, sticky="w", padx=10, pady=(2, 0))
             lbl = tk.Label(
                 self._info_section,
@@ -424,7 +515,7 @@ class RecViewerTab(tk.Frame):
         ).pack(side=tk.LEFT)
 
         self._lbl_total_score = tk.Label(
-            score_frame, text="-", bg=BG_FRAME, fg=FG_TEXT, font=("Segoe UI Bold", 16)
+            score_frame, text="-", bg=BG_FRAME, fg=FG_TEXT, font=(FONT_FAMILY_BOLD, 16)
         )
         self._lbl_total_score.pack(side=tk.LEFT, padx=8)
 
@@ -471,7 +562,7 @@ class RecViewerTab(tk.Frame):
             text="대화 비율 (상담원/고객/침묵)",
             bg=BG_FRAME,
             fg=FG_DIM,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
         ).pack(anchor="w", pady=(0, 2))
 
         self._ratio_bar_frame = tk.Frame(ratio_frame, bg="#404040", height=12)
@@ -496,7 +587,7 @@ class RecViewerTab(tk.Frame):
                 text=f"{label_text} -",
                 bg=BG_FRAME,
                 fg=color,
-                font=("Segoe UI", 8),
+                font=FONT_SMALL,
             )
             lbl.pack(side=tk.LEFT, padx=(0, 12))
             self._ratio_pct_labels.append(lbl)
@@ -533,7 +624,7 @@ class RecViewerTab(tk.Frame):
                 text=label_text,
                 bg=BG_FRAME,
                 fg=FG_DIM,
-                font=("Segoe UI", 8),
+                font=FONT_SMALL,
             ).grid(row=r * 2, column=c, sticky="w", padx=10, pady=(5, 0))
 
             lbl = tk.Label(
@@ -553,14 +644,14 @@ class RecViewerTab(tk.Frame):
             text="STT 대화",
             bg=BG_FRAME,
             fg="#007acc",
-            font=("Segoe UI Semibold", 10),
+            font=FONT_HEADING,
         ).pack(side=tk.LEFT)
         self._lbl_seg_count = tk.Label(
             stt_header,
             text="",
             bg=BG_FRAME,
             fg=FG_DIM,
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
         )
         self._lbl_seg_count.pack(side=tk.LEFT, padx=(8, 0))
 
@@ -610,10 +701,15 @@ class RecViewerTab(tk.Frame):
         content.pack(fill=tk.X)
         return content
 
+    def _refresh_agents(self, _event: Any = None) -> None:
+        """에이전트 탭의 접속 목록에서 콤보박스 갱신."""
+        ids = self._app.get_connected_agent_ids()
+        self._agent_combo["values"] = ["(auto)"] + ids
+
     def _search(self) -> None:
         self._search_mode = "analysis"
         date = self._date_entry.get().strip()
-        agent_id = self._agent_entry.get().strip()
+        agent_id = self._agent_combo.get().strip()
         if agent_id in ("(auto)", ""):
             agent_id = ""
 
@@ -637,7 +733,7 @@ class RecViewerTab(tk.Frame):
         self._search_mode = "files"
         date = self._date_entry.get().strip()
         search = self._keyword_entry.get().strip()
-        agent_id = self._agent_entry.get().strip()
+        agent_id = self._agent_combo.get().strip()
         if agent_id in ("(auto)", ""):
             agent_id = ""
 
@@ -1055,46 +1151,76 @@ class RecViewerTab(tk.Frame):
         return pcm_path
 
     def _start_playback(self, wav_path: str, filename: str) -> None:
-        """변환된 PCM WAV를 MCI로 재생."""
+        """변환된 PCM WAV 재생 (플랫폼별 분기)."""
         try:
-            _mci(f"close {_MCI_ALIAS}")
-            err = ctypes.windll.winmm.mciSendStringW(
-                f'open "{wav_path}" type waveaudio alias {_MCI_ALIAS}',
-                ctypes.create_unicode_buffer(256),
-                255,
-                0,
-            )
-            if err != 0:
-                err_buf = ctypes.create_unicode_buffer(256)
-                ctypes.windll.winmm.mciGetErrorStringW(err, err_buf, 255)
-                raise RuntimeError(f"MCI: {err_buf.value}")
+            if sys.platform == "win32":
+                self._start_playback_mci(wav_path)
+            else:
+                self._start_playback_subprocess(wav_path)
 
-            length_str = _mci(f"status {_MCI_ALIAS} length")
-            dur = int(length_str) if length_str.isdigit() else 0
-            if dur == 0:
-                _mci(f"close {_MCI_ALIAS}")
-                raise RuntimeError("MCI: 재생 길이 0")
-
-            self._play_duration_ms = dur
-            _mci(f"play {_MCI_ALIAS}")
-            self._mci_opened = True
             self._is_playing = True
             self._btn_play.config(state=tk.NORMAL, text="\u25b6 재생")
             self._btn_stop.config(state=tk.NORMAL)
             self._play_slider.set(0)
+            dur = self._play_duration_ms
             self._lbl_play_time.config(text=f"0:00 / {self._fmt_ms(dur)}")
             self._search_status.config(text=f"\u25b6 재생 중: {filename}", fg="#51cf66")
             self._tick_playback()
         except Exception as exc:
             self._play_error(str(exc))
 
+    def _start_playback_mci(self, wav_path: str) -> None:
+        """Windows MCI 재생."""
+        import ctypes
+
+        _mci(f"close {_MCI_ALIAS}")
+        err = ctypes.windll.winmm.mciSendStringW(  # type: ignore[attr-defined]
+            f'open "{wav_path}" type waveaudio alias {_MCI_ALIAS}',
+            ctypes.create_unicode_buffer(256),
+            255,
+            0,
+        )
+        if err != 0:
+            err_buf = ctypes.create_unicode_buffer(256)
+            ctypes.windll.winmm.mciGetErrorStringW(err, err_buf, 255)  # type: ignore[attr-defined]
+            raise RuntimeError(f"MCI: {err_buf.value}")
+
+        length_str = _mci(f"status {_MCI_ALIAS} length")
+        dur = int(length_str) if length_str.isdigit() else 0
+        if dur == 0:
+            _mci(f"close {_MCI_ALIAS}")
+            raise RuntimeError("MCI: 재생 길이 0")
+
+        self._play_duration_ms = dur
+        _mci(f"play {_MCI_ALIAS}")
+        self._mci_opened = True
+
+    def _start_playback_subprocess(self, wav_path: str) -> None:
+        """macOS/Linux subprocess 재생."""
+        if self._sp_player is None:
+            raise RuntimeError("오디오 플레이어 초기화 실패")
+        dur = self._sp_player.open_and_play(wav_path)
+        if dur == 0:
+            raise RuntimeError("재생 길이 0")
+        self._play_duration_ms = dur
+
     def _tick_playback(self) -> None:
         """200ms 주기 위치 업데이트."""
-        if not self._is_playing or not self._mci_opened:
+        if not self._is_playing:
             return
 
-        pos_str = _mci(f"status {_MCI_ALIAS} position")
-        pos_ms = int(pos_str) if pos_str.isdigit() else 0
+        if sys.platform == "win32":
+            if not self._mci_opened:
+                return
+            pos_str = _mci(f"status {_MCI_ALIAS} position")
+            pos_ms = int(pos_str) if pos_str.isdigit() else 0
+        else:
+            if self._sp_player is None:
+                return
+            if self._sp_player.is_finished():
+                self._on_playback_finished()
+                return
+            pos_ms = self._sp_player.get_position_ms()
 
         if self._play_duration_ms > 0 and pos_ms >= self._play_duration_ms:
             self._on_playback_finished()
@@ -1114,20 +1240,29 @@ class RecViewerTab(tk.Frame):
     def _on_seek(self, _event: Any) -> None:
         """슬라이더 드래그 완료 시 해당 위치로 이동."""
         self._user_seeking = False
-        if not self._mci_opened or not self._play_duration_ms:
+        if not self._play_duration_ms:
             return
         val = self._play_slider.get()
         seek_ms = val * self._play_duration_ms // 1000
-        _mci(f"seek {_MCI_ALIAS} to {seek_ms}")
-        _mci(f"play {_MCI_ALIAS}")
+
+        if sys.platform == "win32":
+            if not self._mci_opened:
+                return
+            _mci(f"seek {_MCI_ALIAS} to {seek_ms}")
+            _mci(f"play {_MCI_ALIAS}")
+        else:
+            if self._sp_player and self._play_tmp_path:
+                self._sp_player.seek(self._play_tmp_path, seek_ms)
 
     def _on_playback_finished(self) -> None:
         """재생 완료 시 상태 정리."""
         self._is_playing = False
-        if self._mci_opened:
+        if sys.platform == "win32" and self._mci_opened:
             _mci(f"stop {_MCI_ALIAS}")
             _mci(f"close {_MCI_ALIAS}")
             self._mci_opened = False
+        elif self._sp_player:
+            self._sp_player.stop()
         self._btn_stop.config(state=tk.DISABLED)
         self._play_slider.set(1000)
         self._lbl_play_time.config(
@@ -1149,18 +1284,14 @@ class RecViewerTab(tk.Frame):
         if self._update_timer_id:
             self.after_cancel(self._update_timer_id)
             self._update_timer_id = ""
-        if self._mci_opened:
-            _mci(f"stop {_MCI_ALIAS}")
-            _mci(f"close {_MCI_ALIAS}")
-            self._mci_opened = False
+        if sys.platform == "win32":
+            if self._mci_opened:
+                _mci(f"stop {_MCI_ALIAS}")
+                _mci(f"close {_MCI_ALIAS}")
+                self._mci_opened = False
         else:
-            # winsound 폴백 정지
-            try:
-                import winsound
-
-                winsound.PlaySound(None, winsound.SND_PURGE)
-            except Exception:
-                pass
+            if self._sp_player:
+                self._sp_player.stop()
         self._is_playing = False
         self._btn_stop.config(state=tk.DISABLED)
         self._play_slider.set(0)
@@ -1327,7 +1458,7 @@ class RecViewerTab(tk.Frame):
             txt_frame,
             bg="#1e1e1e",
             fg=FG_TEXT,
-            font=("Consolas", 9),
+            font=FONT_MONO,
             relief=tk.FLAT,
             wrap=tk.NONE,
         )
@@ -1337,9 +1468,7 @@ class RecViewerTab(tk.Frame):
         txt.pack(fill=tk.BOTH, expand=True)
 
         # 상태 및 버튼
-        status_lbl = tk.Label(
-            dlg, text="", bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 9)
-        )
+        status_lbl = tk.Label(dlg, text="", bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 9))
         status_lbl.pack(anchor="w", padx=10)
 
         btn_frame = tk.Frame(dlg, bg=BG_DARK)
@@ -1377,7 +1506,9 @@ class RecViewerTab(tk.Frame):
             if not save_dir:
                 return
 
-            status_lbl.config(text=f"{len(names)}개 파일 다운로드 시작...", fg="#cca700")
+            status_lbl.config(
+                text=f"{len(names)}개 파일 다운로드 시작...", fg="#cca700"
+            )
             btn_start.config(state=tk.DISABLED)
             threading.Thread(
                 target=self._do_batch_download,
@@ -1388,9 +1519,7 @@ class RecViewerTab(tk.Frame):
         def parse_list() -> None:
             names = extract_filenames()
             if names:
-                status_lbl.config(
-                    text=f"{len(names)}개 WAV 파일 확인됨", fg="#51cf66"
-                )
+                status_lbl.config(text=f"{len(names)}개 WAV 파일 확인됨", fg="#51cf66")
             else:
                 status_lbl.config(text="WAV 파일이 없습니다.", fg="#f44747")
 

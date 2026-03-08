@@ -31,7 +31,9 @@ from server.gui.constants import (
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
+    FONT_FAMILY,
     FONT_NORMAL,
+    FONT_SMALL,
     FONT_TITLE,
 )
 
@@ -71,14 +73,10 @@ class ServerGUI:
         self._bg_loop: asyncio.AbstractEventLoop | None = None
         self._bg_thread: threading.Thread | None = None
 
-        # 시스템 트레이
-        self._tray_icon: Any = None
-
         self._build_ui()
         self._start_bg_loop()
-        self._setup_tray()
 
-        self._root.protocol("WM_DELETE_WINDOW", self._minimize_to_tray)
+        self._root.protocol("WM_DELETE_WINDOW", self._quit_app)
 
         # 서버 자동 시작
         self._root.after(500, self._auto_start_server)
@@ -136,7 +134,7 @@ class ServerGUI:
             text="● Stopped",
             bg=BG_HEADER,
             fg="#ff6b6b",
-            font=("Segoe UI", 10),
+            font=(FONT_FAMILY, 10),
         )
         self._status_label.pack(side=tk.RIGHT, padx=12)
 
@@ -153,7 +151,7 @@ class ServerGUI:
             background=BG_BTN,
             foreground=FG_DIM,
             padding=[12, 6],
-            font=("Segoe UI", 9),
+            font=FONT_NORMAL,
         )
         style.map(
             "Dark.TNotebook.Tab",
@@ -196,7 +194,7 @@ class ServerGUI:
             text=f"Dashboard: {self._dashboard_url}  |  TCP: 0.0.0.0:{self._tcp_port}",
             bg="#1e1e1e",
             fg="#555555",
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
         ).pack(side=tk.LEFT, padx=8)
 
         self._uptime_label = tk.Label(
@@ -204,7 +202,7 @@ class ServerGUI:
             text="",
             bg="#1e1e1e",
             fg="#555555",
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
         )
         self._uptime_label.pack(side=tk.RIGHT, padx=8)
 
@@ -271,6 +269,13 @@ class ServerGUI:
 
     def is_server_running(self) -> bool:
         return self._server_proc is not None and self._server_proc.poll() is None
+
+    def get_connected_agent_ids(self) -> list[str]:
+        """에이전트 탭에서 현재 접속된 에이전트 ID 목록 반환."""
+        try:
+            return self._agents_tab.get_agent_ids()
+        except Exception:
+            return []
 
     def _read_server_output(self) -> None:
         """서버 프로세스의 stdout을 읽어서 큐에 넣기. 별도 스레드."""
@@ -469,48 +474,6 @@ class ServerGUI:
         except Exception as e:
             return {"error": str(e)}
 
-    # ── 시스템 트레이 ──
-
-    def _setup_tray(self) -> None:
-        try:
-            import pystray
-            from PIL import Image, ImageDraw
-
-            image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(image)
-            draw.ellipse([4, 4, 60, 60], fill="#007acc")
-            draw.text((20, 14), "S", fill="white")
-
-            menu = pystray.Menu(
-                pystray.MenuItem("열기", self._show_from_tray, default=True),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("종료", self._quit_app),
-            )
-
-            self._tray_icon = pystray.Icon(
-                "ai-logops-server",
-                image,
-                "AI-LogOps Server Manager",
-                menu,
-            )
-
-            threading.Thread(
-                target=self._tray_icon.run,
-                daemon=True,
-            ).start()
-        except ImportError:
-            pass
-
-    def _minimize_to_tray(self) -> None:
-        if self._tray_icon is not None:
-            self._root.withdraw()
-        else:
-            self._quit_app()
-
-    def _show_from_tray(self) -> None:
-        self._root.after(0, self._root.deiconify)
-        self._root.after(10, self._root.lift)
-
     def _quit_app(self) -> None:
         import os
 
@@ -519,12 +482,6 @@ class ServerGUI:
 
         if self._bg_loop is not None:
             self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
-
-        if self._tray_icon is not None:
-            try:
-                self._tray_icon.stop()
-            except Exception:
-                pass
 
         try:
             self._root.destroy()
