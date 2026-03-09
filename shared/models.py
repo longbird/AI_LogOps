@@ -33,6 +33,8 @@ class AgentSession:
     log_buffer: list[str] = field(default_factory=list)
     rec_log_buffer: list[str] = field(default_factory=list)
     deploy_history: list[dict[str, object]] = field(default_factory=list)
+    config_data: dict[str, object] | None = None
+    config_update_result: dict[str, object] | None = None
 
 
 @dataclass(slots=True)

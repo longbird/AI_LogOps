@@ -106,6 +106,16 @@ def _get_agent_data(session_mgr: SessionManagerLike | None) -> list[AgentCardDat
     return agents
 
 
+@router.get("/config", response_class=HTMLResponse)
+async def config_page(request: Request) -> HTMLResponse:
+    """에이전트 설정 관리 페이지."""
+    state = _state(request)
+    return cast(
+        HTMLResponse,
+        state.templates.TemplateResponse("config.html", {"request": request, "title": "설정 관리"}),
+    )
+
+
 def _state_color(state: str) -> str:
     colors = {
         "CONNECTED": "green",

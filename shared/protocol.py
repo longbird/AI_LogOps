@@ -34,6 +34,8 @@ class PacketType(IntEnum):
     STT_RESULT = 0x35
     REC_DATA_REQ = 0x36
     REC_DATA_RESP = 0x37
+    CMD_CONFIG = 0x40
+    CMD_CONFIG_ACK = 0x41
     HEARTBEAT = 0xFE
     DISCONNECT = 0xFF
 
@@ -72,6 +74,11 @@ class DeployTarget(IntEnum):
     AGENT = 0x00
     PROCESS = 0x01
     REC_CLIENT = 0x02
+
+
+class ConfigAction(IntEnum):
+    GET = 1
+    UPDATE = 2
 
 
 class RecAction(IntEnum):
@@ -1005,7 +1012,62 @@ class RecDataRespPayload:
         )
 
 
+class CmdConfigPayload:
+    """설정 명령 페이로드."""
+    def __init__(self, action: ConfigAction, config_data: str = ""):
+        self.action = action
+        self.config_data = config_data  # JSON-encoded config string
+
+    def pack(self) -> bytes:
+        data = json.dumps({
+            "action": self.action.value,
+            "config_data": self.config_data,
+        }).encode("utf-8")
+        return data
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "CmdConfigPayload":
+        obj = json.loads(data.decode("utf-8"))
+        return cls(
+            action=ConfigAction(obj["action"]),
+            config_data=obj.get("config_data", ""),
+        )
+
+
 class Packet:
+    _TYPE_LABELS: ClassVar[dict[int, str]] = {
+        PacketType.AUTH: "AUTH",
+        PacketType.AUTH_ACK: "AUTH_ACK",
+        PacketType.LOG_HIST: "LOG_HIST",
+        PacketType.LOG_REAL: "LOG_REAL",
+        PacketType.CMD_DEPLOY: "CMD_DEPLOY",
+        PacketType.FILE_CHUNK: "FILE_CHUNK",
+        PacketType.FILE_ACK: "FILE_ACK",
+        PacketType.CMD_CTRL: "CMD_CTRL",
+        PacketType.CMD_CTRL_ACK: "CMD_CTRL_ACK",
+        PacketType.CMD_LOG: "CMD_LOG",
+        PacketType.CMD_LOG_ACK: "CMD_LOG_ACK",
+        PacketType.LOG_FILE_LIST: "LOG_FILE_LIST",
+        PacketType.LOG_FILE_SELECT: "LOG_FILE_SELECT",
+        PacketType.AGENT_UPDATE: "AGENT_UPDATE",
+        PacketType.CMD_REC: "CMD_REC",
+        PacketType.CMD_REC_ACK: "CMD_REC_ACK",
+        PacketType.REC_ANALYSIS_RESULT: "REC_ANALYSIS_RESULT",
+        PacketType.REC_UPLOAD_REQ: "REC_UPLOAD_REQ",
+        PacketType.REC_UPLOAD_ACK: "REC_UPLOAD_ACK",
+        PacketType.STT_RESULT: "STT_RESULT",
+        PacketType.REC_DATA_REQ: "REC_DATA_REQ",
+        PacketType.REC_DATA_RESP: "REC_DATA_RESP",
+        PacketType.CMD_CONFIG: "CMD_CONFIG",
+        PacketType.CMD_CONFIG_ACK: "CMD_CONFIG_ACK",
+        PacketType.HEARTBEAT: "HEARTBEAT",
+        PacketType.DISCONNECT: "DISCONNECT",
+    }
+
+    @staticmethod
+    def _type_label(packet_type: PacketType | int) -> str:
+        return Packet._TYPE_LABELS.get(int(packet_type), f"UNKNOWN(0x{int(packet_type):02X})")
+
     @staticmethod
     def build(packet_type: PacketType | int, payload_bytes: bytes) -> bytes:
         header = PacketHeader.pack(

@@ -1,0 +1,255 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="max-w-4xl mx-auto">
+    <div class="flex items-center justify-between mb-6">
+        <h1 class="text-2xl font-bold text-gray-800">에이전트 설정 관리</h1>
+        <div class="flex items-center gap-3">
+            <select id="agent-select" class="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none bg-white">
+                <option value="">에이전트 선택...</option>
+            </select>
+            <button onclick="fetchConfig()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm font-semibold">
+                불러오기
+            </button>
+        </div>
+    </div>
+
+    <div id="status-msg" class="hidden mb-4 p-3 rounded text-sm"></div>
+
+    <div id="config-container" class="space-y-3">
+        <p class="text-gray-400 text-center py-12">에이전트를 선택하고 "불러오기"를 클릭하세요.</p>
+    </div>
+
+    <div id="apply-bar" class="hidden sticky bottom-4 mt-6 bg-white border border-gray-300 rounded-lg p-4 flex items-center justify-between shadow-lg">
+        <span id="apply-status" class="text-gray-500 text-sm"></span>
+        <button onclick="applyConfig()" class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-semibold">
+            적용
+        </button>
+    </div>
+</div>
+
+<script>
+const SENSITIVE_PATTERNS = ['password', 'token', 'api_key', 'secret', 'bot_token'];
+const SECTION_LABELS = {
+    agent: '에이전트 기본', connection: '서버 연결', monitoring: '모니터링',
+    telegram: '텔레그램', llm: 'LLM 설정', recording: '녹취 설정',
+    target_process: '대상 프로세스', schedule: '스케줄', rec_client: '녹취 클라이언트',
+};
+let currentConfig = {};
+
+function isSensitive(key) {
+    const lower = key.toLowerCase();
+    return SENSITIVE_PATTERNS.some(p => lower.includes(p));
+}
+
+function showStatus(msg, type) {
+    type = type || 'info';
+    const el = document.getElementById('status-msg');
+    el.textContent = msg;
+    const base = 'mb-4 p-3 rounded text-sm border ';
+    if (type === 'success') {
+        el.className = base + 'bg-green-50 text-green-700 border-green-300';
+    } else if (type === 'error') {
+        el.className = base + 'bg-red-50 text-red-700 border-red-300';
+    } else {
+        el.className = base + 'bg-blue-50 text-blue-700 border-blue-300';
+    }
+    if (type !== 'error') setTimeout(() => el.className = 'hidden', 5000);
+}
+
+async function loadAgents() {
+    try {
+        const resp = await fetch('/api/dashboard/deploy/agents');
+        if (resp.ok) {
+            const data = await resp.json();
+            const sel = document.getElementById('agent-select');
+            sel.innerHTML = '<option value="">에이전트 선택...</option>';
+            (data.agents || []).forEach(a => {
+                const opt = document.createElement('option');
+                opt.value = a.agent_id;
+                opt.textContent = a.agent_id + ' (v' + (a.version || '?') + ')';
+                sel.appendChild(opt);
+            });
+        }
+    } catch (e) { console.error('에이전트 목록 조회 실패:', e); }
+}
+
+async function fetchConfig() {
+    const agentId = document.getElementById('agent-select').value;
+    if (!agentId) { showStatus('에이전트를 선택하세요', 'error'); return; }
+
+    showStatus('설정 불러오는 중...', 'info');
+    try {
+        const resp = await fetch('/api/config/' + encodeURIComponent(agentId));
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            showStatus(data.error || '설정 불러오기 실패', 'error');
+            return;
+        }
+        currentConfig = data.config || {};
+        renderConfig(currentConfig);
+        document.getElementById('apply-bar').classList.remove('hidden');
+        showStatus('설정을 불러왔습니다', 'success');
+    } catch (e) {
+        showStatus('설정 불러오기 실패: ' + e.message, 'error');
+    }
+}
+
+function renderConfig(config) {
+    const container = document.getElementById('config-container');
+    container.innerHTML = '';
+
+    for (const [section, data] of Object.entries(config)) {
+        if (typeof data !== 'object' || data === null) continue;
+        const label = SECTION_LABELS[section] || section;
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden';
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 text-left transition-colors';
+        btn.innerHTML = '<span class="text-gray-800 font-semibold">' + escapeHtml(label) + '</span>' +
+            '<svg class="w-4 h-4 text-gray-400 transform transition-transform rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">' +
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>';
+
+        const body = document.createElement('div');
+        body.className = 'px-4 pb-4 space-y-1 border-t border-gray-100';
+        body.innerHTML = renderFields(data, section, 0);
+
+        btn.addEventListener('click', () => {
+            body.classList.toggle('hidden');
+            btn.querySelector('svg').classList.toggle('rotate-90');
+        });
+
+        wrapper.appendChild(btn);
+        wrapper.appendChild(body);
+        container.appendChild(wrapper);
+    }
+}
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function renderFields(data, prefix, depth) {
+    depth = depth || 0;
+    let html = '';
+    const indent = depth * 16;
+    const indentStyle = indent ? ' style="margin-left:' + indent + 'px"' : '';
+
+    for (const [key, value] of Object.entries(data)) {
+        const fullKey = prefix + '.' + key;
+
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+            html += '<div' + indentStyle + ' class="mt-3">' +
+                '<span class="text-blue-600 text-xs font-semibold uppercase tracking-wide">' + escapeHtml(key) + '</span>' +
+                '<div class="border-l-2 border-blue-100 ml-2 pl-3 mt-1">' + renderFields(value, fullKey, depth + 1) + '</div>' +
+                '</div>';
+        } else if (typeof value === 'boolean') {
+            html += '<div' + indentStyle + ' class="flex items-center gap-3 py-1.5">' +
+                '<label class="text-gray-500 text-sm w-44 shrink-0">' + escapeHtml(key) + '</label>' +
+                '<input type="checkbox" data-key="' + escapeHtml(fullKey) + '" ' + (value ? 'checked' : '') +
+                ' class="w-4 h-4 rounded text-blue-600 border-gray-300 focus:ring-blue-400">' +
+                '</div>';
+        } else if (Array.isArray(value)) {
+            html += '<div' + indentStyle + ' class="py-1.5">' +
+                '<label class="text-gray-500 text-sm block mb-1">' + escapeHtml(key) + '</label>' +
+                '<textarea data-key="' + escapeHtml(fullKey) + '" data-type="list" rows="' + Math.min(value.length + 1, 4) + '"' +
+                ' class="w-full bg-gray-50 text-gray-800 text-sm rounded px-3 py-2 border border-gray-300 font-mono focus:ring-2 focus:ring-blue-400 focus:outline-none">' +
+                escapeHtml(value.join('\n')) + '</textarea>' +
+                '</div>';
+        } else if (isSensitive(key)) {
+            html += '<div' + indentStyle + ' class="flex items-center gap-2 py-1.5">' +
+                '<label class="text-gray-500 text-sm w-44 shrink-0">' + escapeHtml(key) + '</label>' +
+                '<input type="password" data-key="' + escapeHtml(fullKey) + '" value="' + escapeHtml(value || '') + '"' +
+                ' class="flex-1 bg-gray-50 text-gray-800 text-sm rounded px-3 py-1.5 border border-gray-300 font-mono focus:ring-2 focus:ring-blue-400 focus:outline-none">' +
+                '<button type="button" onclick="var i=this.previousElementSibling;i.type=i.type===\'password\'?\'text\':\'password\'"' +
+                ' class="text-gray-400 hover:text-gray-700 text-xs px-2 py-1 border border-gray-300 rounded whitespace-nowrap">보기</button>' +
+                '</div>';
+        } else if (typeof value === 'number') {
+            html += '<div' + indentStyle + ' class="flex items-center gap-3 py-1.5">' +
+                '<label class="text-gray-500 text-sm w-44 shrink-0">' + escapeHtml(key) + '</label>' +
+                '<input type="number" data-key="' + escapeHtml(fullKey) + '" value="' + value + '"' +
+                ' class="w-36 bg-gray-50 text-gray-800 text-sm rounded px-3 py-1.5 border border-gray-300 font-mono focus:ring-2 focus:ring-blue-400 focus:outline-none">' +
+                '</div>';
+        } else {
+            html += '<div' + indentStyle + ' class="flex items-center gap-3 py-1.5">' +
+                '<label class="text-gray-500 text-sm w-44 shrink-0">' + escapeHtml(key) + '</label>' +
+                '<input type="text" data-key="' + escapeHtml(fullKey) + '" value="' + escapeHtml(value != null ? String(value) : '') + '"' +
+                ' class="flex-1 bg-gray-50 text-gray-800 text-sm rounded px-3 py-1.5 border border-gray-300 font-mono focus:ring-2 focus:ring-blue-400 focus:outline-none">' +
+                '</div>';
+        }
+    }
+    return html;
+}
+
+function collectFormData() {
+    const result = {};
+    document.querySelectorAll('[data-key]').forEach(el => {
+        const parts = el.dataset.key.split('.');
+        let obj = result;
+        for (let i = 0; i < parts.length - 1; i++) {
+            if (!obj[parts[i]]) obj[parts[i]] = {};
+            obj = obj[parts[i]];
+        }
+        const key = parts[parts.length - 1];
+        if (el.type === 'checkbox') {
+            obj[key] = el.checked;
+        } else if (el.dataset.type === 'list') {
+            obj[key] = el.value.split('\n').filter(l => l.trim());
+        } else if (el.type === 'number') {
+            obj[key] = Number(el.value);
+        } else {
+            obj[key] = el.value;
+        }
+    });
+    return result;
+}
+
+async function applyConfig() {
+    const agentId = document.getElementById('agent-select').value;
+    if (!agentId) { showStatus('에이전트를 선택하세요', 'error'); return; }
+
+    const applyStatus = document.getElementById('apply-status');
+    applyStatus.textContent = '설정 적용 중...';
+    applyStatus.className = 'text-gray-500 text-sm';
+
+    const config = collectFormData();
+    try {
+        const resp = await fetch('/api/config/' + encodeURIComponent(agentId), {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({config}),
+        });
+        const result = await resp.json();
+        if (result.success) {
+            const msg = result.message || '설정이 적용되었습니다';
+            applyStatus.textContent = msg;
+            applyStatus.className = 'text-green-600 text-sm font-semibold';
+            if (result.needs_restart) {
+                showStatus('연결 설정이 변경되었습니다. 에이전트를 재시작해야 적용됩니다.', 'info');
+            } else {
+                showStatus(msg, 'success');
+            }
+            setTimeout(fetchConfig, 1000);
+        } else {
+            const err = result.message || result.error || '알 수 없는 오류';
+            applyStatus.textContent = err;
+            applyStatus.className = 'text-red-600 text-sm';
+            showStatus(err, 'error');
+        }
+    } catch (e) {
+        const err = '설정 적용 실패: ' + e.message;
+        applyStatus.textContent = err;
+        applyStatus.className = 'text-red-600 text-sm';
+        showStatus(err, 'error');
+    }
+}
+
+loadAgents();
+</script>
+{% endblock %}

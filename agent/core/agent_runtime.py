@@ -621,6 +621,14 @@ class AgentRuntime:
         tcp_client.on_stt_result = rec_controller.handle_stt_result
         tcp_client.on_rec_data_req = rec_controller.handle_rec_data_req
 
+        from agent.core.config_handler import ConfigHandler
+
+        config_handler = ConfigHandler(
+            base_dir=self._base_dir,
+            tcp_client=tcp_client,
+        )
+        tcp_client.on_cmd_config = config_handler.handle_cmd_config
+
         _ = deploy_lock
         return ServerConnection(
             config=srv_cfg,

@@ -26,8 +26,10 @@ from shared.protocol import (
     PacketHeader,
     PacketType,
     CHUNK_SIZE,
+    CmdConfigPayload,
     CmdCtrlAckPayload,
     CmdDeployPayload,
+    ConfigAction,
     CtrlAckStatus,
     DeployTarget,
     FileAckPayload,
@@ -78,6 +80,7 @@ class TCPServer:
         self._is_running: bool = False
         self._deploy_results: dict[str, asyncio.Future[CmdCtrlAckPayload]] = {}
         self._rec_data_futures: dict[str, asyncio.Future[RecDataRespPayload]] = {}
+        self._config_futures: dict[str, asyncio.Future[dict]] = {}
 
         # ── 녹취 분석 flow control ──
         self._rec_in_flight: int = 0  # 현재 서버에서 처리 중인 녹취 건수
@@ -434,6 +437,10 @@ class TCPServer:
                 self._handle_rec_data_resp(agent_id, payload)
                 continue
 
+            if packet_type == PacketType.CMD_CONFIG_ACK:
+                self._handle_config_ack(agent_id, payload)
+                continue
+
             self._logger.warning(
                 "unexpected packet type: agent_id=%s type=%s payload_len=%s",
                 agent_id,
@@ -571,6 +578,67 @@ class TCPServer:
         elif ack.status == CtrlAckStatus.DEPLOY_ROLLBACK:
             self._logger.warning("deploy rolled back: agent_id=%s", agent_id)
             asyncio.create_task(self._notify(f"⚠️ 배포 롤백: {agent_id}"))
+
+    def _handle_config_ack(self, agent_id: str, payload: bytes) -> None:
+        """CMD_CONFIG_ACK 처리: 설정 조회/업데이트 응답."""
+        try:
+            ack = CmdConfigPayload.unpack(payload)
+        except (ValueError, Exception):
+            self._logger.warning("invalid CMD_CONFIG_ACK payload: agent_id=%s", agent_id)
+            return
+
+        import json
+        try:
+            data = json.loads(ack.config_data) if ack.config_data else {}
+        except json.JSONDecodeError:
+            data = {"error": "invalid JSON in config response"}
+
+        # Store in session for polling
+        session = self.session_mgr.get_session(agent_id)
+        if session is not None:
+            if ack.action == ConfigAction.GET:
+                session.config_data = data
+            elif ack.action == ConfigAction.UPDATE:
+                session.config_update_result = data
+
+        # Resolve pending future
+        fut = self._config_futures.pop(agent_id, None)
+        if fut is not None and not fut.done():
+            fut.set_result(data)
+
+        self._logger.info(
+            "config ack: agent_id=%s action=%s",
+            agent_id,
+            ack.action.name,
+        )
+
+    async def send_config_command(
+        self,
+        agent_id: str,
+        action: ConfigAction,
+        config_data: str = "",
+    ) -> bool:
+        """CMD_CONFIG 패킷을 에이전트에 전송."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return False
+        writer = cast(_WriterLike, session.writer)
+        cmd = CmdConfigPayload(action=action, config_data=config_data)
+        writer.write(Packet.build(PacketType.CMD_CONFIG, cmd.pack()))
+        await writer.drain()
+        self._logger.info(
+            "CMD_CONFIG sent: agent_id=%s action=%s",
+            agent_id,
+            action.name,
+        )
+        return True
+
+    def get_config_future(self, agent_id: str) -> asyncio.Future[dict]:
+        """설정 응답을 기다리기 위한 Future 생성."""
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future[dict] = loop.create_future()
+        self._config_futures[agent_id] = fut
+        return fut
 
     async def send_ctrl_command(
         self,

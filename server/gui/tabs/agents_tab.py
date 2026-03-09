@@ -78,6 +78,18 @@ class AgentsTab(tk.Frame):
 
         Button(
             header,
+            text="설정",
+            command=self._open_config_editor,
+            bg=BG_BTN,
+            fg=FG_DIM,
+            relief=tk.FLAT,
+            font=FONT_SMALL,
+            padx=8,
+            cursor="hand2",
+        ).pack(side=tk.RIGHT, padx=4)
+
+        Button(
+            header,
             text="새로고침",
             command=self._manual_refresh,
             bg=BG_BTN,
@@ -469,6 +481,13 @@ class AgentsTab(tk.Frame):
         self._analysis_text.tag_configure("dim", foreground="#555555")
 
         self._analysis_reset()
+
+    def _open_config_editor(self) -> None:
+        """선택된 에이전트의 설정 편집 다이얼로그를 엽니다."""
+        if not self._selected_agent:
+            return
+        from server.gui.dialogs.config_editor import ConfigEditorDialog
+        ConfigEditorDialog(self, self._app, self._selected_agent)
 
     # ── 분석 패널 토글 ──
 
