@@ -12,6 +12,7 @@ from server.gui.constants import (
     BG_BTN_PRIMARY,
     BG_DARK,
     BG_FRAME,
+    Button,
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
@@ -108,7 +109,7 @@ class RecordingTab(tk.Frame):
         btn_frame = tk.Frame(ctrl, bg=BG_FRAME)
         btn_frame.pack(fill=tk.X, pady=(4, 0))
 
-        self._start_btn = tk.Button(
+        self._start_btn = Button(
             btn_frame,
             text="▶ 분석 시작",
             command=self._start_analysis,
@@ -124,7 +125,7 @@ class RecordingTab(tk.Frame):
         )
         self._start_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        self._stop_btn = tk.Button(
+        self._stop_btn = Button(
             btn_frame,
             text="■ 분석 중지",
             command=self._stop_analysis,
@@ -226,7 +227,7 @@ class RecordingTab(tk.Frame):
         )
         self._ws_status.pack(side=tk.RIGHT)
 
-        tk.Button(
+        Button(
             log_header,
             text="지우기",
             command=self._clear_log,

@@ -11,6 +11,7 @@ from server.gui.constants import (
     BG_BTN_PRIMARY,
     BG_DARK,
     BG_FRAME,
+    Button,
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
@@ -49,7 +50,7 @@ class ServerTab(tk.Frame):
             font=FONT_HEADING,
         ).pack(side=tk.LEFT)
 
-        self._stop_btn = tk.Button(
+        self._stop_btn = Button(
             ctrl,
             text="■ 중지",
             command=self._stop_server,
@@ -66,7 +67,7 @@ class ServerTab(tk.Frame):
         )
         self._stop_btn.pack(side=tk.RIGHT, padx=(4, 0))
 
-        self._start_btn = tk.Button(
+        self._start_btn = Button(
             ctrl,
             text="▶ 시작",
             command=self._start_server,
@@ -82,7 +83,7 @@ class ServerTab(tk.Frame):
         )
         self._start_btn.pack(side=tk.RIGHT, padx=(4, 0))
 
-        self._restart_btn = tk.Button(
+        self._restart_btn = Button(
             ctrl,
             text="↻ 재시작",
             command=self._restart_server,
@@ -143,7 +144,7 @@ class ServerTab(tk.Frame):
             font=FONT_HEADING,
         ).pack(side=tk.LEFT)
 
-        tk.Button(
+        Button(
             log_toolbar,
             text="지우기",
             command=self._clear_log,

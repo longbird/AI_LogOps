@@ -13,6 +13,7 @@ from server.gui.constants import (
     BG_BTN_PRIMARY,
     BG_DARK,
     BG_FRAME,
+    Button,
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
@@ -99,7 +100,7 @@ class _DeploySection:
         )
         self._file_label.pack(side=tk.LEFT, padx=8, fill=tk.X, expand=True)
 
-        tk.Button(
+        Button(
             row2,
             text="파일 선택...",
             command=self._select_file,
@@ -115,7 +116,7 @@ class _DeploySection:
         row3 = tk.Frame(frame, bg=BG_FRAME)
         row3.pack(fill=tk.X)
 
-        self._deploy_btn = tk.Button(
+        self._deploy_btn = Button(
             row3,
             text="📦 배포",
             command=self._deploy,
@@ -131,7 +132,7 @@ class _DeploySection:
         )
         self._deploy_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        self._restart_btn = tk.Button(
+        self._restart_btn = Button(
             row3,
             text="↻ 재시작",
             command=self._restart,

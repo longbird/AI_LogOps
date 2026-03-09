@@ -13,6 +13,7 @@ from server.gui.constants import (
     BG_BTN_PRIMARY,
     BG_DARK,
     BG_FRAME,
+    Button,
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
@@ -44,7 +45,7 @@ class AdminTab(tk.Frame):
             font=(FONT_FAMILY_BOLD, 12),
         ).pack(side=tk.LEFT)
 
-        tk.Button(
+        Button(
             top,
             text="+ 계정 추가",
             bg=BG_BTN_PRIMARY,
@@ -55,7 +56,7 @@ class AdminTab(tk.Frame):
             command=self._open_create_dialog,
         ).pack(side=tk.RIGHT, padx=(5, 0))
 
-        tk.Button(
+        Button(
             top,
             text="새로고침",
             bg=BG_BTN,
@@ -103,7 +104,7 @@ class AdminTab(tk.Frame):
         bottom = tk.Frame(self, bg=BG_DARK)
         bottom.pack(fill=tk.X, padx=10, pady=(0, 10))
 
-        tk.Button(
+        Button(
             bottom,
             text="수정",
             bg=BG_BTN,
@@ -114,7 +115,7 @@ class AdminTab(tk.Frame):
             command=self._open_edit_dialog,
         ).pack(side=tk.LEFT, padx=(0, 5))
 
-        tk.Button(
+        Button(
             bottom,
             text="삭제",
             bg="#6e1b1b",
@@ -331,7 +332,7 @@ class AdminTab(tk.Frame):
 
             threading.Thread(target=_do, daemon=True).start()
 
-        save_btn = tk.Button(
+        save_btn = Button(
             btn_frame,
             text="저장",
             bg=BG_BTN_PRIMARY,
@@ -343,7 +344,7 @@ class AdminTab(tk.Frame):
         )
         save_btn.pack(side=tk.LEFT, padx=(0, 5))
 
-        tk.Button(
+        Button(
             btn_frame,
             text="취소",
             bg=BG_BTN,

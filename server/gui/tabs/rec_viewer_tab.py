@@ -21,6 +21,7 @@ from server.gui.constants import (
     BG_BTN_PRIMARY,
     BG_DARK,
     BG_FRAME,
+    Button,
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
@@ -240,7 +241,7 @@ class RecViewerTab(tk.Frame):
         self._keyword_entry.bind("<Return>", lambda _e: self._file_search())
 
         # Analysis Search Button
-        btn_search = tk.Button(
+        btn_search = Button(
             search_frame,
             text="분석 조회",
             bg=BG_BTN,
@@ -254,7 +255,7 @@ class RecViewerTab(tk.Frame):
         btn_search.pack(side=tk.LEFT, padx=(15, 0))
 
         # File Search Button
-        btn_file_search = tk.Button(
+        btn_file_search = Button(
             search_frame,
             text="파일 검색",
             bg=BG_BTN_PRIMARY,
@@ -268,7 +269,7 @@ class RecViewerTab(tk.Frame):
         btn_file_search.pack(side=tk.LEFT, padx=(5, 0))
 
         # Batch Download Button (right side)
-        btn_batch = tk.Button(
+        btn_batch = Button(
             search_frame,
             text="일괄 다운로드",
             bg=BG_BTN,
@@ -295,7 +296,7 @@ class RecViewerTab(tk.Frame):
         play_frame = tk.Frame(self, bg=BG_FRAME, padx=10, pady=4)
         play_frame.pack(fill=tk.X, padx=0, pady=0)
 
-        self._btn_play = tk.Button(
+        self._btn_play = Button(
             play_frame,
             text="\u25b6 재생",
             bg=BG_BTN,
@@ -309,7 +310,7 @@ class RecViewerTab(tk.Frame):
         )
         self._btn_play.pack(side=tk.LEFT)
 
-        self._btn_stop = tk.Button(
+        self._btn_stop = Button(
             play_frame,
             text="\u25a0 정지",
             bg=BG_BTN,
@@ -323,7 +324,7 @@ class RecViewerTab(tk.Frame):
         )
         self._btn_stop.pack(side=tk.LEFT, padx=(5, 0))
 
-        self._btn_download = tk.Button(
+        self._btn_download = Button(
             play_frame,
             text="\u2b07 다운로드",
             bg=BG_BTN,
@@ -1523,7 +1524,7 @@ class RecViewerTab(tk.Frame):
             else:
                 status_lbl.config(text="WAV 파일이 없습니다.", fg="#f44747")
 
-        tk.Button(
+        Button(
             btn_frame,
             text="목록 확인",
             bg=BG_BTN,
@@ -1534,7 +1535,7 @@ class RecViewerTab(tk.Frame):
             command=parse_list,
         ).pack(side=tk.LEFT, padx=(0, 5))
 
-        btn_start = tk.Button(
+        btn_start = Button(
             btn_frame,
             text="다운로드 시작",
             bg=BG_BTN_PRIMARY,
@@ -1546,7 +1547,7 @@ class RecViewerTab(tk.Frame):
         )
         btn_start.pack(side=tk.LEFT, padx=(0, 5))
 
-        tk.Button(
+        Button(
             btn_frame,
             text="초기화",
             bg=BG_BTN,
@@ -1560,7 +1561,7 @@ class RecViewerTab(tk.Frame):
             ),
         ).pack(side=tk.LEFT, padx=(0, 5))
 
-        tk.Button(
+        Button(
             btn_frame,
             text="닫기",
             bg=BG_BTN,

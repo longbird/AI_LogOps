@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 import sys
+import tkinter as tk
 from queue import SimpleQueue
 from typing import Any, Protocol
+
+# ── macOS 호환 Button ──
+if sys.platform == "darwin":
+    try:
+        from tkmacosx import Button as _MacButton  # type: ignore[import-untyped]
+        Button = _MacButton
+    except ImportError:
+        Button = tk.Button
+else:
+    Button = tk.Button
 
 # ── 색상 ──
 BG_DARK = "#252526"

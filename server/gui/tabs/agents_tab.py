@@ -12,6 +12,7 @@ from server.gui.constants import (
     BG_BTN,
     BG_DARK,
     BG_FRAME,
+    Button,
     FG_DIM,
     FG_TEXT,
     FG_WHITE,
@@ -75,7 +76,7 @@ class AgentsTab(tk.Frame):
         )
         self._count_label.pack(side=tk.RIGHT)
 
-        tk.Button(
+        Button(
             header,
             text="새로고침",
             command=self._manual_refresh,
@@ -156,7 +157,7 @@ class AgentsTab(tk.Frame):
         )
         self._ws_status.pack(side=tk.RIGHT)
 
-        self._toggle_analysis_btn = tk.Button(
+        self._toggle_analysis_btn = Button(
             log_header,
             text="분석 숨기기",
             command=self._toggle_analysis_panel,
@@ -169,7 +170,7 @@ class AgentsTab(tk.Frame):
         )
         self._toggle_analysis_btn.pack(side=tk.RIGHT, padx=4)
 
-        tk.Button(
+        Button(
             log_header,
             text="지우기",
             command=self._clear_log,
@@ -214,7 +215,7 @@ class AgentsTab(tk.Frame):
         self._realtime_frame = tk.Frame(mode_bar, bg=BG_FRAME)
         self._realtime_frame.pack(side=tk.LEFT)
 
-        self._rt_start_btn = tk.Button(
+        self._rt_start_btn = Button(
             self._realtime_frame,
             text="▶ 시작",
             command=self._start_realtime,
@@ -230,7 +231,7 @@ class AgentsTab(tk.Frame):
         )
         self._rt_start_btn.pack(side=tk.LEFT, padx=(0, 4))
 
-        self._rt_stop_btn = tk.Button(
+        self._rt_stop_btn = Button(
             self._realtime_frame,
             text="■ 중지",
             command=self._stop_realtime,
@@ -337,7 +338,7 @@ class AgentsTab(tk.Frame):
             cursor="hand2",
         ).pack(side=tk.LEFT, padx=(8, 0))
 
-        self._hist_fetch_btn = tk.Button(
+        self._hist_fetch_btn = Button(
             self._history_frame,
             text="⬇ 다운로드",
             command=self._fetch_history,
