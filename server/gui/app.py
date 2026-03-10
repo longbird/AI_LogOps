@@ -63,6 +63,7 @@ class ServerGUI:
             self._config.get("tcp", {}).get("auth_token", "")
         ) or os.environ.get("TCP_AUTH_TOKEN", "default-auth-token")
         self._jwt_cookie: str = ""
+        self._auth_failed: bool = False  # 로그인 실패 시 반복 시도 방지
 
         # 서버 프로세스
         self._server_proc: subprocess.Popen[str] | None = None
@@ -309,7 +310,7 @@ class ServerGUI:
 
     def _ensure_auth(self) -> None:
         """대시보드 로그인 (JWT 쿠키 획득)."""
-        if self._jwt_cookie:
+        if self._jwt_cookie or self._auth_failed:
             return
 
         # config.yaml → dashboard.users 또는 auth.py 기본값 사용
@@ -344,14 +345,24 @@ class ServerGUI:
 
             opener = build_opener(_NoRedirect)
             try:
-                opener.open(req, timeout=5)
+                resp = opener.open(req, timeout=5)
+                # 200인데 쿠키 없으면 실패 (401 등)
+                if resp.status == 401:
+                    self._auth_failed = True
+                    logger.warning("대시보드 로그인 실패 (비밀번호 불일치)")
             except HTTPError as e:
-                # 303 리다이렉트는 HTTPError로 도착 — 여기서 쿠키 추출
-                for header_val in e.headers.get_all("Set-Cookie") or []:
-                    if "access_token=" in header_val:
-                        token = header_val.split("access_token=")[1].split(";")[0]
-                        self._jwt_cookie = token
-                        break
+                if e.code == 401:
+                    self._auth_failed = True
+                    logger.warning("대시보드 로그인 실패 (비밀번호 불일치)")
+                else:
+                    # 303 리다이렉트는 HTTPError로 도착 — 여기서 쿠키 추출
+                    for header_val in e.headers.get_all("Set-Cookie") or []:
+                        if "access_token=" in header_val:
+                            token = header_val.split("access_token=")[1].split(";")[0]
+                            self._jwt_cookie = token
+                            break
+                    if not self._jwt_cookie:
+                        self._auth_failed = True
         except Exception:
             pass  # 서버 미실행 시 무시
 
@@ -363,8 +374,9 @@ class ServerGUI:
                     return dict(json.loads(resp.read().decode()))
             except HTTPError as e:
                 if e.code == 401 and attempt == 0:
-                    # JWT 만료 → 쿠키 초기화 후 재로그인
+                    # JWT 만료 → 쿠키/실패 플래그 초기화 후 재로그인
                     self._jwt_cookie = ""
+                    self._auth_failed = False
                     self._ensure_auth()
                     if self._jwt_cookie:
                         req.remove_header("Cookie")
