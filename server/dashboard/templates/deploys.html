@@ -3,7 +3,7 @@
 <h1 class="text-2xl font-bold mb-6">배포 관리</h1>
 
 <!-- Deploy Sections -->
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+<div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
 
     <!-- Agent Deploy -->
     <div class="bg-white rounded-lg shadow p-5">
@@ -71,6 +71,40 @@
                 <button onclick="deploy('3','rec_client')" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm font-semibold">배포</button>
             </div>
             <div id="status-3" class="text-xs text-gray-400 min-h-[1.25rem]"></div>
+        </div>
+    </div>
+
+    <!-- Folder Deploy -->
+    <div class="bg-white rounded-lg shadow p-5">
+        <h2 class="text-sm font-semibold text-gray-600 uppercase mb-4">폴더 배포</h2>
+        <div class="space-y-3">
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">Agent ID</label>
+                <select id="agent-id-4" data-persist="deploy_agent4"
+                        class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                    <option value="">(auto)</option>
+                    {% for agent_id in agents %}<option value="{{ agent_id }}">{{ agent_id }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">대상</label>
+                <select id="folder-target"
+                        class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none">
+                    <option value="process">process</option>
+                    <option value="agent">agent</option>
+                    <option value="rec_client">rec_client</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">폴더 선택</label>
+                <input id="folder-4" type="file" webkitdirectory directory multiple
+                       class="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100">
+                <div id="folder-info-4" class="text-xs text-gray-400 mt-1 min-h-[1rem]"></div>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="deployFolder('4')" class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-1.5 rounded text-sm font-semibold">배포</button>
+            </div>
+            <div id="status-4" class="text-xs text-gray-400 min-h-[1.25rem]"></div>
         </div>
     </div>
 </div>
@@ -208,6 +242,63 @@
             el.innerHTML = html;
         } catch (e) { el.innerHTML = '<div class="text-red-500 text-sm p-2">조회 실패</div>'; }
     };
+
+    window.deployFolder = async function(n) {
+        var agentEl = document.getElementById('agent-id-' + n);
+        var folderEl = document.getElementById('folder-' + n);
+        var targetEl = document.getElementById('folder-target');
+        var agent = agentEl.value.trim();
+        var target = targetEl.value;
+        var files = folderEl.files;
+
+        if (!files || files.length === 0) {
+            setStatus(n, '폴더를 선택하세요', 'text-red-500');
+            return;
+        }
+
+        setStatus(n, '압축 및 배포 중... (' + files.length + '개 파일)', 'text-yellow-600');
+        log('[folder→' + target + '] 폴더 배포 시작: ' + files.length + '개 파일', 'warn');
+
+        var formData = new FormData();
+        for (var i = 0; i < files.length; i++) {
+            formData.append('files', files[i]);
+            formData.append('paths', files[i].webkitRelativePath || files[i].name);
+        }
+        formData.append('target', target);
+        if (agent) formData.append('agent_id', agent);
+
+        try {
+            var resp = await fetch('/api/dashboard/deploy/upload-folder', { method: 'POST', body: formData });
+            var data = await resp.json();
+            if (resp.ok && data.status === 'ok') {
+                setStatus(n, '배포 완료 → ' + data.agent_id + ' (' + data.size_mb + 'MB, ' + data.file_count + '개 파일)', 'text-green-600 font-semibold');
+                log('[folder→' + target + '] 배포 성공: agent=' + data.agent_id + ' files=' + data.file_count + ' id=' + data.deploy_id, 'ok');
+                setTimeout(loadHistory, 2000);
+            } else {
+                setStatus(n, '실패: ' + (data.error || resp.statusText), 'text-red-500');
+                log('[folder→' + target + '] 배포 실패: ' + (data.error || resp.statusText), 'err');
+            }
+        } catch (err) {
+            setStatus(n, '네트워크 오류', 'text-red-500');
+            log('[folder→' + target + '] 오류: ' + err.message, 'err');
+        }
+    };
+
+    var folderInput4 = document.getElementById('folder-4');
+    if (folderInput4) {
+        folderInput4.addEventListener('change', function() {
+            var infoEl = document.getElementById('folder-info-4');
+            var files = this.files;
+            if (!files || files.length === 0) {
+                infoEl.textContent = '';
+                return;
+            }
+            var folderName = files[0].webkitRelativePath
+                ? files[0].webkitRelativePath.split('/')[0]
+                : '선택된 폴더';
+            infoEl.textContent = folderName + ' (' + files.length + '개 파일)';
+        });
+    }
 
     loadAgents();
     loadHistory();

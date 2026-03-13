@@ -262,6 +262,237 @@ class _DeploySection:
             self._log(f"[재시작] 실패: {err}")
 
 
+class _FolderDeploySection:
+    """폴더를 압축하여 배포하는 섹션."""
+
+    _TARGETS = ["process", "agent", "rec_client"]
+
+    def __init__(
+        self,
+        parent: tk.Frame,
+        app: ServerAppLike,
+        log_text: tk.Text,
+    ) -> None:
+        self._app = app
+        self._log_text = log_text
+        self._folder_path = ""
+
+        frame = tk.LabelFrame(
+            parent,
+            text="  폴더 배포  ",
+            bg=BG_FRAME,
+            fg=FG_TEXT,
+            font=FONT_SUBHEADING,
+            padx=8,
+            pady=8,
+            relief=tk.GROOVE,
+            bd=1,
+        )
+        frame.pack(fill=tk.X, padx=8, pady=4)
+
+        # 1행: 에이전트 선택
+        row1 = tk.Frame(frame, bg=BG_FRAME)
+        row1.pack(fill=tk.X, pady=(0, 4))
+
+        tk.Label(
+            row1,
+            text="Agent ID:",
+            bg=BG_FRAME,
+            fg=FG_DIM,
+            font=FONT_NORMAL,
+        ).pack(side=tk.LEFT)
+
+        self._agent_combo = ttk.Combobox(
+            row1,
+            values=["(auto)"],
+            state="readonly",
+            width=22,
+            font=FONT_NORMAL,
+        )
+        self._agent_combo.set("(auto)")
+        self._agent_combo.pack(side=tk.LEFT, padx=8)
+        self._agent_combo.bind("<Button-1>", self._refresh_agents)
+
+        # 2행: 타겟 선택
+        row2 = tk.Frame(frame, bg=BG_FRAME)
+        row2.pack(fill=tk.X, pady=(0, 4))
+
+        tk.Label(
+            row2,
+            text="Target:",
+            bg=BG_FRAME,
+            fg=FG_DIM,
+            font=FONT_NORMAL,
+        ).pack(side=tk.LEFT)
+
+        self._target_combo = ttk.Combobox(
+            row2,
+            values=self._TARGETS,
+            state="readonly",
+            width=22,
+            font=FONT_NORMAL,
+        )
+        self._target_combo.set("process")
+        self._target_combo.pack(side=tk.LEFT, padx=8)
+
+        # 3행: 폴더 선택
+        row3 = tk.Frame(frame, bg=BG_FRAME)
+        row3.pack(fill=tk.X, pady=(0, 4))
+
+        tk.Label(
+            row3,
+            text="폴더:",
+            bg=BG_FRAME,
+            fg=FG_DIM,
+            font=FONT_NORMAL,
+        ).pack(side=tk.LEFT)
+
+        self._folder_label = tk.Label(
+            row3,
+            text="(선택 안됨)",
+            bg=BG_FRAME,
+            fg=FG_DIM,
+            font=FONT_MONO,
+            anchor="w",
+        )
+        self._folder_label.pack(side=tk.LEFT, padx=8, fill=tk.X, expand=True)
+
+        Button(
+            row3,
+            text="폴더 선택...",
+            command=self._select_folder,
+            bg=BG_BTN,
+            fg=FG_TEXT,
+            relief=tk.FLAT,
+            font=FONT_SMALL,
+            padx=8,
+            cursor="hand2",
+        ).pack(side=tk.RIGHT)
+
+        # 4행: 배포 버튼 + 상태
+        row4 = tk.Frame(frame, bg=BG_FRAME)
+        row4.pack(fill=tk.X)
+
+        self._deploy_btn = Button(
+            row4,
+            text="📦 배포",
+            command=self._deploy,
+            bg=BG_BTN_PRIMARY,
+            fg=FG_WHITE,
+            activebackground="#1177bb",
+            activeforeground=FG_WHITE,
+            relief=tk.FLAT,
+            font=FONT_NORMAL,
+            padx=16,
+            pady=3,
+            cursor="hand2",
+        )
+        self._deploy_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self._status_label = tk.Label(
+            row4,
+            text="",
+            bg=BG_FRAME,
+            fg=FG_DIM,
+            font=FONT_SMALL,
+        )
+        self._status_label.pack(side=tk.RIGHT)
+
+    def _refresh_agents(self, _event: Any = None) -> None:
+        """에이전트 탭의 접속 목록에서 콤보박스 갱신."""
+        ids = self._app.get_connected_agent_ids()
+        self._agent_combo["values"] = ["(auto)"] + ids
+
+    def _select_folder(self) -> None:
+        path = filedialog.askdirectory(title="배포 폴더 선택")
+        if path:
+            self._folder_path = path
+            from pathlib import Path
+
+            folder = Path(path)
+            files = [
+                f
+                for f in folder.rglob("*")
+                if f.is_file() and f.name != "config.yaml"
+            ]
+            total_size = sum(f.stat().st_size for f in files)
+            size_mb = total_size / (1024 * 1024)
+            self._folder_label.configure(
+                text=f"{folder.name} ({len(files)}개 파일, {size_mb:.1f} MB)",
+                fg=FG_TEXT,
+            )
+
+    def _log(self, msg: str) -> None:
+        self._log_text.configure(state=tk.NORMAL)
+        self._log_text.insert(tk.END, msg + "\n")
+        self._log_text.configure(state=tk.DISABLED)
+        self._log_text.see(tk.END)
+
+    def _deploy(self) -> None:
+        if not self._folder_path:
+            self._status_label.configure(text="폴더를 선택하세요", fg="#f44747")
+            return
+
+        if not self._app.is_server_running():
+            self._status_label.configure(text="서버가 실행 중이 아닙니다", fg="#f44747")
+            return
+
+        import os
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        folder = Path(self._folder_path)
+        target = self._target_combo.get()
+        agent_id = self._agent_combo.get().strip()
+        if agent_id == "(auto)":
+            agent_id = ""
+
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".zip", delete=False, prefix=f"{folder.name}_"
+        )
+        tmp.close()
+        tmp_path = tmp.name
+
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in folder.rglob("*"):
+                if f.is_file() and f.name != "config.yaml":
+                    zf.write(str(f), str(f.relative_to(folder)))
+
+        self._deploy_btn.configure(state=tk.DISABLED)
+        self._status_label.configure(text="압축 및 배포 중...", fg="#cca700")
+        self._log(f"[폴더배포] {target} 배포 시작: {self._folder_path}")
+
+        def _do_deploy() -> None:
+            result = self._app.api_deploy_upload(tmp_path, agent_id, target)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            self._log_text.after(0, self._on_deploy_done, result)
+
+        threading.Thread(target=_do_deploy, daemon=True).start()
+
+    def _on_deploy_done(self, result: dict[str, Any] | None) -> None:
+        self._deploy_btn.configure(state=tk.NORMAL)
+        if result is None:
+            self._status_label.configure(text="배포 실패 (응답 없음)", fg="#f44747")
+            self._log("[폴더배포] 실패: 서버 응답 없음")
+            return
+
+        if "error" in result:
+            self._status_label.configure(text=f"실패: {result['error']}", fg="#f44747")
+            self._log(f"[폴더배포] 실패: {result['error']}")
+        else:
+            agent = result.get("agent_id", "?")
+            deploy_id = result.get("deploy_id", "?")
+            self._status_label.configure(text=f"배포 완료 → {agent}", fg="#51cf66")
+            self._log(
+                f"[폴더배포] 성공: agent={agent} deploy_id={deploy_id} "
+                f"target={self._target_combo.get()}"
+            )
+
+
 class DeployTab(tk.Frame):
     """배포 관리 탭: 에이전트/프로세스/녹취클라이언트."""
 
@@ -344,6 +575,9 @@ class DeployTab(tk.Frame):
             "녹취 클라이언트 배포 & 업데이트",
             "rec_client",
             self._log_text,
+        )
+        self._folder_section = _FolderDeploySection(
+            scroll_frame, self._app, self._log_text
         )
 
         log_outer.pack(fill=tk.X)
