@@ -63,6 +63,7 @@ class ProcessDeployer:
     async def execute_deploy(
         self,
         process_args: list[str] | None = None,
+        deploy_path: str | None = None,
     ) -> DeployResult:
         """대상 프로세스에 스테이징된 파일을 배포한다.
 
@@ -79,7 +80,10 @@ class ProcessDeployer:
             result.error = "스테이징된 파일이 없습니다. zip/exe 파일을 먼저 전송하세요."
             return result
 
-        target_dir = self.process_mgr.process_path.parent
+        if deploy_path:
+            target_dir = Path(deploy_path)
+        else:
+            target_dir = self.process_mgr.process_path.parent
         self._logger.info(
             "deploying to %s (process: %s)",
             target_dir,

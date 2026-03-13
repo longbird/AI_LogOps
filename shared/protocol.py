@@ -36,6 +36,8 @@ class PacketType(IntEnum):
     REC_DATA_RESP = 0x37
     CMD_CONFIG = 0x40
     CMD_CONFIG_ACK = 0x41
+    CMD_EXEC = 0x50
+    CMD_EXEC_ACK = 0x51
     HEARTBEAT = 0xFE
     DISCONNECT = 0xFF
 
@@ -288,12 +290,16 @@ class LogRealPayload:
 
 @dataclass(slots=True)
 class CmdDeployPayload:
-    """CMD_DEPLOY: [FileSize(4B)] [SHA256(32B)] [FileName(256B)] [DeployTarget(1B)] = 293B."""
+    """CMD_DEPLOY: [FileSize(4B)] [SHA256(32B)] [FileName(256B)] [DeployTarget(1B)] = 293B.
+
+    Optional extension: [PathLen(2B)][PathBytes(variable)] appended when deploy_path is set.
+    """
 
     file_size: int
     sha256: str
     filename: str
     deploy_target: DeployTarget = DeployTarget.AGENT
+    deploy_path: str = ""
 
     _STRUCT: ClassVar[struct.Struct] = struct.Struct("!I32s256sB")
     _SIZE: ClassVar[int] = 293
@@ -309,25 +315,35 @@ class CmdDeployPayload:
             raise ValueError("sha256 must be a valid hex string") from exc
         if len(sha256_bytes) != 32:
             raise ValueError("sha256 must decode to exactly 32 bytes")
-        return self._STRUCT.pack(
+        base = self._STRUCT.pack(
             self.file_size,
             sha256_bytes,
             _encode_fixed(self.filename, 256, "filename"),
             DeployTarget(self.deploy_target),
         )
+        if self.deploy_path:
+            path_bytes = self.deploy_path.encode("utf-8")
+            base += struct.pack("!H", len(path_bytes)) + path_bytes
+        return base
 
     @classmethod
     def unpack(cls, data: bytes) -> CmdDeployPayload:
-        if len(data) != cls._SIZE:
-            raise ValueError("cmd deploy payload must be exactly 293 bytes")
+        if len(data) < cls._SIZE:
+            raise ValueError("cmd deploy payload must be at least 293 bytes")
         file_size, sha256_raw, filename_raw, deploy_target_raw = cast(
-            tuple[int, bytes, bytes, int], cls._STRUCT.unpack(data)
+            tuple[int, bytes, bytes, int], cls._STRUCT.unpack(data[: cls._SIZE])
         )
+        deploy_path = ""
+        if len(data) > cls._SIZE:
+            path_len_struct = struct.Struct("!H")
+            (path_len,) = path_len_struct.unpack(data[cls._SIZE : cls._SIZE + 2])
+            deploy_path = data[cls._SIZE + 2 : cls._SIZE + 2 + path_len].decode("utf-8")
         return cls(
             file_size=file_size,
             sha256=sha256_raw.hex(),
             filename=_decode_fixed(filename_raw),
             deploy_target=DeployTarget(deploy_target_raw),
+            deploy_path=deploy_path,
         )
 
 
@@ -1034,6 +1050,54 @@ class CmdConfigPayload:
         )
 
 
+@dataclass(slots=True)
+class CmdExecPayload:
+    """CMD_EXEC: 서버 → 에이전트. 원격 커맨드 실행 요청."""
+
+    command_name: str
+
+    def pack(self) -> bytes:
+        data = {"command_name": self.command_name}
+        return json.dumps(data, separators=(",", ":")).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdExecPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(command_name=str(d["command_name"]))
+
+
+@dataclass(slots=True)
+class CmdExecAckPayload:
+    """CMD_EXEC_ACK: 에이전트 → 서버. 커맨드 실행 결과."""
+
+    command_name: str
+    success: bool
+    exit_code: int = 0
+    output: str = ""
+    error: str = ""
+
+    def pack(self) -> bytes:
+        data: dict[str, object] = {
+            "command_name": self.command_name,
+            "success": self.success,
+            "exit_code": self.exit_code,
+            "output": self.output,
+            "error": self.error,
+        }
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdExecAckPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(
+            command_name=str(d["command_name"]),
+            success=bool(d["success"]),
+            exit_code=int(d.get("exit_code", 0)),
+            output=str(d.get("output", "")),
+            error=str(d.get("error", "")),
+        )
+
+
 class Packet:
     _TYPE_LABELS: ClassVar[dict[int, str]] = {
         PacketType.AUTH: "AUTH",
@@ -1060,6 +1124,8 @@ class Packet:
         PacketType.REC_DATA_RESP: "REC_DATA_RESP",
         PacketType.CMD_CONFIG: "CMD_CONFIG",
         PacketType.CMD_CONFIG_ACK: "CMD_CONFIG_ACK",
+        PacketType.CMD_EXEC: "CMD_EXEC",
+        PacketType.CMD_EXEC_ACK: "CMD_EXEC_ACK",
         PacketType.HEARTBEAT: "HEARTBEAT",
         PacketType.DISCONNECT: "DISCONNECT",
     }

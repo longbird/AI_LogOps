@@ -25,6 +25,7 @@ class _TCPServerLike(Protocol):
         file_path: str,
         deploy_target: str = "agent",
         original_filename: str = "",
+        deploy_path: str = "",
     ) -> bool: ...
 
     def get_deploy_result_future(self, agent_id: str) -> asyncio.Future[Any] | None: ...
@@ -68,6 +69,7 @@ async def upload_deploy(
     file: UploadFile = File(...),
     agent_id: str = Form(""),
     target: str = Form(""),
+    deploy_path: str = Form(""),
     authorization: str = Header(""),
 ) -> JSONResponse:
     """deploy.py에서 zip 업로드 → TCP로 에이전트에 배포.
@@ -133,6 +135,7 @@ async def upload_deploy(
                 str(temp_path),
                 deploy_target=deploy_target,
                 original_filename=filename,
+                deploy_path=deploy_path,
             )
             if not ok:
                 logger.error(

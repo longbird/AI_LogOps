@@ -301,6 +301,7 @@ class AgentRuntime:
             deploy_lock = asyncio.Lock()
 
             # 16. Per-server connection objects
+            remote_commands_cfg = cfg.raw().get("remote_commands", [])
             for srv_cfg in server_configs:
                 conn = self._create_server_connection(
                     srv_cfg=srv_cfg,
@@ -315,6 +316,7 @@ class AgentRuntime:
                     process_args=process_args or None,
                     rec_client_mgr=rec_client_mgr,
                     rec_client_args=rec_client_args or None,
+                    remote_commands=remote_commands_cfg,
                 )
                 conn.deploy_handler.updater = updater
                 conn.deploy_handler.process_deployer = process_deployer
@@ -566,6 +568,7 @@ class AgentRuntime:
         process_args: list[str] | None = None,
         rec_client_mgr: ProcessManager | None = None,
         rec_client_args: list[str] | None = None,
+        remote_commands: list | None = None,
     ) -> ServerConnection:
         from agent.core.ctrl_handler import CtrlHandler
         from agent.core.deploy_handler import DeployHandler
@@ -622,12 +625,19 @@ class AgentRuntime:
         tcp_client.on_rec_data_req = rec_controller.handle_rec_data_req
 
         from agent.core.config_handler import ConfigHandler
+        from agent.core.exec_handler import ExecHandler
 
         config_handler = ConfigHandler(
             base_dir=self._base_dir,
             tcp_client=tcp_client,
         )
         tcp_client.on_cmd_config = config_handler.handle_cmd_config
+
+        exec_handler = ExecHandler(
+            tcp_client=tcp_client,
+            remote_commands=list(remote_commands) if remote_commands else [],
+        )
+        tcp_client.on_cmd_exec = exec_handler.handle_cmd_exec
 
         _ = deploy_lock
         return ServerConnection(

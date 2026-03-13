@@ -98,7 +98,7 @@ def _save_users(store: UsersStore) -> None:
 
 def _create_default_store() -> UsersStore:
     """기본 admin 계정으로 초기 저장소 생성."""
-    pw_hash, salt = _hash_password("admin123")
+    pw_hash, salt = _hash_password("admin1234")
     return {
         "users": {
             "admin": {

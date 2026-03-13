@@ -85,6 +85,24 @@ rec_client:
   path: ""                              # 녹취 클라이언트 실행 경로
   args: []                              # 시작 인수
 
+# 감시 폴더 (폴더 배포 대상 디렉토리)
+watch_folders:
+  - name: "Server"
+    path: "D:/AirSoft/Server2"
+    description: "메인 서버 프로그램"
+  # - name: "RecClient"
+  #   path: "D:/AirSoft/RecClient"
+  #   description: "녹취 클라이언트"
+
+# 원격 실행 커맨드 (서버에서 원격으로 실행 가능한 명령)
+remote_commands: []
+  # - name: "REST서버 시작"
+  #   command: "powershell.exe"
+  #   args: ["-File", "D:/Scripts/start_rest_server.ps1"]
+  #   working_dir: "D:/AirSoft/Server2"
+  #   timeout: 30
+  #   description: "REST API 서버를 시작합니다"
+
 recording:
   enabled: false
   watch_dir: "D:/AirSoft/Server2/Record"

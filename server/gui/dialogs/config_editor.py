@@ -42,6 +42,8 @@ SECTION_LABELS: dict[str, str] = {
     "target_process": "대상 프로세스",
     "schedule": "스케줄",
     "rec_client": "녹취 클라이언트",
+    "watch_folders": "감시 폴더",
+    "remote_commands": "원격 커맨드",
 }
 
 # 서버 항목의 기본 템플릿
@@ -52,6 +54,23 @@ _SERVER_TEMPLATE: dict[str, Any] = {
     "token": "",
     "heartbeat_interval": 30,
     "reconnect_delay": 60,
+}
+
+# 감시 폴더 항목의 기본 템플릿
+_WATCH_FOLDER_TEMPLATE: dict[str, Any] = {
+    "name": "",
+    "path": "",
+    "description": "",
+}
+
+# 원격 커맨드 항목의 기본 템플릿
+_REMOTE_COMMAND_TEMPLATE: dict[str, Any] = {
+    "name": "",
+    "command": "",
+    "args": [],
+    "working_dir": "",
+    "timeout": 60,
+    "description": "",
 }
 
 
@@ -252,6 +271,22 @@ class ConfigEditorDialog(tk.Toplevel):
 
         if section_key == "servers" and isinstance(data, list):
             self._render_servers_list(self._form_frame, data, full_prefix)
+        elif section_key == "watch_folders" and isinstance(data, list):
+            self._render_list_of_dicts(
+                self._form_frame, data, full_prefix,
+                item_label="폴더", template=_WATCH_FOLDER_TEMPLATE,
+                add_callback=lambda: self._add_list_entry("watch_folders", _WATCH_FOLDER_TEMPLATE),
+                remove_callback=lambda i: self._remove_list_entry("watch_folders", i),
+                name_color="#4ec9b0",
+            )
+        elif section_key == "remote_commands" and isinstance(data, list):
+            self._render_list_of_dicts(
+                self._form_frame, data, full_prefix,
+                item_label="커맨드", template=_REMOTE_COMMAND_TEMPLATE,
+                add_callback=lambda: self._add_list_entry("remote_commands", _REMOTE_COMMAND_TEMPLATE),
+                remove_callback=lambda i: self._remove_list_entry("remote_commands", i),
+                name_color="#ce9178",
+            )
         elif section_key == "schedule" and isinstance(data, dict):
             self._render_schedule(self._form_frame, data, full_prefix)
         elif isinstance(data, dict):
@@ -380,6 +415,154 @@ class ConfigEditorDialog(tk.Toplevel):
             servers.pop(idx)
             self._config["servers"] = servers
             self._build_form("servers", servers)
+
+    # ── list[dict] 범용 렌더링 (watch_folders, remote_commands) ──
+
+    def _render_list_of_dicts(
+        self,
+        parent: tk.Widget,
+        items: list,
+        prefix: str,
+        item_label: str,
+        template: dict[str, Any],
+        add_callback: Any,
+        remove_callback: Any,
+        name_color: str = "#569cd6",
+    ) -> None:
+        """list[dict] 구조를 렌더링합니다."""
+        btn_frame = tk.Frame(parent, bg=BG_FRAME)
+        btn_frame.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            btn_frame, text=f"{item_label} {len(items)}개 설정됨",
+            bg=BG_FRAME, fg=FG_DIM, font=FONT_SMALL,
+        ).pack(side=tk.LEFT)
+
+        Button(
+            btn_frame, text=f"+ {item_label} 추가",
+            command=add_callback,
+            bg=BG_BTN, fg=FG_TEXT, relief=tk.FLAT, font=FONT_SMALL,
+            padx=8, cursor="hand2",
+        ).pack(side=tk.RIGHT, padx=4)
+
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            self._render_list_item(
+                parent, item, prefix, i, len(items),
+                item_label=item_label,
+                remove_callback=remove_callback,
+                name_color=name_color,
+            )
+
+    def _render_list_item(
+        self,
+        parent: tk.Widget,
+        item: dict,
+        prefix: str,
+        idx: int,
+        total: int,
+        item_label: str,
+        remove_callback: Any,
+        name_color: str,
+    ) -> None:
+        """단일 list[dict] 항목을 렌더링합니다."""
+        header_frame = tk.Frame(parent, bg="#333333")
+        header_frame.pack(fill=tk.X, pady=(6, 2), padx=4)
+
+        item_name = item.get("name", f"{item_label}-{idx}")
+        tk.Label(
+            header_frame, text=f"  [{idx}] {item_name}",
+            bg="#333333", fg=name_color, font=FONT_SUBHEADING, anchor="w",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        Button(
+            header_frame, text="삭제",
+            command=lambda i=idx: remove_callback(i),
+            bg="#5a1d1d", fg="#ff6b6b", relief=tk.FLAT, font=FONT_SMALL,
+            padx=6, cursor="hand2",
+        ).pack(side=tk.RIGHT, padx=4, pady=2)
+
+        item_prefix = f"{prefix}{idx}."
+        for key, value in item.items():
+            dotted = f"{item_prefix}{key}"
+            row = tk.Frame(parent, bg=BG_FRAME)
+            row.pack(fill=tk.X, pady=2, padx=(24, 8))
+
+            tk.Label(
+                row, text=key, bg=BG_FRAME, fg=FG_DIM,
+                font=FONT_NORMAL, width=20, anchor="w",
+            ).pack(side=tk.LEFT)
+
+            if isinstance(value, bool):
+                var = tk.BooleanVar(value=value)
+                tk.Checkbutton(
+                    row, variable=var, bg=BG_FRAME, fg=FG_TEXT,
+                    selectcolor="#1e1e1e", activebackground=BG_FRAME,
+                ).pack(side=tk.LEFT)
+                self._field_vars[dotted] = var
+            elif isinstance(value, list):
+                text = tk.Text(
+                    row, bg="#1e1e1e", fg=FG_TEXT, font=FONT_MONO,
+                    height=min(len(value) + 1, 3), width=40,
+                    insertbackground=FG_TEXT, relief=tk.FLAT, borderwidth=1,
+                )
+                text.insert("1.0", "\n".join(str(v) for v in value))
+                text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                self._field_vars[dotted] = text
+            elif isinstance(value, int):
+                var = tk.StringVar(value=str(value))
+                tk.Entry(
+                    row, textvariable=var, bg="#1e1e1e", fg=FG_TEXT,
+                    font=FONT_MONO, insertbackground=FG_TEXT,
+                    relief=tk.FLAT, width=12,
+                ).pack(side=tk.LEFT)
+                self._field_vars[dotted] = var
+            elif _is_sensitive(key):
+                var = tk.StringVar(value=str(value) if value else "")
+                entry = tk.Entry(
+                    row, textvariable=var, bg="#1e1e1e", fg=FG_TEXT,
+                    font=FONT_MONO, insertbackground=FG_TEXT,
+                    relief=tk.FLAT, show="*",
+                )
+                entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+                self._field_vars[dotted] = var
+                self._sensitive_visible[dotted] = False
+
+                def _toggle(e=entry, d=dotted):
+                    vis = self._sensitive_visible.get(d, False)
+                    e.configure(show="" if not vis else "*")
+                    self._sensitive_visible[d] = not vis
+
+                Button(
+                    row, text="보기", command=_toggle,
+                    bg=BG_BTN, fg=FG_DIM, relief=tk.FLAT, font=FONT_SMALL,
+                    padx=6, cursor="hand2",
+                ).pack(side=tk.LEFT)
+            else:
+                var = tk.StringVar(value=str(value) if value is not None else "")
+                tk.Entry(
+                    row, textvariable=var, bg="#1e1e1e", fg=FG_TEXT,
+                    font=FONT_MONO, insertbackground=FG_TEXT, relief=tk.FLAT,
+                ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+                self._field_vars[dotted] = var
+
+    def _add_list_entry(self, section_key: str, template: dict[str, Any]) -> None:
+        """list[dict] 섹션에 새 항목을 추가합니다."""
+        items = self._config.get(section_key, [])
+        if not isinstance(items, list):
+            items = []
+        items.append(dict(template))
+        self._config[section_key] = items
+        self._build_form(section_key, items)
+
+    def _remove_list_entry(self, section_key: str, idx: int) -> None:
+        """list[dict] 섹션에서 항목을 삭제합니다."""
+        items = self._config.get(section_key, [])
+        if isinstance(items, list) and 0 <= idx < len(items):
+            items.pop(idx)
+            self._config[section_key] = items
+            self._build_form(section_key, items)
 
     # ── schedule 렌더링 (enabled 체크박스 추가) ──
 
@@ -572,17 +755,17 @@ class ConfigEditorDialog(tk.Toplevel):
             parts = dotted_key.split(".")
             section = parts[0]
 
-            # servers 섹션: list[dict] 구조
-            if section == "servers" and len(parts) >= 3:
-                if "servers" not in result:
-                    result["servers"] = []
-                srv_idx = int(parts[1])
-                # 리스트 크기 확장
-                while len(result["servers"]) <= srv_idx:
-                    result["servers"].append({})
+            # list[dict] 섹션: servers, watch_folders, remote_commands
+            _LIST_SECTIONS = ("servers", "watch_folders", "remote_commands")
+            if section in _LIST_SECTIONS and len(parts) >= 3:
+                if section not in result:
+                    result[section] = []
+                item_idx = int(parts[1])
+                while len(result[section]) <= item_idx:
+                    result[section].append({})
                 field_key = parts[2]
                 val = self._extract_var_value(var, dotted_key)
-                result["servers"][srv_idx][field_key] = val
+                result[section][item_idx][field_key] = val
                 continue
 
             # schedule.enabled → 사용여부에 따라 restart_times 처리

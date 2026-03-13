@@ -320,7 +320,7 @@ class ServerGUI:
             password = users[username]
         else:
             # auth.py 하드코딩 기본값
-            username, password = "admin", "admin123"
+            username, password = "admin", "admin1234"
 
         try:
             import urllib.parse
@@ -436,7 +436,8 @@ class ServerGUI:
         return self._do_request(req)
 
     def api_deploy_upload(
-        self, file_path: str, agent_id: str, target: str
+        self, file_path: str, agent_id: str, target: str,
+        deploy_path: str = "",
     ) -> dict[str, Any] | None:
         """배포 파일 업로드 (multipart/form-data)."""
         try:
@@ -468,6 +469,11 @@ class ServerGUI:
             body_parts.append(f"--{boundary}\r\n".encode())
             body_parts.append(b'Content-Disposition: form-data; name="target"\r\n\r\n')
             body_parts.append(f"{target}\r\n".encode())
+            # deploy_path field
+            if deploy_path:
+                body_parts.append(f"--{boundary}\r\n".encode())
+                body_parts.append(b'Content-Disposition: form-data; name="deploy_path"\r\n\r\n')
+                body_parts.append(f"{deploy_path}\r\n".encode())
             # end
             body_parts.append(f"--{boundary}--\r\n".encode())
 

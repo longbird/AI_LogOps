@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from shared.models import AgentSession
+from shared.protocol import ConfigAction
 from shared.utils import setup_logging
 
 logger = setup_logging("dashboard.deploys")
@@ -27,6 +28,7 @@ class _TCPServerLike(Protocol):
         file_path: str,
         deploy_target: str = "agent",
         original_filename: str = "",
+        deploy_path: str = "",
     ) -> bool: ...
 
     def get_deploy_result_future(self, agent_id: str) -> asyncio.Future[Any] | None: ...
@@ -37,6 +39,23 @@ class _TCPServerLike(Protocol):
         action: Any,
         target: int = ...,
     ) -> bool: ...
+
+    async def send_config_command(
+        self,
+        agent_id: str,
+        action: Any,
+        config_data: str = "",
+    ) -> bool: ...
+
+    def get_config_future(self, agent_id: str) -> asyncio.Future[Any]: ...
+
+    async def send_exec_command(
+        self,
+        agent_id: str,
+        command_name: str,
+    ) -> bool: ...
+
+    def get_exec_future(self, agent_id: str) -> asyncio.Future[Any]: ...
 
 
 class SessionManagerLike(Protocol):
@@ -96,6 +115,78 @@ async def api_deploy_agents(request: Request) -> JSONResponse:
     return JSONResponse({"agents": agents})
 
 
+@router.get("/api/dashboard/agent/{agent_id}/watch-folders")
+async def api_agent_watch_folders(request: Request, agent_id: str) -> JSONResponse:
+    """에이전트의 감시 폴더 목록 조회 (CMD_CONFIG GET 경유)."""
+    state = _state(request)
+    tcp_server = state.tcp_server
+    if tcp_server is None:
+        return JSONResponse({"error": "서버가 실행 중이 아닙니다"}, status_code=503)
+
+    fut = tcp_server.get_config_future(agent_id)
+    ok = await tcp_server.send_config_command(agent_id, ConfigAction.GET)
+    if not ok:
+        return JSONResponse({"error": f"에이전트 '{agent_id}'에 연결할 수 없습니다"}, status_code=404)
+
+    try:
+        config_data = await asyncio.wait_for(fut, timeout=10)
+    except asyncio.TimeoutError:
+        return JSONResponse({"error": "에이전트 응답 타임아웃"}, status_code=504)
+
+    watch_folders = config_data.get("watch_folders", [])
+    remote_commands = config_data.get("remote_commands", [])
+    safe_commands = []
+    for cmd in remote_commands:
+        if isinstance(cmd, dict) and cmd.get("name"):
+            safe_commands.append({
+                "name": cmd.get("name", ""),
+                "description": cmd.get("description", ""),
+            })
+
+    return JSONResponse({
+        "agent_id": agent_id,
+        "watch_folders": watch_folders,
+        "remote_commands": safe_commands,
+    })
+
+
+@router.post("/api/dashboard/agent/{agent_id}/exec")
+async def api_agent_exec(request: Request, agent_id: str) -> JSONResponse:
+    """에이전트에서 원격 커맨드 실행."""
+    state = _state(request)
+    tcp_server = state.tcp_server
+
+    if tcp_server is None:
+        return JSONResponse({"error": "서버가 실행 중이 아닙니다"}, status_code=503)
+
+    try:
+        body: dict[str, Any] = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    command_name = body.get("command_name", "")
+    if not command_name:
+        return JSONResponse({"error": "command_name이 필요합니다"}, status_code=400)
+
+    fut = tcp_server.get_exec_future(agent_id)
+    ok = await tcp_server.send_exec_command(agent_id, command_name)
+    if not ok:
+        return JSONResponse({"error": f"에이전트 '{agent_id}'에 연결할 수 없습니다"}, status_code=404)
+
+    try:
+        ack = await asyncio.wait_for(fut, timeout=120)
+    except asyncio.TimeoutError:
+        return JSONResponse({"error": "커맨드 실행 타임아웃 (120초)"}, status_code=504)
+
+    return JSONResponse({
+        "command_name": ack.command_name,
+        "success": ack.success,
+        "exit_code": ack.exit_code,
+        "output": ack.output,
+        "error": ack.error,
+    })
+
+
 @router.post("/api/dashboard/deploy/upload")
 async def api_deploy_upload(
     request: Request,
@@ -112,6 +203,7 @@ async def api_deploy_upload(
     form = await request.form()
     agent_id = str(form.get("agent_id", "")).strip()
     target = str(form.get("target", "agent")).strip()
+    deploy_path = str(form.get("deploy_path", "")).strip()
 
     if target not in ("agent", "process", "rec_client"):
         return JSONResponse(
@@ -162,6 +254,7 @@ async def api_deploy_upload(
                 str(temp_path),
                 deploy_target=deploy_target,
                 original_filename=filename,
+                deploy_path=deploy_path,
             )
             if ok:
                 logger.info("deploy done: %s → %s", deploy_id, agent_id)
@@ -211,6 +304,7 @@ async def api_deploy_upload_folder(request: Request) -> JSONResponse:
     form = await request.form()
     agent_id = str(form.get("agent_id", "")).strip()
     target = str(form.get("target", "process")).strip()
+    deploy_path = str(form.get("deploy_path", "")).strip()
 
     if target not in ("agent", "process", "rec_client"):
         return JSONResponse(
@@ -276,6 +370,7 @@ async def api_deploy_upload_folder(request: Request) -> JSONResponse:
                 str(temp_path),
                 deploy_target=deploy_target,
                 original_filename=zip_filename,
+                deploy_path=deploy_path,
             )
             if ok:
                 logger.info("folder deploy done: %s → %s", deploy_id, agent_id)

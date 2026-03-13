@@ -50,11 +50,13 @@ class DeployHandler:
         )
         self._logger: Logger = setup_logging("deploy_handler")
         self._deploy_target: DeployTarget = DeployTarget.AGENT
+        self._deploy_path: str = ""
 
     async def handle_cmd_deploy(self, payload_data: bytes) -> None:
         """CMD_DEPLOY 수신 처리. 수신 상태 초기화."""
         cmd = CmdDeployPayload.unpack(payload_data)
         self._deploy_target = cmd.deploy_target
+        self._deploy_path = cmd.deploy_path
         self.receiver.start_receive(cmd)
         self._logger.info(
             "deploy started: filename=%s size=%d target=%s",
@@ -178,7 +180,7 @@ class DeployHandler:
                 self._logger.info("exe copied to %s", dest)
 
             # ProcessDeployer 실행
-            result = await deployer.execute_deploy()
+            result = await deployer.execute_deploy(deploy_path=self._deploy_path or None)
             if result.success:
                 self._logger.info("process deploy verified: pid=%d", result.pid)
                 await self._send_deploy_result(success=True, pid=result.pid)

@@ -29,6 +29,8 @@ from shared.protocol import (
     CmdConfigPayload,
     CmdCtrlAckPayload,
     CmdDeployPayload,
+    CmdExecAckPayload,
+    CmdExecPayload,
     ConfigAction,
     CtrlAckStatus,
     DeployTarget,
@@ -81,6 +83,7 @@ class TCPServer:
         self._deploy_results: dict[str, asyncio.Future[CmdCtrlAckPayload]] = {}
         self._rec_data_futures: dict[str, asyncio.Future[RecDataRespPayload]] = {}
         self._config_futures: dict[str, asyncio.Future[dict]] = {}
+        self._exec_futures: dict[str, asyncio.Future] = {}
 
         # ── 녹취 분석 flow control ──
         self._rec_in_flight: int = 0  # 현재 서버에서 처리 중인 녹취 건수
@@ -441,6 +444,14 @@ class TCPServer:
                 self._handle_config_ack(agent_id, payload)
                 continue
 
+            if packet_type == PacketType.CMD_EXEC_ACK:
+                ack = CmdExecAckPayload.unpack(payload)
+                self._logger.info("CMD_EXEC_ACK from %s: %s success=%s", agent_id, ack.command_name, ack.success)
+                fut = self._exec_futures.pop(agent_id, None)
+                if fut and not fut.done():
+                    fut.set_result(ack)
+                continue
+
             self._logger.warning(
                 "unexpected packet type: agent_id=%s type=%s payload_len=%s",
                 agent_id,
@@ -638,6 +649,33 @@ class TCPServer:
         loop = asyncio.get_event_loop()
         fut: asyncio.Future[dict] = loop.create_future()
         self._config_futures[agent_id] = fut
+        return fut
+
+    async def send_exec_command(
+        self,
+        agent_id: str,
+        command_name: str,
+    ) -> bool:
+        """CMD_EXEC 패킷을 에이전트에 전송."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return False
+        writer = cast(_WriterLike, session.writer)
+        cmd = CmdExecPayload(command_name=command_name)
+        writer.write(Packet.build(PacketType.CMD_EXEC, cmd.pack()))
+        await writer.drain()
+        self._logger.info(
+            "CMD_EXEC sent: agent_id=%s command=%s",
+            agent_id,
+            command_name,
+        )
+        return True
+
+    def get_exec_future(self, agent_id: str) -> asyncio.Future[CmdExecAckPayload]:
+        """커맨드 실행 결과를 기다리기 위한 Future 생성."""
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future[CmdExecAckPayload] = loop.create_future()
+        self._exec_futures[agent_id] = fut
         return fut
 
     async def send_ctrl_command(
@@ -847,6 +885,7 @@ class TCPServer:
         file_path: str,
         deploy_target: str = "agent",
         original_filename: str = "",
+        deploy_path: str = "",
     ) -> bool:
         """에이전트에 파일 배포. CMD_DEPLOY + FILE_CHUNKs 전송.
 
@@ -877,6 +916,7 @@ class TCPServer:
             sha256=sha256_hash,
             filename=original_filename or path.name,
             deploy_target=target,
+            deploy_path=deploy_path,
         )
         writer.write(Packet.build(PacketType.CMD_DEPLOY, cmd.pack()))
         await writer.drain()

@@ -84,5 +84,6 @@ class ServerAppLike(Protocol):
     def get_connected_agent_ids(self) -> list[str]: ...
 
     def api_deploy_upload(
-        self, file_path: str, agent_id: str, target: str
+        self, file_path: str, agent_id: str, target: str,
+        deploy_path: str = "",
     ) -> dict[str, Any] | None: ...
