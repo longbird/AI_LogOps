@@ -49,7 +49,6 @@ Agent          RecSvrManager       AirREC(기존)      AirREC(신규)
   │                 │←────────HEARTBEAT─────────│
   │                 │                           │ (정상 가동 확인)
   │                 │──DRAIN_REQUEST──→│        │
-  │                 │                  │──SMDR 연결 해제
   │                 │                  │──신규녹취 거부  │←─신규녹취 처리
   │                 │                  │──진행중만 완료
   │                 │←─DRAIN_COMPLETE──│
@@ -66,8 +65,8 @@ Agent          RecSvrManager       AirREC(기존)      AirREC(신규)
 
 1. **신규플 먼저 시작** → 정상 가동 확인(첫 HEARTBEAT 수신) 후 기존플에 drain 요청
 2. **동시 실행 기간** 존재: 기존플(drain 중) + 신규플(신규 녹취 처리)
-3. **Npcap 동시 캡처 경합 방지**: 양쪽 모두 모든 RTP 패킷을 수신한다. 신규플은 시작 직후부터 패킷을 캡처하지만, SMDR 연결은 기존플이 drain 진입 시 해제한 후에야 신규플이 연결한다. 따라서 신규플은 SMDR 이벤트를 수신하기 전까지 새 통화 세션을 생성하지 않는다 (SMDR 이벤트가 call-ID 매칭의 트리거). 기존플은 drain 진입 후 새 SMDR 이벤트를 받지 않으므로 새 통화를 생성하지 않는다. 이로써 동일 통화를 양쪽이 동시에 claim하는 경합이 방지된다.
-4. **SMDR 핸드오프 순서**: 기존플이 drain 진입 → SMDR 연결 해제 → 신규플이 SMDR 연결 시도. PBX SMDR 서버는 단일 TCP 연결만 허용하므로, 기존플이 먼저 끊어야 신규플이 연결 가능.
+3. **SMDR 중복 연결 허용**: PBX SMDR 서버는 다중 TCP 연결을 허용한다. 따라서 신규플 시작 시 즉시 SMDR 연결하여 양쪽 모두 SMDR 이벤트를 수신한다. 경합 방지는 drain 플래그로 처리 — 기존플은 `m_bDraining=true` 상태에서 새 세션 생성 SMDR 이벤트(IR/IA)를 무시하고, 기존 세션의 완료 이벤트(I/O)만 처리한다. 신규플은 정상적으로 모든 SMDR 이벤트를 처리한다.
+4. **Npcap 동시 캡처**: 양쪽 모두 모든 RTP 패킷을 수신하지만, `CCallTable`이 call-ID 기반으로 자기 세션의 패킷만 처리하므로 데이터 오염 없음. 기존플은 drain 중 새 세션을 생성하지 않으므로 신규 통화의 RTP는 무시된다.
 5. **안정화 판단**: 수동 확인 (서버에서 관리자가 확인 명령 전송)
 6. **current 링크 변경 시점**: 수동 안정화 확인 후에 `current` 링크를 변경한다. 확인 전에는 기존 버전을 가리킨 채 유지.
 
@@ -178,7 +177,7 @@ D:\AirSoft\Server2\
 ```
 신규플 크래시 감지 (WaitForSingleObject or Pipe 끊김)
 → 기존플에 CANCEL_DRAIN (0x04) 전송
-→ 기존플: m_bDraining = false, SMDR 재연결, 정상 모드 복귀
+→ 기존플: m_bDraining = false, 정상 모드 복귀 (SMDR 연결은 유지 중이므로 재연결 불필요)
 → 신규플 버전 폴더 제거
 → 에러 로그
 ```
@@ -317,15 +316,9 @@ if (m_bDraining && IsNewSession(smdrRecord)) {
 // → PipeClient를 통해 DRAIN_COMPLETE 전송 후 자체 종료
 ```
 
-### Modified: SmdrClient.h/cpp
+### SmdrClient.h/cpp — 수정 불필요
 
-```cpp
-// Disconnect() 메서드 공개
-void Disconnect();
-
-// drain 모드에서 재연결 억제
-bool m_bSuppressReconnect = false;
-```
+SMDR 중복 연결이 허용되므로 drain 시 SMDR 연결을 해제할 필요 없음. 기존플은 SMDR 연결을 유지한 채 `CCallTable`의 drain 플래그로 새 세션 생성만 차단한다. CANCEL_DRAIN 시에도 SMDR 재연결 없이 플래그만 복귀하면 된다.
 
 ### Modified: RecorderMain.cpp
 
@@ -340,8 +333,7 @@ pipeClient.Start(&callTable, &smdrClient);
 | 파일 | 변경 내용 |
 |------|-----------|
 | `PipeClient.h/cpp` | 신규. Named Pipe 클라이언트 스레드 |
-| `calltable.h/cpp` | drain 플래그, GetActiveCallCount(), 신규 통화 거부 |
-| `SmdrClient.h/cpp` | Disconnect() 공개, 재연결 억제 플래그 |
+| `calltable.h/cpp` | drain 플래그, GetActiveCallCount(), 신규 세션 생성 차단 |
 | `RecorderMain.cpp` | PipeClient 스레드 시작 |
 
 ## Agent Integration Changes
