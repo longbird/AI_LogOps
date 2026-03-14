@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-import zipfile
 from logging import Logger
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -149,9 +148,10 @@ class DeployHandler:
         updater.execute_update()
 
     async def _execute_process_deploy(self, file_path: Path) -> None:
-        """ProcessDeployer를 통한 프로세스 배포.
+        """ZIP을 스테이징 디렉토리에 압축 해제하고 RecSvrManager용 플래그를 생성한다.
 
-        흐름: zip/exe 수신 → 스테이징 → ProcessDeployer.execute_deploy() → 결과 전송
+        흐름: zip 수신 → 스테이징 압축 해제 → update-ready.flag 생성 → 결과 전송
+        RecSvrManager가 플래그를 감지하여 실제 프로세스 교체를 처리한다.
         """
         deployer = self.process_deployer
         if deployer is None:
@@ -163,9 +163,7 @@ class DeployHandler:
             # ZIP 파일: 스테이징 디렉토리에 압축 해제
             if file_path.suffix.lower() == ".zip":
                 self._logger.info("extracting zip to staging: %s", file_path)
-                deployer.update_dir.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(file_path, "r") as zf:
-                    zf.extractall(deployer.update_dir)
+                await deployer.extract_staged_files(file_path)
                 self._logger.info(
                     "zip extracted to %s, staged files: %s",
                     deployer.update_dir,
@@ -179,17 +177,13 @@ class DeployHandler:
                 _ = shutil.copy2(str(file_path), str(dest))
                 self._logger.info("exe copied to %s", dest)
 
-            # ProcessDeployer 실행
-            result = await deployer.execute_deploy(deploy_path=self._deploy_path or None)
-            if result.success:
-                self._logger.info("process deploy verified: pid=%d", result.pid)
-                await self._send_deploy_result(success=True, pid=result.pid)
-            else:
-                self._logger.error("process deploy failed: %s", result.error)
-                await self._send_deploy_result(success=False)
+            # update-ready.flag 생성 → RecSvrManager가 폴링하여 감지
+            deployer.write_update_flag()
+            self._logger.info("update staged for RecSvrManager")
+            await self._send_deploy_result(success=True)
 
         except Exception as exc:
-            self._logger.error("process deploy exception: %s", exc, exc_info=True)
+            self._logger.error("process deploy staging failed: %s", exc, exc_info=True)
             await self._send_deploy_result(success=False)
 
     async def _send_deploy_result(self, success: bool, pid: int = 0) -> None:

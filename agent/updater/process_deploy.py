@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import re
 import shutil
+import zipfile
 from dataclasses import dataclass, field
+from datetime import datetime
 from logging import Logger
 from pathlib import Path
 
@@ -146,6 +150,42 @@ class ProcessDeployer:
             else "헬스체크 실패. 롤백도 실패."
         )
         return result
+
+    def _detect_version(self) -> str | None:
+        """Try to detect version from staged version.h file."""
+        version_h = self.update_dir / "version.h"
+        if version_h.exists():
+            content = version_h.read_text(encoding="utf-8", errors="ignore")
+            match = re.search(r'#define\s+VERSION_STRING\s+"([^"]+)"', content)
+            if match:
+                return match.group(1)
+        return None
+
+    def write_update_flag(self) -> None:
+        """Write update-ready.flag for RecSvrManager to detect."""
+        flag_path = self.update_dir / "update-ready.flag"
+        version = self._detect_version()
+        if version:
+            flag_content = f"version={version}\n"
+        else:
+            flag_content = f"version=v{datetime.now().strftime('%Y%m%d_%H%M%S')}\n"
+        flag_path.write_text(flag_content, encoding="utf-8")
+        self._logger.info(
+            "update flag written: %s (%s)", flag_path, flag_content.strip()
+        )
+
+    async def extract_staged_files(self, zip_path: Path) -> None:
+        """Extract zip to staging directory."""
+        if self.update_dir.exists():
+            shutil.rmtree(self.update_dir)
+        self.update_dir.mkdir(parents=True, exist_ok=True)
+
+        def _extract() -> None:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(self.update_dir)
+
+        await asyncio.to_thread(_extract)
+        self._logger.info("extracted %s to %s", zip_path.name, self.update_dir)
 
     def _clear_log_folders(self) -> int:
         """프로세스와 공통 경로가 가장 많이 겹치는 로그 폴더만 삭제한다.
