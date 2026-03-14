@@ -131,7 +131,9 @@ Add these members to the `CCallTable` class (public section, after existing meth
 
 ```cpp
 // Drain support for graceful update
-bool m_bDraining;
+// volatile 필수: Pipe 스레드에서 설정, RTP/SIP 스레드에서 읽음.
+// MSVC/x86에서 volatile은 acquire/release 시맨틱 제공하여 스레드 간 가시성 보장.
+volatile bool m_bDraining;
 void SetDraining(bool bDrain);
 bool IsDraining() const { return m_bDraining; }
 int  GetActiveCallCount();
@@ -152,7 +154,8 @@ In `calltable.cpp`, add:
 ```cpp
 void CCallTable::SetDraining(bool bDrain)
 {
-    CSipMutexGuard guard(m_mtxTable);
+    // volatile bool이므로 MSVC/x86에서 atomic store 보장.
+    // mutex 불필요 — 단순 플래그 설정이고, 읽는 쪽도 volatile read.
     m_bDraining = bDrain;
 }
 
@@ -192,7 +195,13 @@ if (m_bDraining) {
 }
 ```
 
-**Important**: Do NOT place the check before the mutex acquire — `m_bDraining` is set from another thread and must be read under the same lock to avoid a data race.
+**Important**: `m_bDraining`은 `volatile bool`로 선언되어 mutex 밖에서도 읽기 안전하지만, 슬롯 할당 직전에 체크하는 것이 의미상 정확하므로 lock 내부에 배치.
+
+**호출자 안전성 확인 완료**: `add()`/`add_by_callid()`/`add_by_rtp()`가 -1을 리턴하는 것은 기존에 없던 경로이지만, 주요 호출자 모두 안전하게 처리함:
+- `SipHandler.cpp:228-232` — `if (idx < 0)` 체크 후 return
+- `RecorderMain.cpp:925,945,1621,1741,1894,1913` — `if (idx < 0) return;` 패턴
+- `RecorderMain.cpp:2270` — `if (idx >= 0)` 체크 후 진행
+- 호출자가 -1을 배열 인덱스로 직접 사용하는 경우 **없음**
 
 - [ ] **Step 5: Build AirREC to verify compilation**
 
@@ -375,12 +384,19 @@ void CPipeClient::PipeLoop()
 {
     BYTE buffer[512];
 
+    int nConnectFailCount = 0;
     while (m_bRunning) {
         if (!m_bConnected) {
             if (!Connect()) {
+                nConnectFailCount++;
+                // 로깅 스팸 방지: 첫 실패 + 이후 12회마다(1분) 로그
+                if (nConnectFailCount == 1 || nConnectFailCount % 12 == 0) {
+                    // LOG: "Pipe connection failed (attempt %d)", nConnectFailCount
+                }
                 Sleep(RECONNECT_INTERVAL_MS);
                 continue;
             }
+            nConnectFailCount = 0;  // 연결 성공 시 리셋
         }
 
         DWORD bytesRead = 0;
@@ -481,9 +497,16 @@ void CPipeClient::OnCancelDrain()
 
 void CPipeClient::OnShutdown()
 {
-    // Graceful exit
+    // CRITICAL: PostQuitMessage(0)은 WM_QUIT를 보내므로 OnClose()가 호출되지 않음.
+    // OnClose()에는 SaveActiveSessions, DoAllCleanup, WAV 플러시 등 필수 정리 로직이 있음.
+    // 반드시 WM_CLOSE를 보내야 OnClose()가 호출되어 정상 종료됨.
     m_bRunning = false;
-    PostQuitMessage(0);
+    extern volatile bool g_bDrainShutdown;  // drain에 의한 종료 — OnClose 확인 다이얼로그 건너뜀
+    g_bDrainShutdown = true;
+    HWND hWnd = AfxGetMainWnd() ? AfxGetMainWnd()->m_hWnd : NULL;
+    if (hWnd) {
+        ::PostMessage(hWnd, WM_CLOSE, 0, 0);
+    }
 }
 
 void CPipeClient::OnStatusRequest()
@@ -501,11 +524,17 @@ void CPipeClient::CheckDrainComplete()
 
     int nActive = m_pCallTable->GetActiveCallCount();
     if (nActive == 0) {
-        // All calls completed — send DRAIN_COMPLETE and exit
+        // All calls completed — send DRAIN_COMPLETE and trigger graceful exit
         SendMessage(MSG_DRAIN_COMPLETE, NULL, 0);
-        Sleep(500);  // Allow message to be sent
+        Sleep(500);  // Allow pipe message to be sent
         m_bRunning = false;
-        PostQuitMessage(0);
+        // WM_CLOSE → OnClose() 호출 → SaveActiveSessions + DoAllCleanup + WAV 플러시
+        extern volatile bool g_bDrainShutdown;
+        g_bDrainShutdown = true;
+        HWND hWnd = AfxGetMainWnd() ? AfxGetMainWnd()->m_hWnd : NULL;
+        if (hWnd) {
+            ::PostMessage(hWnd, WM_CLOSE, 0, 0);
+        }
     }
 }
 ```
@@ -532,12 +561,13 @@ git commit -m "feat: add PipeClient for RecSvrManager communication"
 
 ---
 
-### Task 4: Integrate PipeClient into AirREC startup
+### Task 4: Integrate PipeClient into AirREC startup + drain 종료 지원
 
 **Files:**
 - Modify: `D:\Work\AirTech\PBXServer\AirRec\RecorderMain.cpp`
+- Modify: `D:\Work\AirTech\PBXServer\AirRec\AirRecorderDlg.cpp`
 
-- [ ] **Step 1: Add PipeClient include and global instance**
+- [ ] **Step 1: Add PipeClient include, global instance, and drain shutdown flag**
 
 At top of `RecorderMain.cpp`, add:
 
@@ -545,7 +575,30 @@ At top of `RecorderMain.cpp`, add:
 #include "PipeClient.h"
 
 CPipeClient g_pipeClient;
+volatile bool g_bDrainShutdown = false;  // drain 완료/SHUTDOWN 시 true → OnClose 확인 다이얼로그 건너뜀
 ```
+
+- [ ] **Step 1b: Modify OnClose() in AirRecorderDlg.cpp to skip confirmation during drain**
+
+In `CAirRecorderDlg::OnClose()` (line 388), the existing code shows a `MessageBox` confirmation dialog. Add drain bypass before it:
+
+```cpp
+void CAirRecorderDlg::OnClose()
+{
+    extern volatile bool g_bDrainShutdown;
+    if (!g_bDrainShutdown) {
+        // 기존 확인 다이얼로그 (사용자 수동 종료 시에만)
+        if (MessageBox("Are you sure you want to exit?", ...) != IDYES)
+            return;
+    }
+
+    // 이하 기존 정리 로직 그대로 유지:
+    // SaveActiveSessions(), DoAllCleanup(), session_state.bin 삭제, 스레드 종료 등
+    // ...
+}
+```
+
+이렇게 하면 drain에 의한 `WM_CLOSE`는 확인 없이 정상 정리 경로를 탐. WAV 플러시, DB 기록, 세션 상태 저장 모두 정상 수행됨.
 
 - [ ] **Step 2: Start PipeClient in CaptureProcessThread()**
 
