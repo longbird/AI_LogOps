@@ -38,6 +38,13 @@ class PacketType(IntEnum):
     CMD_CONFIG_ACK = 0x41
     CMD_EXEC = 0x50
     CMD_EXEC_ACK = 0x51
+    # ── File Manager ──
+    CMD_FILE_LIST = 0x60
+    CMD_FILE_LIST_ACK = 0x61
+    CMD_FILE_GET = 0x62
+    CMD_FILE_GET_ACK = 0x63
+    CMD_FILE_PUT = 0x64
+    CMD_FILE_PUT_ACK = 0x65
     HEARTBEAT = 0xFE
     DISCONNECT = 0xFF
 
@@ -1098,6 +1105,185 @@ class CmdExecAckPayload:
         )
 
 
+# ---------------------------------------------------------------------------
+# File Manager (JSON 기반 가변 길이)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class CmdFileListPayload:
+    """CMD_FILE_LIST: 서버 → 에이전트. 디렉토리 목록 요청."""
+
+    path: str
+    request_id: str
+
+    def pack(self) -> bytes:
+        data: dict[str, object] = {
+            "path": self.path,
+            "request_id": self.request_id,
+        }
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdFileListPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(
+            path=str(d["path"]),
+            request_id=str(d["request_id"]),
+        )
+
+
+@dataclass(slots=True)
+class CmdFileListAckPayload:
+    """CMD_FILE_LIST_ACK: 에이전트 → 서버. 디렉토리 목록 응답."""
+
+    request_id: str
+    success: bool
+    error: str
+    current_path: str
+    entries: list[dict[str, Any]]
+    truncated: bool = False
+
+    def pack(self) -> bytes:
+        data: dict[str, object] = {
+            "request_id": self.request_id,
+            "success": self.success,
+            "error": self.error,
+            "current_path": self.current_path,
+            "entries": self.entries,
+            "truncated": self.truncated,
+        }
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdFileListAckPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(
+            request_id=str(d["request_id"]),
+            success=bool(d["success"]),
+            error=str(d.get("error", "")),
+            current_path=str(d.get("current_path", "")),
+            entries=list(d.get("entries", [])),
+            truncated=bool(d.get("truncated", False)),
+        )
+
+
+@dataclass(slots=True)
+class CmdFileGetPayload:
+    """CMD_FILE_GET: 서버 → 에이전트. 파일 다운로드 요청."""
+
+    remote_path: str
+    request_id: str
+
+    def pack(self) -> bytes:
+        data: dict[str, object] = {
+            "remote_path": self.remote_path,
+            "request_id": self.request_id,
+        }
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdFileGetPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(
+            remote_path=str(d["remote_path"]),
+            request_id=str(d["request_id"]),
+        )
+
+
+@dataclass(slots=True)
+class CmdFileGetAckPayload:
+    """CMD_FILE_GET_ACK: 에이전트 → 서버. 파일 다운로드 준비 응답."""
+
+    request_id: str
+    success: bool
+    error: str
+    file_size: int = 0
+    sha256: str = ""
+    filename: str = ""
+
+    def pack(self) -> bytes:
+        data: dict[str, object] = {
+            "request_id": self.request_id,
+            "success": self.success,
+            "error": self.error,
+            "file_size": self.file_size,
+            "sha256": self.sha256,
+            "filename": self.filename,
+        }
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdFileGetAckPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(
+            request_id=str(d["request_id"]),
+            success=bool(d["success"]),
+            error=str(d.get("error", "")),
+            file_size=int(d.get("file_size", 0)),
+            sha256=str(d.get("sha256", "")),
+            filename=str(d.get("filename", "")),
+        )
+
+
+@dataclass(slots=True)
+class CmdFilePutPayload:
+    """CMD_FILE_PUT: 서버 → 에이전트. 파일 업로드 요청."""
+
+    remote_path: str
+    file_size: int
+    sha256: str
+    filename: str
+    request_id: str
+
+    def pack(self) -> bytes:
+        data: dict[str, object] = {
+            "remote_path": self.remote_path,
+            "file_size": self.file_size,
+            "sha256": self.sha256,
+            "filename": self.filename,
+            "request_id": self.request_id,
+        }
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdFilePutPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(
+            remote_path=str(d["remote_path"]),
+            file_size=int(d["file_size"]),
+            sha256=str(d["sha256"]),
+            filename=str(d["filename"]),
+            request_id=str(d["request_id"]),
+        )
+
+
+@dataclass(slots=True)
+class CmdFilePutAckPayload:
+    """CMD_FILE_PUT_ACK: 에이전트 → 서버. 파일 업로드 결과 응답."""
+
+    request_id: str
+    success: bool
+    error: str
+
+    def pack(self) -> bytes:
+        data: dict[str, object] = {
+            "request_id": self.request_id,
+            "success": self.success,
+            "error": self.error,
+        }
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdFilePutAckPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(
+            request_id=str(d["request_id"]),
+            success=bool(d["success"]),
+            error=str(d.get("error", "")),
+        )
+
+
 class Packet:
     _TYPE_LABELS: ClassVar[dict[int, str]] = {
         PacketType.AUTH: "AUTH",
@@ -1126,6 +1312,12 @@ class Packet:
         PacketType.CMD_CONFIG_ACK: "CMD_CONFIG_ACK",
         PacketType.CMD_EXEC: "CMD_EXEC",
         PacketType.CMD_EXEC_ACK: "CMD_EXEC_ACK",
+        PacketType.CMD_FILE_LIST: "CMD_FILE_LIST",
+        PacketType.CMD_FILE_LIST_ACK: "CMD_FILE_LIST_ACK",
+        PacketType.CMD_FILE_GET: "CMD_FILE_GET",
+        PacketType.CMD_FILE_GET_ACK: "CMD_FILE_GET_ACK",
+        PacketType.CMD_FILE_PUT: "CMD_FILE_PUT",
+        PacketType.CMD_FILE_PUT_ACK: "CMD_FILE_PUT_ACK",
         PacketType.HEARTBEAT: "HEARTBEAT",
         PacketType.DISCONNECT: "DISCONNECT",
     }
