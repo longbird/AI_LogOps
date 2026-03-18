@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import socket
+import tempfile
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from typing import Protocol, cast
 
+from agent.core.file_transfer import FileTransferReceiver
 from server.core.session_mgr import SessionManager
 from shared.protocol import (
     HEADER_SIZE,
@@ -36,6 +40,12 @@ from shared.protocol import (
     DeployTarget,
     FileAckPayload,
     FileChunkPayload,
+    CmdFileListPayload,
+    CmdFileListAckPayload,
+    CmdFileGetPayload,
+    CmdFileGetAckPayload,
+    CmdFilePutPayload,
+    CmdFilePutAckPayload,
     LogHistPayload,
     LogRealPayload,
     RecAnalysisPayload,
@@ -84,6 +94,14 @@ class TCPServer:
         self._rec_data_futures: dict[str, asyncio.Future[RecDataRespPayload]] = {}
         self._config_futures: dict[str, asyncio.Future[dict]] = {}
         self._exec_futures: dict[str, asyncio.Future] = {}
+
+        # ── File Manager ──
+        self._file_list_futures: dict[str, asyncio.Future] = {}
+        self._file_get_futures: dict[str, asyncio.Future] = {}
+        self._file_put_futures: dict[str, asyncio.Future] = {}
+        self._file_receivers: dict[str, FileTransferReceiver] = {}
+        self._file_get_save_paths: dict[str, Path] = {}
+        self._file_transfer_locks: dict[str, asyncio.Lock] = {}
 
         # ── 녹취 분석 flow control ──
         self._rec_in_flight: int = 0  # 현재 서버에서 처리 중인 녹취 건수
@@ -452,6 +470,23 @@ class TCPServer:
                     fut.set_result(ack)
                 continue
 
+            if packet_type == PacketType.CMD_FILE_LIST_ACK:
+                self._handle_file_list_ack(agent_id, payload)
+                continue
+
+            if packet_type == PacketType.CMD_FILE_GET_ACK:
+                self._handle_file_get_ack(agent_id, payload)
+                continue
+
+            if packet_type == PacketType.CMD_FILE_PUT_ACK:
+                self._handle_file_put_ack(agent_id, payload)
+                continue
+
+            if packet_type == PacketType.FILE_CHUNK:
+                # 에이전트→서버 파일 전송 (CMD_FILE_GET 응답)
+                self._handle_file_chunk_from_agent(agent_id, payload)
+                continue
+
             self._logger.warning(
                 "unexpected packet type: agent_id=%s type=%s payload_len=%s",
                 agent_id,
@@ -677,6 +712,208 @@ class TCPServer:
         fut: asyncio.Future[CmdExecAckPayload] = loop.create_future()
         self._exec_futures[agent_id] = fut
         return fut
+
+    # ── File Manager ──────────────────────────────────────────────────────────
+
+    def _get_transfer_lock(self, agent_id: str) -> asyncio.Lock:
+        """에이전트별 파일 전송 잠금 반환 (lazy 생성)."""
+        if agent_id not in self._file_transfer_locks:
+            self._file_transfer_locks[agent_id] = asyncio.Lock()
+        return self._file_transfer_locks[agent_id]
+
+    async def send_file_list(self, agent_id: str, path: str) -> dict:
+        """에이전트의 디렉토리 목록 요청. 결과를 dict로 반환."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return {"success": False, "error": "에이전트가 연결되어 있지 않습니다"}
+
+        writer = cast(_WriterLike, session.writer)
+        request_id = str(uuid.uuid4())[:8]
+        loop = asyncio.get_running_loop()
+        self._file_list_futures[request_id] = loop.create_future()
+
+        cmd = CmdFileListPayload(path=path, request_id=request_id)
+        writer.write(Packet.build(PacketType.CMD_FILE_LIST, cmd.pack()))
+        await writer.drain()
+
+        try:
+            result = await asyncio.wait_for(
+                self._file_list_futures[request_id], timeout=30
+            )
+            return result
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "응답 시간 초과 (30초)"}
+        finally:
+            self._file_list_futures.pop(request_id, None)
+
+    async def send_file_get(
+        self, agent_id: str, remote_path: str, save_path: str
+    ) -> dict:
+        """에이전트 파일을 서버로 다운로드."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return {"success": False, "error": "에이전트가 연결되어 있지 않습니다"}
+
+        lock = self._get_transfer_lock(agent_id)
+        if lock.locked():
+            return {"success": False, "error": "다른 전송이 진행 중입니다"}
+
+        async with lock:
+            writer = cast(_WriterLike, session.writer)
+            request_id = str(uuid.uuid4())[:8]
+            loop = asyncio.get_running_loop()
+            self._file_get_futures[request_id] = loop.create_future()
+            self._file_get_save_paths[request_id] = Path(save_path)
+
+            cmd = CmdFileGetPayload(remote_path=remote_path, request_id=request_id)
+            writer.write(Packet.build(PacketType.CMD_FILE_GET, cmd.pack()))
+            await writer.drain()
+
+            try:
+                result = await asyncio.wait_for(
+                    self._file_get_futures[request_id], timeout=120
+                )
+                return result
+            except asyncio.TimeoutError:
+                # 부분 수신 정리
+                self._file_receivers.pop(agent_id, None)
+                return {"success": False, "error": "전송 시간 초과 (120초)"}
+            finally:
+                self._file_get_futures.pop(request_id, None)
+                self._file_get_save_paths.pop(request_id, None)
+
+    async def send_file_put(
+        self,
+        agent_id: str,
+        local_path: str,
+        remote_path: str,
+        progress_callback: Any = None,
+    ) -> dict:
+        """서버 파일을 에이전트로 업로드."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return {"success": False, "error": "에이전트가 연결되어 있지 않습니다"}
+
+        lock = self._get_transfer_lock(agent_id)
+        if lock.locked():
+            return {"success": False, "error": "다른 전송이 진행 중입니다"}
+
+        path = Path(local_path)
+        if not path.exists():
+            return {"success": False, "error": f"파일이 존재하지 않습니다: {local_path}"}
+
+        async with lock:
+            writer = cast(_WriterLike, session.writer)
+            data = path.read_bytes()
+            sha256 = compute_sha256(local_path)
+            request_id = str(uuid.uuid4())[:8]
+
+            loop = asyncio.get_running_loop()
+            self._file_put_futures[request_id] = loop.create_future()
+
+            cmd = CmdFilePutPayload(
+                remote_path=remote_path,
+                file_size=len(data),
+                sha256=sha256,
+                filename=path.name,
+                request_id=request_id,
+            )
+            writer.write(Packet.build(PacketType.CMD_FILE_PUT, cmd.pack()))
+            await writer.drain()
+
+            # FILE_CHUNK 전송
+            chunk_size = CHUNK_SIZE
+            total_chunks = (len(data) + chunk_size - 1) // chunk_size
+            seq = 0
+            for offset in range(0, len(data), chunk_size):
+                chunk_data = data[offset : offset + chunk_size]
+                chunk = FileChunkPayload(seq_num=seq, data=chunk_data)
+                writer.write(Packet.build(PacketType.FILE_CHUNK, chunk.pack()))
+                seq += 1
+                if seq % 8 == 0:
+                    await writer.drain()
+                    if progress_callback is not None:
+                        progress_callback(seq, total_chunks)
+            await writer.drain()
+            if progress_callback is not None:
+                progress_callback(total_chunks, total_chunks)
+
+            try:
+                result = await asyncio.wait_for(
+                    self._file_put_futures[request_id], timeout=120
+                )
+                return result
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "전송 시간 초과 (120초)"}
+            finally:
+                self._file_put_futures.pop(request_id, None)
+
+    def _handle_file_list_ack(self, agent_id: str, payload: bytes) -> None:
+        ack = CmdFileListAckPayload.unpack(payload)
+        future = self._file_list_futures.get(ack.request_id)
+        if future is not None and not future.done():
+            future.set_result({
+                "success": ack.success,
+                "error": ack.error,
+                "current_path": ack.current_path,
+                "entries": ack.entries,
+                "truncated": ack.truncated,
+            })
+
+    def _handle_file_get_ack(self, agent_id: str, payload: bytes) -> None:
+        ack = CmdFileGetAckPayload.unpack(payload)
+        future = self._file_get_futures.get(ack.request_id)
+        if not ack.success:
+            if future is not None and not future.done():
+                future.set_result({"success": False, "error": ack.error})
+            return
+        # 서버 측 수신 준비
+        temp_dir = tempfile.mkdtemp(prefix="ailogops_filemgr_")
+        receiver = FileTransferReceiver(target_dir=temp_dir)
+        receiver.start_receive(ack.file_size, ack.sha256, ack.filename)
+        self._file_receivers[agent_id] = receiver
+
+    def _handle_file_chunk_from_agent(self, agent_id: str, payload: bytes) -> None:
+        receiver = self._file_receivers.get(agent_id)
+        if receiver is None:
+            return
+        chunk = FileChunkPayload.unpack(payload)
+        receiver.receive_chunk(chunk)
+        if receiver.is_complete():
+            temp_path = receiver.assemble()
+            # 어떤 request_id의 future인지 찾기
+            request_id = None
+            for rid, save_path in self._file_get_save_paths.items():
+                if rid in self._file_get_futures:
+                    request_id = rid
+                    break
+            future = self._file_get_futures.get(request_id) if request_id else None
+            if temp_path is not None:
+                save_path = self._file_get_save_paths.get(request_id)
+                if save_path is not None:
+                    save_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(temp_path), str(save_path))
+                    self._logger.info("file_get saved: %s", save_path)
+                if future is not None and not future.done():
+                    future.set_result({"success": True, "path": str(save_path)})
+            else:
+                if future is not None and not future.done():
+                    future.set_result({"success": False, "error": "SHA-256 불일치"})
+            del self._file_receivers[agent_id]
+            # temp_dir cleanup
+            if temp_path is not None:
+                temp_dir = temp_path.parent
+                if temp_dir.exists() and str(temp_dir).startswith(tempfile.gettempdir()):
+                    shutil.rmtree(str(temp_dir), ignore_errors=True)
+
+    def _handle_file_put_ack(self, agent_id: str, payload: bytes) -> None:
+        ack = CmdFilePutAckPayload.unpack(payload)
+        future = self._file_put_futures.get(ack.request_id)
+        if future is not None and not future.done():
+            future.set_result({
+                "success": ack.success,
+                "error": ack.error,
+            })
 
     async def send_ctrl_command(
         self,
