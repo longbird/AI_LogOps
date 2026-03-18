@@ -56,7 +56,7 @@ class DeployHandler:
         cmd = CmdDeployPayload.unpack(payload_data)
         self._deploy_target = cmd.deploy_target
         self._deploy_path = cmd.deploy_path
-        self.receiver.start_receive(cmd)
+        self.receiver.start_receive(cmd.file_size, cmd.sha256, cmd.filename)
         self._logger.info(
             "deploy started: filename=%s size=%d target=%s",
             cmd.filename,

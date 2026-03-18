@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shared.protocol import CmdDeployPayload, FileChunkPayload
+from shared.protocol import FileChunkPayload
 from shared.utils import compute_sha256
 
 
@@ -17,12 +17,12 @@ class FileTransferReceiver:
         self._filename: str = ""
         self._is_receiving: bool = False
 
-    def start_receive(self, cmd_deploy: CmdDeployPayload) -> None:
-        """CMD_DEPLOY 수신 시 호출. 수신 상태 초기화."""
+    def start_receive(self, file_size: int, sha256: str, filename: str) -> None:
+        """파일 수신 시작. 수신 상태 초기화."""
         self._chunks.clear()
-        self._expected_size = cmd_deploy.file_size
-        self._expected_sha256 = cmd_deploy.sha256
-        self._filename = cmd_deploy.filename
+        self._expected_size = file_size
+        self._expected_sha256 = sha256
+        self._filename = filename
         self._is_receiving = True
 
     def receive_chunk(self, chunk: FileChunkPayload) -> bool:
