@@ -317,6 +317,7 @@ class AgentRuntime:
                     rec_client_mgr=rec_client_mgr,
                     rec_client_args=rec_client_args or None,
                     remote_commands=remote_commands_cfg,
+                    full_config=cfg,
                 )
                 conn.deploy_handler.updater = updater
                 conn.deploy_handler.process_deployer = process_deployer
@@ -569,6 +570,7 @@ class AgentRuntime:
         rec_client_mgr: ProcessManager | None = None,
         rec_client_args: list[str] | None = None,
         remote_commands: list | None = None,
+        full_config: ConfigView | None = None,
     ) -> ServerConnection:
         from agent.core.ctrl_handler import CtrlHandler
         from agent.core.deploy_handler import DeployHandler
@@ -601,7 +603,24 @@ class AgentRuntime:
             transfer_dir=monitoring_cfg.s("transfer_dir", "agent/storage/transfers"),
         )
         tcp_client.on_cmd_deploy = deploy_handler.handle_cmd_deploy
-        tcp_client.on_file_chunk = deploy_handler.handle_file_chunk
+
+        from agent.core.file_handler import FileHandler
+        file_handler = FileHandler(
+            tcp_client=tcp_client,
+            config=full_config if full_config is not None else monitoring_cfg,
+        )
+        tcp_client.on_cmd_file_list = file_handler.handle_cmd_file_list
+        tcp_client.on_cmd_file_get = file_handler.handle_cmd_file_get
+        tcp_client.on_cmd_file_put = file_handler.handle_cmd_file_put
+
+        async def _route_file_chunk(payload_data: bytes) -> None:
+            """FILE_CHUNK를 활성 전송 컨텍스트로 라우팅."""
+            if file_handler.is_receiving_file:
+                await file_handler.handle_file_chunk_for_put(payload_data)
+            else:
+                await deploy_handler.handle_file_chunk(payload_data)
+
+        tcp_client.on_file_chunk = _route_file_chunk
 
         ctrl_handler = CtrlHandler(
             tcp_client=tcp_client,

@@ -66,6 +66,9 @@ class TCPClient:
         self.on_rec_data_req: PacketCallback | None = None
         self.on_cmd_config: PacketCallback | None = None
         self.on_cmd_exec: PacketCallback | None = None
+        self.on_cmd_file_list: PacketCallback | None = None
+        self.on_cmd_file_get: PacketCallback | None = None
+        self.on_cmd_file_put: PacketCallback | None = None
 
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -294,6 +297,18 @@ class TCPClient:
                 if packet_type == PacketType.CMD_EXEC:
                     if self.on_cmd_exec is not None:
                         await self.on_cmd_exec(payload)
+                    continue
+                if packet_type == PacketType.CMD_FILE_LIST:
+                    if self.on_cmd_file_list is not None:
+                        await self.on_cmd_file_list(payload)
+                    continue
+                if packet_type == PacketType.CMD_FILE_GET:
+                    if self.on_cmd_file_get is not None:
+                        await self.on_cmd_file_get(payload)
+                    continue
+                if packet_type == PacketType.CMD_FILE_PUT:
+                    if self.on_cmd_file_put is not None:
+                        await self.on_cmd_file_put(payload)
                     continue
                 if packet_type == PacketType.DISCONNECT:
                     break
