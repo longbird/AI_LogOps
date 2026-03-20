@@ -38,6 +38,7 @@ class _TCPServerLike(Protocol):
         agent_id: str,
         action: Any,
         target: int = ...,
+        target_name: str = "",
     ) -> bool: ...
 
     async def send_config_command(
@@ -470,6 +471,7 @@ async def api_ctrl_restart(request: Request) -> JSONResponse:
 
     agent_id: str = body.get("agent_id", "")
     target: str = body.get("target", "agent")
+    target_name: str = body.get("target_name", "")
 
     # agent_id 미지정 시 첫 번째 연결된 에이전트 사용
     if not agent_id and session_mgr is not None:
@@ -492,17 +494,19 @@ async def api_ctrl_restart(request: Request) -> JSONResponse:
     target_int = target_map.get(target, DeployTarget.PROCESS)
 
     success = await tcp_server.send_ctrl_command(
-        agent_id, CtrlAction.RESTART, target=target_int
+        agent_id, CtrlAction.RESTART, target=target_int, target_name=target_name
     )
     if success:
         logger.info(
-            "restart command sent: agent=%s target=%s(%d)", agent_id, target, target_int
+            "restart command sent: agent=%s target=%s(%d) target_name=%s",
+            agent_id, target, target_int, target_name,
         )
         return JSONResponse(
             {
                 "status": "ok",
                 "agent_id": agent_id,
                 "target": target,
+                "target_name": target_name,
             }
         )
     return JSONResponse(
