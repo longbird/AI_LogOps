@@ -10,6 +10,8 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Any
 
+_ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent  # AI-LogOps/
+
 from server.gui.constants import (
     BG_BTN,
     BG_BTN_PRIMARY,
@@ -34,6 +36,8 @@ class LogAnalysisTab(tk.Frame):
     def __init__(self, parent: ttk.Notebook, app: ServerAppLike) -> None:
         super().__init__(parent, bg=BG_DARK)
         self._app = app
+        self._log_folders: list[str] = []
+        self._download_poll_id: str | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -64,6 +68,7 @@ class LogAnalysisTab(tk.Frame):
         )
         self._agent_combo.pack(side=tk.LEFT, padx=(4, 12))
         self._agent_combo.bind("<Button-1>", self._refresh_agents)
+        self._agent_combo.bind("<<ComboboxSelected>>", self._on_agent_selected)
 
         tk.Label(
             row1, text="날짜:", bg=BG_FRAME, fg=FG_DIM, font=FONT_NORMAL,
@@ -87,9 +92,9 @@ class LogAnalysisTab(tk.Frame):
 
         self._folder_combo = ttk.Combobox(
             row1,
-            values=["-1 (전체)", "0", "1", "2", "3", "4"],
+            values=["-1 (전체)"],
             state="readonly",
-            width=8,
+            width=40,
             font=FONT_NORMAL,
         )
         self._folder_combo.set("-1 (전체)")
@@ -222,13 +227,58 @@ class LogAnalysisTab(tk.Frame):
             return None
         return val
 
+    def _on_agent_selected(self, event: Any = None) -> None:
+        """에이전트 선택 시 log_folders 목록 갱신."""
+        self._fetch_log_folders()
+
+    def _fetch_log_folders(self) -> None:
+        """선택된 에이전트의 log_folders 설정을 가져와 폴더 콤보를 갱신."""
+        agent_id = self._get_agent_id()
+        if not agent_id:
+            return
+
+        self._set_status("폴더 정보 조회 중...", "#cca700")
+
+        def _do() -> None:
+            result = self._app.api_get(f"/api/config/{agent_id}")
+            self.after(0, _on_done, result)
+
+        def _on_done(result: dict[str, Any] | None) -> None:
+            if not result:
+                self._set_status("설정 조회 실패: 응답 없음", "#f44747")
+                return
+            if "error" in result:
+                self._set_status(f"설정 조회 실패: {result['error']}", "#f44747")
+                return
+
+            # API 응답: {"config": {"monitoring": {"log_folders": [...]}}}
+            config = result.get("config", result)
+            monitoring = config.get("monitoring", {})
+            log_folders: list[str] = monitoring.get("log_folders", [])
+
+            self._log_folders = log_folders
+            if not log_folders:
+                self._set_status("에이전트에 log_folders 설정 없음", "#cca700")
+                return
+
+            values = ["-1 (전체)"] + [
+                f"{i}: {path}" for i, path in enumerate(log_folders)
+            ]
+            self._folder_combo["values"] = values
+            self._folder_combo.set("-1 (전체)")
+            self._set_status(
+                f"{len(log_folders)}개 폴더 조회 완료", "#51cf66",
+            )
+
+        threading.Thread(target=_do, daemon=True).start()
+
     def _get_folder_index(self) -> int:
         """폴더 콤보에서 folder_index 추출."""
         text = self._folder_combo.get().strip()
         if text.startswith("-1"):
             return -1
         try:
-            return int(text)
+            return int(text.split(":")[0])
         except ValueError:
             return -1
 
@@ -274,17 +324,61 @@ class LogAnalysisTab(tk.Frame):
             self.after(0, _on_done, result)
 
         def _on_done(result: dict[str, Any] | None) -> None:
-            self._download_btn.configure(state=tk.NORMAL)
             if result and "error" not in result:
                 self._set_status(
-                    f"다운로드 시작: {date_str} -> storage/logs/{agent_id}/{date_str}/",
-                    "#51cf66",
+                    f"다운로드 중... {date_str} (파일 수신 대기)",
+                    "#cca700",
                 )
+                self._start_download_poll(agent_id, date_str)
             else:
+                self._download_btn.configure(state=tk.NORMAL)
                 err = (result or {}).get("error", "서버 응답 없음")
                 self._set_status(f"실패: {err}", "#f44747")
 
         threading.Thread(target=_do, daemon=True).start()
+
+    def _start_download_poll(self, agent_id: str, date_str: str) -> None:
+        """다운로드 완료를 폴링으로 감지 (2초 간격, 최대 60회=2분)."""
+        self._stop_download_poll()
+        log_dir = _ROOT_DIR / "storage" / "logs" / agent_id / date_str
+        self._poll_count = 0
+        self._poll_prev_count = 0
+
+        def _tick() -> None:
+            self._poll_count += 1
+            files = list(log_dir.glob("*.txt")) if log_dir.exists() else []
+            cur = len(files)
+
+            if cur > 0 and cur == self._poll_prev_count:
+                # 파일 수 변화 없으면 완료로 판단
+                self._download_btn.configure(state=tk.NORMAL)
+                self._set_status(
+                    f"다운로드 완료: {cur}개 파일 ({log_dir.name}/)",
+                    "#51cf66",
+                )
+                self._download_poll_id = None
+                return
+
+            self._poll_prev_count = cur
+            if self._poll_count >= 60:
+                self._download_btn.configure(state=tk.NORMAL)
+                self._set_status(
+                    f"다운로드 타임아웃 ({cur}개 파일 수신됨)",
+                    "#cca700",
+                )
+                self._download_poll_id = None
+                return
+
+            status = f"다운로드 중... {cur}개 파일 수신" if cur > 0 else "다운로드 중... (파일 수신 대기)"
+            self._set_status(status, "#cca700")
+            self._download_poll_id = self.after(2000, _tick)
+
+        self._download_poll_id = self.after(2000, _tick)
+
+    def _stop_download_poll(self) -> None:
+        if self._download_poll_id is not None:
+            self.after_cancel(self._download_poll_id)
+            self._download_poll_id = None
 
     # ------------------------------------------------------------------
     # Analyze
@@ -301,7 +395,7 @@ class LogAnalysisTab(tk.Frame):
             self._set_status("날짜를 8자리 숫자로 입력하세요 (YYYYMMDD)", "#f44747")
             return
 
-        log_dir = Path(f"storage/logs/{agent_id}/{date_str}")
+        log_dir = _ROOT_DIR / "storage" / "logs" / agent_id / date_str
         if not log_dir.exists():
             self._set_status(
                 f"로그 파일 없음: {log_dir}", "#f44747",

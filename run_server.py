@@ -288,15 +288,39 @@ async def _run_telegram(
         application.add_handler(CommandHandler(cmd_name, _handle_command))
 
     logger.info("서버봇 폴링 시작 중 (결과 수신용)...")
-    try:
-        await application.initialize()
-        await application.start()
-        if application.updater is not None:
-            await application.updater.start_polling(drop_pending_updates=True)
-        logger.info("서버봇 폴링 시작됨 (에이전트 결과 대기 중)")
+    max_retries = 3
+    retry_delay = 10  # seconds
+    initialized = False
 
+    for attempt in range(1, max_retries + 1):
+        try:
+            await application.initialize()
+            await application.start()
+            if application.updater is not None:
+                await application.updater.start_polling(drop_pending_updates=True)
+            logger.info("서버봇 폴링 시작됨 (에이전트 결과 대기 중)")
+            initialized = True
+            break
+        except Exception:
+            if attempt < max_retries:
+                logger.warning(
+                    "서버봇 초기화 실패 (시도 %d/%d), %d초 후 재시도...",
+                    attempt, max_retries, retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error(
+                    "서버봇 초기화 %d회 실패 — 텔레그램 봇 없이 서버 계속 실행",
+                    max_retries,
+                )
+
+    if not initialized:
+        # Telegram 없이 서버 계속 동작 — shutdown 대기만
         await shutdown_event.wait()
+        return
 
+    try:
+        await shutdown_event.wait()
     finally:
         logger.info("서버봇 종료 중...")
         try:
