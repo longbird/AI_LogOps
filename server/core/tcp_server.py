@@ -46,6 +46,8 @@ from shared.protocol import (
     CmdFileGetAckPayload,
     CmdFilePutPayload,
     CmdFilePutAckPayload,
+    CmdFileRunAckPayload,
+    CmdFileRunPayload,
     LogHistPayload,
     LogRealPayload,
     RecAnalysisPayload,
@@ -102,6 +104,7 @@ class TCPServer:
         self._file_receivers: dict[str, FileTransferReceiver] = {}
         self._file_get_save_paths: dict[str, Path] = {}
         self._file_transfer_locks: dict[str, asyncio.Lock] = {}
+        self._file_run_futures: dict[str, asyncio.Future] = {}
 
         # ── 녹취 분석 flow control ──
         self._rec_in_flight: int = 0  # 현재 서버에서 처리 중인 녹취 건수
@@ -482,6 +485,10 @@ class TCPServer:
                 self._handle_file_put_ack(agent_id, payload)
                 continue
 
+            if packet_type == PacketType.CMD_FILE_RUN_ACK:
+                self._handle_file_run_ack(agent_id, payload)
+                continue
+
             if packet_type == PacketType.FILE_CHUNK:
                 # 에이전트→서버 파일 전송 (CMD_FILE_GET 응답)
                 self._handle_file_chunk_from_agent(agent_id, payload)
@@ -818,6 +825,10 @@ class TCPServer:
                 filename=path.name,
                 request_id=request_id,
             )
+            self._logger.info(
+                "file_put start: agent=%s file=%s size=%d request_id=%s",
+                agent_id, path.name, len(data), request_id,
+            )
             writer.write(Packet.build(PacketType.CMD_FILE_PUT, cmd.pack()))
             await writer.drain()
 
@@ -844,7 +855,12 @@ class TCPServer:
                 )
                 return result
             except asyncio.TimeoutError:
-                return {"success": False, "error": "전송 시간 초과 (120초)"}
+                self._logger.warning(
+                    "file_put timeout: agent=%s request_id=%s — "
+                    "에이전트가 CMD_FILE_PUT_ACK를 보내지 않음 (버전 확인 필요)",
+                    agent_id, request_id,
+                )
+                return {"success": False, "error": "전송 시간 초과 (120초) — 에이전트 버전을 확인하세요"}
             finally:
                 self._file_put_futures.pop(request_id, None)
 
@@ -909,6 +925,40 @@ class TCPServer:
     def _handle_file_put_ack(self, agent_id: str, payload: bytes) -> None:
         ack = CmdFilePutAckPayload.unpack(payload)
         future = self._file_put_futures.get(ack.request_id)
+        if future is not None and not future.done():
+            future.set_result({
+                "success": ack.success,
+                "error": ack.error,
+            })
+
+    async def send_file_run(self, agent_id: str, file_path: str) -> dict:
+        """에이전트 PC에서 파일 실행."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return {"success": False, "error": "에이전트가 연결되어 있지 않습니다"}
+
+        writer = cast(_WriterLike, session.writer)
+        request_id = str(uuid.uuid4())[:8]
+        loop = asyncio.get_running_loop()
+        self._file_run_futures[request_id] = loop.create_future()
+
+        cmd = CmdFileRunPayload(file_path=file_path, request_id=request_id)
+        writer.write(Packet.build(PacketType.CMD_FILE_RUN, cmd.pack()))
+        await writer.drain()
+
+        try:
+            result = await asyncio.wait_for(
+                self._file_run_futures[request_id], timeout=30
+            )
+            return result
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "응답 시간 초과 (30초)"}
+        finally:
+            self._file_run_futures.pop(request_id, None)
+
+    def _handle_file_run_ack(self, agent_id: str, payload: bytes) -> None:
+        ack = CmdFileRunAckPayload.unpack(payload)
+        future = self._file_run_futures.get(ack.request_id)
         if future is not None and not future.done():
             future.set_result({
                 "success": ack.success,

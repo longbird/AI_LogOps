@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 # pyright: reportMissingImports=false, reportUnknownMemberType=false, reportPrivateUsage=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportUnknownArgumentType=false
 
@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import ClassVar
 
 from agent.core.agent_runtime import AgentHooks, AgentRuntime
 from shared.utils import setup_file_logging, setup_logging
@@ -26,7 +26,7 @@ except ImportError as exc:  # pragma: no cover - exercised via stubs in tests
 class AILogOpsAgentService(win32serviceutil.ServiceFramework):
     _svc_name_: ClassVar[str] = "AILogOps-Agent"
     _svc_display_name_: ClassVar[str] = "AI-LogOps Agent Service"
-    _svc_description_: ClassVar[str] = "AI-LogOps 원격 로그 분석 및 자동 배포 에이전트"
+    _svc_description_: ClassVar[str] = "AI-LogOps ?먭꺽 濡쒓렇 遺꾩꽍 諛??먮룞 諛고룷 ?먯씠?꾪듃"
     _svc_start_type_: ClassVar[int] = win32service.SERVICE_AUTO_START
     _is_service_mode: ClassVar[bool] = False
 
@@ -133,7 +133,7 @@ def configure_failure_actions(service_name: str) -> None:
 
 
 def _launch_gui() -> None:
-    """콘솔 창을 숨기고 GUI를 시작한다."""
+    """肄섏넄 李쎌쓣 ?④린怨?GUI瑜??쒖옉?쒕떎."""
     import ctypes
 
     hwnd = cast(int, ctypes.windll.kernel32.GetConsoleWindow())
@@ -149,8 +149,8 @@ def main(argv: list[str] | None = None) -> None:
     args = sys.argv if argv is None else argv
 
     if len(args) == 1:
-        # SCM이 인수 없이 실행 → 서비스 디스패처 시도
-        # 실패 시(더블클릭 등 비-SCM 컨텍스트) → GUI 모드 폴백
+        # SCM???몄닔 ?놁씠 ?ㅽ뻾 ???쒕퉬???붿뒪?⑥쿂 ?쒕룄
+        # ?ㅽ뙣 ???붾툝?대┃ ??鍮?SCM 而⑦뀓?ㅽ듃) ??GUI 紐⑤뱶 ?대갚
         try:
             AILogOpsAgentService._is_service_mode = True
             servicemanager.Initialize()
@@ -165,7 +165,7 @@ def main(argv: list[str] | None = None) -> None:
             _launch_gui()
             return
 
-        # 커맨드라인: install / start / stop / remove / debug
+        # 而ㅻ㎤?쒕씪?? install / start / stop / remove / debug
         win32serviceutil.HandleCommandLine(AILogOpsAgentService)
         if cmd == "install":
             configure_failure_actions(AILogOpsAgentService._svc_name_)
@@ -173,3 +173,4 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+

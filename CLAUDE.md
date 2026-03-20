@@ -1,4 +1,4 @@
-# AI-LogOps Project Rules
+﻿# AI-LogOps Project Rules
 
 ## Project Structure
 
@@ -73,3 +73,25 @@ python deploy.py --target process --process-dir "D:\Work\Setup\AirREC\Server" --
 - CPU-intensive 작업은 `asyncio.to_thread()` 사용
 - Type error suppression (`as any`, `@ts-ignore`) 사용 금지
 - 버그 수정 시 최소한으로 수정, 리팩토링 병행 금지
+
+
+## Cross-Platform Support
+
+- gent/platform/ - 플랫폼 추상화 레이어 (Windows/macOS)
+  - ase.py - 추상 인터페이스 (PlatformHelper)
+  - windows.py - Windows 구현 (pywin32, ctypes.windll, schtasks)
+  - darwin.py - macOS 구현 (launchd, osascript, plistlib)
+- gent/service/entry.py - 크로스플랫폼 통합 진입점
+- gent/service/win_service.py - Windows Service (기존)
+- gent/service/mac_daemon.py - macOS launchd 데몬
+- uild_agent.bat - Windows 빌드 스크립트
+- uild_agent.sh - macOS 빌드 스크립트
+- gent.spec - Windows PyInstaller 스펙
+- gent_mac.spec - macOS PyInstaller 스펙
+
+### Platform Rules
+
+- 플랫폼별 코드는 gent/platform/ 안에만 작성
+- 새 플랫폼 기능 추가 시 PlatformHelper 인터페이스에 메서드 추가 후 양쪽 구현
+- process_mgr.py, system_monitor.py는 직접 ctypes/pywin32를 사용하지 않고 platform 레이어 경유
+- pystray는 양쪽 플랫폼에서 optional dependency로 동작

@@ -21,6 +21,7 @@ class _TCPServerLike(Protocol):
     async def send_file_put(
         self, agent_id: str, local_path: str, remote_path: str
     ) -> dict: ...
+    async def send_file_run(self, agent_id: str, file_path: str) -> dict: ...
 
 
 class _AppState(Protocol):
@@ -92,4 +93,18 @@ async def transfer_file(request: Request) -> JSONResponse:
     else:
         result = {"success": False, "error": f"잘못된 direction: {direction}"}
 
+    return JSONResponse(result)
+
+
+@router.post("/api/files/agent/{agent_id}/run")
+async def run_agent_file(request: Request, agent_id: str) -> JSONResponse:
+    """에이전트 PC에서 파일 실행."""
+    tcp = _tcp(request)
+    if tcp is None:
+        return JSONResponse({"success": False, "error": "서버가 실행 중이 아닙니다"})
+    body = await request.json()
+    file_path = body.get("file_path", "")
+    if not file_path:
+        return JSONResponse({"success": False, "error": "file_path가 비어있습니다"})
+    result = await tcp.send_file_run(agent_id, file_path)
     return JSONResponse(result)

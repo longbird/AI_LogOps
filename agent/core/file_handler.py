@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,6 +15,8 @@ from shared.protocol import (
     CmdFileListPayload,
     CmdFilePutAckPayload,
     CmdFilePutPayload,
+    CmdFileRunAckPayload,
+    CmdFileRunPayload,
     FileAckPayload,
     FileChunkPayload,
     PacketType,
@@ -43,7 +47,7 @@ class FileHandler:
 
         # config에서 설정 읽기
         fm_cfg = config.sub("file_manager")
-        self._enabled: bool = fm_cfg.b("enabled", False)
+        self._enabled: bool = fm_cfg.b("enabled", True)
         self._write_deny_paths: list[str] = [
             p.lower().replace("\\", "/") for p in fm_cfg.ls("write_deny_paths", [])
         ]
@@ -273,6 +277,44 @@ class FileHandler:
             request_id=request_id, success=success, error=error
         )
         await self.tcp_client.send_packet(PacketType.CMD_FILE_PUT_ACK, ack.pack())
+
+    async def handle_cmd_file_run(self, payload_data: bytes) -> None:
+        """CMD_FILE_RUN: 에이전트 PC에서 파일 실행."""
+        cmd = CmdFileRunPayload.unpack(payload_data)
+        self._logger.info("file_run request: path=%s", cmd.file_path)
+
+        ok, err = self._is_enabled()
+        if not ok:
+            await self._send_run_ack(cmd.request_id, False, err)
+            return
+
+        try:
+            file_path = Path(cmd.file_path).resolve()
+        except (OSError, ValueError) as exc:
+            await self._send_run_ack(cmd.request_id, False, str(exc))
+            return
+
+        if not file_path.is_file():
+            await self._send_run_ack(
+                cmd.request_id, False, "파일이 존재하지 않습니다"
+            )
+            return
+
+        try:
+            await asyncio.to_thread(os.startfile, str(file_path))
+            self._logger.info("file_run started: %s", file_path)
+            await self._send_run_ack(cmd.request_id, True, "")
+        except OSError as exc:
+            self._logger.error("file_run failed: %s", exc)
+            await self._send_run_ack(cmd.request_id, False, str(exc))
+
+    async def _send_run_ack(
+        self, request_id: str, success: bool, error: str
+    ) -> None:
+        ack = CmdFileRunAckPayload(
+            request_id=request_id, success=success, error=error
+        )
+        await self.tcp_client.send_packet(PacketType.CMD_FILE_RUN_ACK, ack.pack())
 
     @property
     def is_receiving_file(self) -> bool:

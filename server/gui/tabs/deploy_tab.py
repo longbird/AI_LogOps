@@ -1,4 +1,4 @@
-"""배포 탭: 에이전트/프로세스/녹취클라이언트 배포 및 재시작."""
+"""배포 탭: 에이전트/프로세스 배포 및 제어."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from server.gui.constants import (
 
 
 class _DeploySection:
-    """하나의 배포 대상 섹션 (에이전트/프로세스/녹취클라이언트)."""
+    """하나의 배포 대상 섹션 (에이전트/프로세스)."""
 
     def __init__(
         self,
@@ -132,13 +132,13 @@ class _DeploySection:
         )
         self._deploy_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        self._restart_btn = Button(
+        self._stop_btn = Button(
             row3,
-            text="↻ 재시작",
-            command=self._restart,
-            bg="#e67e22",
+            text="■ 중지",
+            command=self._stop,
+            bg="#e74c3c",
             fg=FG_WHITE,
-            activebackground="#f39c12",
+            activebackground="#c0392b",
             activeforeground=FG_WHITE,
             relief=tk.FLAT,
             font=FONT_NORMAL,
@@ -146,7 +146,23 @@ class _DeploySection:
             pady=3,
             cursor="hand2",
         )
-        self._restart_btn.pack(side=tk.LEFT)
+        self._stop_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        self._start_btn = Button(
+            row3,
+            text="▶ 시작",
+            command=self._start,
+            bg="#27ae60",
+            fg=FG_WHITE,
+            activebackground="#2ecc71",
+            activeforeground=FG_WHITE,
+            relief=tk.FLAT,
+            font=FONT_NORMAL,
+            padx=16,
+            pady=3,
+            cursor="hand2",
+        )
+        self._start_btn.pack(side=tk.LEFT)
 
         self._status_label = tk.Label(
             row3,
@@ -229,7 +245,8 @@ class _DeploySection:
                 f"target={self._target}"
             )
 
-    def _restart(self) -> None:
+    def _send_ctrl(self, action: str) -> None:
+        """프로세스 제어 명령 전송 (stop/start)."""
         if not self._app.is_server_running():
             self._status_label.configure(text="서버가 실행 중이 아닙니다", fg="#f44747")
             return
@@ -238,28 +255,39 @@ class _DeploySection:
         if agent_id == "(auto)":
             agent_id = ""
 
-        self._restart_btn.configure(state=tk.DISABLED)
-        self._status_label.configure(text="재시작 중...", fg="#cca700")
-        self._log(f"[재시작] {self._target} 재시작 요청")
+        label = "중지" if action == "stop" else "시작"
+        btn = self._stop_btn if action == "stop" else self._start_btn
+        btn.configure(state=tk.DISABLED)
+        self._status_label.configure(text=f"{label} 중...", fg="#cca700")
+        self._log(f"[{label}] {self._target} {label} 요청")
 
-        def _do_restart() -> None:
-            body: dict[str, Any] = {"action": "restart", "target": self._target}
+        def _do() -> None:
+            body: dict[str, Any] = {"action": action, "target": self._target}
             if agent_id:
                 body["agent_id"] = agent_id
             result = self._app.api_post("/api/ctrl/restart", body)
-            self._log_text.after(0, self._on_restart_done, result)
+            self._log_text.after(0, self._on_ctrl_done, result, action, btn)
 
-        threading.Thread(target=_do_restart, daemon=True).start()
+        threading.Thread(target=_do, daemon=True).start()
 
-    def _on_restart_done(self, result: dict[str, Any] | None) -> None:
-        self._restart_btn.configure(state=tk.NORMAL)
+    def _on_ctrl_done(
+        self, result: dict[str, Any] | None, action: str, btn: Any
+    ) -> None:
+        btn.configure(state=tk.NORMAL)
+        label = "중지" if action == "stop" else "시작"
         if result and result.get("status") == "ok":
-            self._status_label.configure(text="재시작 완료", fg="#51cf66")
-            self._log("[재시작] 성공")
+            self._status_label.configure(text=f"{label} 완료", fg="#51cf66")
+            self._log(f"[{label}] 성공")
         else:
             err = (result or {}).get("error", "응답 없음")
-            self._status_label.configure(text=f"재시작 실패: {err}", fg="#f44747")
-            self._log(f"[재시작] 실패: {err}")
+            self._status_label.configure(text=f"{label} 실패: {err}", fg="#f44747")
+            self._log(f"[{label}] 실패: {err}")
+
+    def _stop(self) -> None:
+        self._send_ctrl("stop")
+
+    def _start(self) -> None:
+        self._send_ctrl("start")
 
 
 class _FolderDeploySection:
@@ -817,7 +845,7 @@ class _RemoteCommandSection:
 
 
 class DeployTab(tk.Frame):
-    """배포 관리 탭: 에이전트/프로세스/녹취클라이언트."""
+    """배포 관리 탭: 에이전트/프로세스."""
 
     def __init__(self, parent: ttk.Notebook, app: ServerAppLike) -> None:
         super().__init__(parent, bg=BG_DARK)
@@ -890,13 +918,6 @@ class DeployTab(tk.Frame):
             self._app,
             "모니터링 프로세스 배포 & 업데이트",
             "process",
-            self._log_text,
-        )
-        self._rec_client_section = _DeploySection(
-            scroll_frame,
-            self._app,
-            "녹취 클라이언트 배포 & 업데이트",
-            "rec_client",
             self._log_text,
         )
         self._folder_section = _FolderDeploySection(

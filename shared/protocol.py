@@ -45,6 +45,8 @@ class PacketType(IntEnum):
     CMD_FILE_GET_ACK = 0x63
     CMD_FILE_PUT = 0x64
     CMD_FILE_PUT_ACK = 0x65
+    CMD_FILE_RUN = 0x66
+    CMD_FILE_RUN_ACK = 0x67
     HEARTBEAT = 0xFE
     DISCONNECT = 0xFF
 
@@ -1284,6 +1286,51 @@ class CmdFilePutAckPayload:
         )
 
 
+@dataclass(slots=True)
+class CmdFileRunPayload:
+    """CMD_FILE_RUN: 서버 → 에이전트. 원격 파일 실행 요청."""
+
+    file_path: str
+    request_id: str
+
+    def pack(self) -> bytes:
+        return json.dumps(
+            {"file_path": self.file_path, "request_id": self.request_id},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdFileRunPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(file_path=str(d["file_path"]), request_id=str(d["request_id"]))
+
+
+@dataclass(slots=True)
+class CmdFileRunAckPayload:
+    """CMD_FILE_RUN_ACK: 에이전트 → 서버. 파일 실행 결과."""
+
+    request_id: str
+    success: bool
+    error: str
+
+    def pack(self) -> bytes:
+        return json.dumps(
+            {"request_id": self.request_id, "success": self.success, "error": self.error},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    @classmethod
+    def unpack(cls, data: bytes) -> CmdFileRunAckPayload:
+        d = cast(dict[str, Any], json.loads(data.decode("utf-8")))
+        return cls(
+            request_id=str(d["request_id"]),
+            success=bool(d["success"]),
+            error=str(d.get("error", "")),
+        )
+
+
 class Packet:
     _TYPE_LABELS: ClassVar[dict[int, str]] = {
         PacketType.AUTH: "AUTH",
@@ -1318,6 +1365,8 @@ class Packet:
         PacketType.CMD_FILE_GET_ACK: "CMD_FILE_GET_ACK",
         PacketType.CMD_FILE_PUT: "CMD_FILE_PUT",
         PacketType.CMD_FILE_PUT_ACK: "CMD_FILE_PUT_ACK",
+        PacketType.CMD_FILE_RUN: "CMD_FILE_RUN",
+        PacketType.CMD_FILE_RUN_ACK: "CMD_FILE_RUN_ACK",
         PacketType.HEARTBEAT: "HEARTBEAT",
         PacketType.DISCONNECT: "DISCONNECT",
     }

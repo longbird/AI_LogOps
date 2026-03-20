@@ -612,6 +612,7 @@ class AgentRuntime:
         tcp_client.on_cmd_file_list = file_handler.handle_cmd_file_list
         tcp_client.on_cmd_file_get = file_handler.handle_cmd_file_get
         tcp_client.on_cmd_file_put = file_handler.handle_cmd_file_put
+        tcp_client.on_cmd_file_run = file_handler.handle_cmd_file_run
 
         async def _route_file_chunk(payload_data: bytes) -> None:
             """FILE_CHUNK를 활성 전송 컨텍스트로 라우팅."""

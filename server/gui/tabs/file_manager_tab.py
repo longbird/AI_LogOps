@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from server.gui.constants import (
     BG_BTN,
@@ -134,6 +135,17 @@ class FileManagerTab(tk.Frame):
         )
         self._btn_to_server.pack(side=tk.LEFT, padx=8)
 
+        self._btn_run = tk.Button(
+            btn_frame,
+            text="▶ 원격 실행",
+            bg="#27ae60",
+            fg=FG_WHITE,
+            font=FONT_NORMAL,
+            relief=tk.FLAT,
+            command=self._run_remote_file,
+        )
+        self._btn_run.pack(side=tk.LEFT, padx=8)
+
         self._progress = ttk.Progressbar(bot, mode="determinate", length=400)
         self._progress.pack(pady=2, padx=8, fill=tk.X)
 
@@ -234,10 +246,21 @@ class FileManagerTab(tk.Frame):
 
     def _go_up(self, is_server: bool) -> None:
         if is_server:
-            parent = str(Path(self._server_path).parent)
+            resolved = Path(self._server_path).resolve()
+            parent = str(resolved.parent)
             self._navigate(True, parent)
         else:
-            parent = str(Path(self._agent_path).parent)
+            # 에이전트 경로: forward slash 기준으로 상위 계산
+            normalized = self._agent_path.replace("\\", "/").rstrip("/")
+            if "/" in normalized:
+                parent = normalized.rsplit("/", 1)[0]
+                if not parent:
+                    parent = "/"
+                # 드라이브 루트 (예: "C:") → "C:/"
+                if len(parent) == 2 and parent[1] == ":":
+                    parent += "/"
+            else:
+                parent = normalized
             self._navigate(False, parent)
 
     def _refresh(self, is_server: bool) -> None:
@@ -257,14 +280,12 @@ class FileManagerTab(tk.Frame):
 
         if size_str == "<DIR>":
             if is_server:
-                new_path = str(Path(self._server_path) / name)
+                new_path = str(Path(self._server_path) / str(name))
                 self._navigate(True, new_path)
             else:
-                # Windows 경로 처리
-                if self._agent_path.endswith("/") or self._agent_path.endswith("\\"):
-                    new_path = self._agent_path + name
-                else:
-                    new_path = self._agent_path + "/" + name
+                # 에이전트 경로: forward slash로 통일
+                base = self._agent_path.replace("\\", "/").rstrip("/")
+                new_path = base + "/" + str(name)
                 self._navigate(False, new_path)
 
     def _on_agent_selected(self, event: Any = None) -> None:
@@ -275,6 +296,11 @@ class FileManagerTab(tk.Frame):
     def _load_server_dir(self, path: str) -> None:
         tree = self._server_tree
         tree.delete(*tree.get_children())
+        # 경로를 항상 절대 경로로 정규화
+        try:
+            path = str(Path(path).resolve())
+        except (OSError, ValueError):
+            pass
         self._server_path = path
         self._server_path_var.set(path)
 
@@ -319,8 +345,9 @@ class FileManagerTab(tk.Frame):
 
         def _do() -> None:
             try:
+                encoded_path = quote(path, safe="")
                 result = self._app.api_get(
-                    f"/api/files/agent/{agent_id}/list?path={path}"
+                    f"/api/files/agent/{agent_id}/list?path={encoded_path}"
                 )
                 self._agent_tree.after(0, self._populate_agent_tree, result)
             except Exception as exc:
@@ -387,11 +414,8 @@ class FileManagerTab(tk.Frame):
             return
 
         local_path = str(Path(self._server_path) / name)
-        # 에이전트 경로: 현재 에이전트 디렉토리 + 파일명
-        if self._agent_path.endswith("/") or self._agent_path.endswith("\\"):
-            remote_path = self._agent_path + name
-        else:
-            remote_path = self._agent_path + "/" + name
+        base = self._agent_path.replace("\\", "/").rstrip("/")
+        remote_path = base + "/" + name
 
         self._do_transfer("to_agent", agent_id, local_path, remote_path, name)
 
@@ -405,13 +429,49 @@ class FileManagerTab(tk.Frame):
             messagebox.showwarning("파일 관리", "에이전트를 선택하세요")
             return
 
-        if self._agent_path.endswith("/") or self._agent_path.endswith("\\"):
-            remote_path = self._agent_path + name
-        else:
-            remote_path = self._agent_path + "/" + name
+        base = self._agent_path.replace("\\", "/").rstrip("/")
+        remote_path = base + "/" + name
         local_path = str(Path(self._server_path) / name)
 
         self._do_transfer("to_server", agent_id, local_path, remote_path, name)
+
+    def _run_remote_file(self) -> None:
+        """에이전트 PC에서 선택한 파일 실행."""
+        name = self._get_selected_name(is_server=False)
+        if name is None:
+            return
+        agent_id = self._agent_var.get()
+        if not agent_id:
+            messagebox.showwarning("파일 관리", "에이전트를 선택하세요")
+            return
+
+        base = self._agent_path.replace("\\", "/").rstrip("/")
+        file_path = base + "/" + name
+
+        self._status_var.set(f"실행 중: {name}")
+
+        def _do() -> None:
+            try:
+                result = self._app.api_post(
+                    f"/api/files/agent/{agent_id}/run",
+                    {"file_path": file_path},
+                )
+                success = isinstance(result, dict) and result.get("success", False)
+                error = result.get("error", "") if isinstance(result, dict) else str(result)
+
+                def _done() -> None:
+                    if success:
+                        self._status_var.set(f"실행 완료: {name}")
+                    else:
+                        self._status_var.set(f"실행 실패: {error}")
+
+                self._btn_run.after(0, _done)
+            except Exception as exc:
+                self._btn_run.after(
+                    0, self._status_var.set, f"실행 오류: {exc}"
+                )
+
+        threading.Thread(target=_do, daemon=True).start()
 
     def _do_transfer(
         self,
