@@ -35,15 +35,25 @@ class DeployHandler:
     def __init__(
         self,
         tcp_client: TCPClient,
-        process_mgr: ProcessManager,
+        process_mgrs: dict[str, ProcessManager],
         transfer_dir: str,
         updater: SelfUpdater | None = None,
-        process_deployer: ProcessDeployer | None = None,
+        process_deployers: dict[str, ProcessDeployer] | None = None,
     ):
         self.tcp_client: TCPClient = tcp_client
-        self.process_mgr: ProcessManager = process_mgr
+        self.process_mgrs: dict[str, ProcessManager] = process_mgrs
+        # Backward compat: first process manager as default
+        self.process_mgr: ProcessManager = (
+            next(iter(process_mgrs.values()))
+            if process_mgrs
+            else ProcessManager(process_name="", process_path="", backup_dir="./backups")
+        )
         self.updater: SelfUpdater | None = updater
-        self.process_deployer: ProcessDeployer | None = process_deployer
+        self.process_deployers: dict[str, ProcessDeployer] = process_deployers or {}
+        # Backward compat alias
+        self.process_deployer: ProcessDeployer | None = (
+            next(iter(self.process_deployers.values())) if self.process_deployers else None
+        )
         self.receiver: FileTransferReceiver = FileTransferReceiver(
             target_dir=transfer_dir
         )
@@ -147,13 +157,23 @@ class DeployHandler:
         # updater.bat 생성 + 실행 → sys.exit(0)
         updater.execute_update()
 
+    def _resolve_deployer(self) -> ProcessDeployer | None:
+        """deploy_path(process name)로 적절한 ProcessDeployer 선택."""
+        name = self._deploy_path
+        if name and name in self.process_deployers:
+            return self.process_deployers[name]
+        # Fallback: first deployer
+        if self.process_deployers:
+            return next(iter(self.process_deployers.values()))
+        return self.process_deployer
+
     async def _execute_process_deploy(self, file_path: Path) -> None:
         """ZIP을 스테이징 디렉토리에 압축 해제하고 RecSvrManager용 플래그를 생성한다.
 
         흐름: zip 수신 → 스테이징 압축 해제 → update-ready.flag 생성 → 결과 전송
         RecSvrManager가 플래그를 감지하여 실제 프로세스 교체를 처리한다.
         """
-        deployer = self.process_deployer
+        deployer = self._resolve_deployer()
         if deployer is None:
             self._logger.error("process_deployer not configured, cannot deploy")
             await self._send_deploy_result(success=False)

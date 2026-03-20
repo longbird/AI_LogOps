@@ -74,6 +74,16 @@ _REMOTE_COMMAND_TEMPLATE: dict[str, Any] = {
     "description": "",
 }
 
+# 대상 프로세스 항목의 기본 템플릿
+_TARGET_PROCESS_TEMPLATE: dict[str, Any] = {
+    "name": "",
+    "path": "",
+    "backup_dir": "",
+    "args": [],
+    "auto_restart": False,
+    "check_interval": 30,
+}
+
 # 섹션 표시 순서 (canonical order)
 _SECTION_ORDER = [
     "agent",
@@ -138,14 +148,16 @@ _SECTION_DEFAULTS: dict[str, Any] = {
             "database": "",
         },
     },
-    "target_process": {
-        "name": "",
-        "path": "",
-        "backup_dir": "",
-        "args": [],
-        "auto_restart": False,
-        "check_interval": 30,
-    },
+    "target_process": [
+        {
+            "name": "",
+            "path": "",
+            "backup_dir": "",
+            "args": [],
+            "auto_restart": False,
+            "check_interval": 30,
+        },
+    ],
     "schedule": {"restart_times": []},
     "rec_client": {"name": "", "path": "", "args": []},
     "watch_folders": [],
@@ -322,6 +334,10 @@ class ConfigEditorDialog(tk.Toplevel):
         for key in _SECTION_ORDER:
             if key not in self._config:
                 self._config[key] = copy.deepcopy(_SECTION_DEFAULTS.get(key, {}))
+        # Auto-convert legacy target_process dict to list
+        tp = self._config.get("target_process")
+        if isinstance(tp, dict):
+            self._config["target_process"] = [tp]
         # Build ordered key list: _SECTION_ORDER first, then any extra keys from config
         self._ordered_keys: list[str] = []
         for key in _SECTION_ORDER:
@@ -382,6 +398,14 @@ class ConfigEditorDialog(tk.Toplevel):
                 add_callback=lambda: self._add_list_entry("remote_commands", _REMOTE_COMMAND_TEMPLATE),
                 remove_callback=lambda i: self._remove_list_entry("remote_commands", i),
                 name_color="#ce9178",
+            )
+        elif section_key == "target_process" and isinstance(data, list):
+            self._render_list_of_dicts(
+                self._form_frame, data, full_prefix,
+                item_label="프로세스", template=_TARGET_PROCESS_TEMPLATE,
+                add_callback=lambda: self._add_list_entry("target_process", _TARGET_PROCESS_TEMPLATE),
+                remove_callback=lambda i: self._remove_list_entry("target_process", i),
+                name_color="#4ec9b0",
             )
         elif section_key == "schedule" and isinstance(data, dict):
             self._render_schedule(self._form_frame, data, full_prefix)
@@ -851,8 +875,8 @@ class ConfigEditorDialog(tk.Toplevel):
             parts = dotted_key.split(".")
             section = parts[0]
 
-            # list[dict] 섹션: servers, watch_folders, remote_commands
-            _LIST_SECTIONS = ("servers", "watch_folders", "remote_commands")
+            # list[dict] 섹션: servers, watch_folders, remote_commands, target_process
+            _LIST_SECTIONS = ("servers", "watch_folders", "remote_commands", "target_process")
             if section in _LIST_SECTIONS and len(parts) >= 3:
                 if section not in result:
                     result[section] = []

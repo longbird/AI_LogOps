@@ -27,23 +27,35 @@ class CtrlHandler:
     def __init__(
         self,
         tcp_client: TCPClient,
-        process_mgr: ProcessManager,
-        process_args: list[str] | None = None,
+        process_mgrs: dict[str, ProcessManager],
+        process_configs: dict[str, dict],
         rec_client_mgr: ProcessManager | None = None,
         rec_client_args: list[str] | None = None,
     ) -> None:
         self._client = tcp_client
-        self._process_mgr = process_mgr
-        self._process_args = process_args
+        self._process_mgrs = process_mgrs
+        self._process_configs = process_configs
         self._rec_client_mgr = rec_client_mgr
         self._rec_client_args = rec_client_args
 
-    def _resolve_mgr(self, target: int) -> tuple[ProcessManager | None, list[str] | None, str]:
+    def _resolve_mgr(
+        self, target: int, target_name: str = "",
+    ) -> tuple[ProcessManager | None, list[str] | None, str]:
         """target 값에 따라 적절한 ProcessManager 반환."""
         if target == DeployTarget.REC_CLIENT:
             return self._rec_client_mgr, self._rec_client_args, "rec_client"
-        # PROCESS(1) 또는 기타 → 기본 process_mgr
-        return self._process_mgr, self._process_args, "process"
+        # PROCESS: resolve by target_name
+        if target_name and target_name in self._process_mgrs:
+            mgr = self._process_mgrs[target_name]
+            args = self._process_configs.get(target_name, {}).get("args")
+            return mgr, args, target_name
+        # Fallback: first process manager
+        if self._process_mgrs:
+            first_name = next(iter(self._process_mgrs))
+            mgr = self._process_mgrs[first_name]
+            args = self._process_configs.get(first_name, {}).get("args")
+            return mgr, args, first_name
+        return None, None, "process"
 
     async def handle_cmd_ctrl(self, payload_data: bytes) -> None:
         """CMD_CTRL 패킷 수신 콜백."""
@@ -53,7 +65,7 @@ class CtrlHandler:
             logger.warning("invalid CMD_CTRL payload")
             return
 
-        mgr, args, label = self._resolve_mgr(cmd.target)
+        mgr, args, label = self._resolve_mgr(cmd.target, cmd.target_name)
         if mgr is None:
             logger.warning(
                 "no process manager for target=%d (%s), ignoring %s",

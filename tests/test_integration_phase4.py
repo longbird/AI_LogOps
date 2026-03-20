@@ -120,7 +120,7 @@ async def test_deploy_sends_cmd_and_chunks(
     client = make_client("agent-phase4-chunks", port)
     handler = DeployHandler(
         tcp_client=client,
-        process_mgr=cast(ProcessManager, cast(object, process_mgr)),
+        process_mgrs={"test": cast(ProcessManager, cast(object, process_mgr))},
         transfer_dir=str(tmp_path / "incoming"),
     )
     client.on_cmd_deploy = handler.handle_cmd_deploy
@@ -155,7 +155,7 @@ async def test_deploy_file_ack_flow(
     client = make_client("agent-phase4-acks", port)
     handler = DeployHandler(
         tcp_client=client,
-        process_mgr=cast(ProcessManager, cast(object, process_mgr)),
+        process_mgrs={"test": cast(ProcessManager, cast(object, process_mgr))},
         transfer_dir=str(tmp_path / "incoming"),
     )
     client.on_cmd_deploy = handler.handle_cmd_deploy
@@ -199,7 +199,7 @@ async def test_deploy_with_process_replace(
     client = make_client("agent-phase4-success", port)
     handler = DeployHandler(
         tcp_client=client,
-        process_mgr=cast(ProcessManager, cast(object, process_mgr)),
+        process_mgrs={"test": cast(ProcessManager, cast(object, process_mgr))},
         transfer_dir=str(tmp_path / "incoming"),
     )
 
@@ -241,7 +241,7 @@ async def test_deploy_rollback_on_health_failure(
     client = make_client("agent-phase4-rollback", port)
     handler = DeployHandler(
         tcp_client=client,
-        process_mgr=cast(ProcessManager, cast(object, process_mgr)),
+        process_mgrs={"test": cast(ProcessManager, cast(object, process_mgr))},
         transfer_dir=str(tmp_path / "incoming"),
     )
 
@@ -277,7 +277,7 @@ async def test_deploy_sha256_mismatch_fails(
     client = make_client("agent-phase4-sha", port)
     handler = DeployHandler(
         tcp_client=client,
-        process_mgr=cast(ProcessManager, cast(object, process_mgr)),
+        process_mgrs={"test": cast(ProcessManager, cast(object, process_mgr))},
         transfer_dir=str(tmp_path / "incoming"),
     )
 

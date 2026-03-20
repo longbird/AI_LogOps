@@ -49,8 +49,21 @@ class ProcessMetrics:
 
 
 class SystemMonitor:
-    def __init__(self, target_process_name: str):
-        self._target_process_name: str = target_process_name.lower()
+    def __init__(
+        self,
+        target_process_names: list[str] | None = None,
+        *,
+        target_process_name: str = "",
+    ):
+        # Multi-process: list of names
+        if target_process_names:
+            self._target_names: list[str] = [n.lower() for n in target_process_names if n]
+        elif target_process_name:
+            self._target_names = [target_process_name.lower()]
+        else:
+            self._target_names = []
+        # Backward compat: first name as default
+        self._target_process_name: str = self._target_names[0] if self._target_names else ""
         self._logger: Logger = setup_logging("system_monitor")
 
     @staticmethod
@@ -77,9 +90,17 @@ class SystemMonitor:
             gdi_count=gdi_count,
         )
 
-    def collect_target_process(self) -> ProcessMetrics | None:
-        """Collect target process metrics. Returns None if process not found."""
+    def collect_target_process(self, target_name: str = "") -> ProcessMetrics | None:
+        """Collect target process metrics. Returns None if process not found.
+
+        Args:
+            target_name: specific process name to collect. If empty, uses
+                         the first (default) target process name.
+        """
         platform = self._get_platform()
+        lookup = (target_name.lower() if target_name else self._target_process_name)
+        if not lookup:
+            return None
 
         for proc in psutil.process_iter(["name", "pid"]):
             try:
@@ -87,7 +108,7 @@ class SystemMonitor:
                 pid = proc.info.get("pid")
                 if not isinstance(name, str) or not isinstance(pid, int):
                     continue
-                if name.lower() != self._target_process_name:
+                if name.lower() != lookup:
                     continue
 
                 cpu_percent = float(proc.cpu_percent(interval=None))
@@ -110,15 +131,23 @@ class SystemMonitor:
 
         return None
 
+    def collect_all_target_processes(self) -> dict[str, ProcessMetrics | None]:
+        """Collect metrics for all target processes."""
+        return {name: self.collect_target_process(name) for name in self._target_names}
+
     def format_status_report(self) -> str:
         """Format complete status report for Telegram response."""
         system_metrics = self.collect_system()
-        process_metrics = self.collect_target_process()
-
         lines = [system_metrics.format()]
-        if process_metrics is None:
-            lines.append(f"Process {self._target_process_name}: not found")
+
+        if not self._target_names:
+            lines.append("Process: no target configured")
         else:
-            lines.append(process_metrics.format())
+            for tname in self._target_names:
+                metrics = self.collect_target_process(tname)
+                if metrics is None:
+                    lines.append(f"Process {tname}: not found")
+                else:
+                    lines.append(metrics.format())
 
         return "\n".join(lines)

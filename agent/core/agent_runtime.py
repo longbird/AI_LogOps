@@ -61,7 +61,7 @@ class AgentRuntime:
         # Exposed so GUI can access for force-reconnect
         self.tcp_client: TCPClient | None = None
         self._connections: list[ServerConnection] = []
-        self._process_monitor: ProcessMonitorLoop | None = None
+        self._process_monitors: dict[str, ProcessMonitorLoop] = {}
 
     @property
     def connections(self) -> list[ServerConnection]:
@@ -100,8 +100,8 @@ class AgentRuntime:
             return
         watcher: LogWatcher | None = None
         poller: AgentTelegramPoller | None = None
-        monitor_task: asyncio.Task[None] | None = None
-        scheduler_task: asyncio.Task[None] | None = None
+        monitor_tasks: list[asyncio.Task[None]] = []
+        scheduler_tasks: list[asyncio.Task[None]] = []
         heartbeat_tasks: list[asyncio.Task[None]] = []
         subscription_client: SubscriptionClient | None = None
         connections: list[ServerConnection] = []
@@ -116,7 +116,6 @@ class AgentRuntime:
             agent_cfg = cfg.sub("agent")
             telegram_cfg = cfg.sub("telegram")
             monitoring_cfg = cfg.sub("monitoring")
-            process_cfg = cfg.sub("target_process")
             schedule_cfg = cfg.sub("schedule")
             recording_cfg = cfg.sub("recording")
             rec_client_cfg = cfg.sub("rec_client")
@@ -126,9 +125,15 @@ class AgentRuntime:
             agent_id = agent_cfg.s("id", "agent-unknown")
             agent_ver = agent_version
 
-            process_args = process_cfg.ls("args", [])
-            auto_restart = process_cfg.b("auto_restart", False)
-            check_interval = process_cfg.i("check_interval", 30)
+            # Parse target_process (list[dict] or legacy dict → auto-wrap)
+            raw_tp = cfg.raw().get("target_process", {})
+            if isinstance(raw_tp, dict):
+                process_list: list[dict] = [raw_tp] if raw_tp.get("name") else []
+            elif isinstance(raw_tp, list):
+                process_list = [p for p in raw_tp if isinstance(p, dict) and p.get("name")]
+            else:
+                process_list = []
+
             restart_times = schedule_cfg.ls("restart_times", [])
 
             # 4. Parse server configs
@@ -168,12 +173,34 @@ class AgentRuntime:
                 on_new_line=_send_log,
             )
 
-            # 6. Shared ProcessManager
-            process_mgr = ProcessManager(
-                process_name=process_cfg.s("name", ""),
-                process_path=process_cfg.s("path", ""),
-                backup_dir=process_cfg.s("backup_dir", "./backups"),
+            # 6. Process Managers (multi-process)
+            process_mgrs: dict[str, ProcessManager] = {}
+            process_configs: dict[str, dict] = {}
+            for proc in process_list:
+                pname = proc.get("name", "")
+                if not pname:
+                    continue
+                mgr = ProcessManager(
+                    process_name=pname,
+                    process_path=proc.get("path", ""),
+                    backup_dir=proc.get("backup_dir", "./backups"),
+                )
+                process_mgrs[pname] = mgr
+                process_configs[pname] = {
+                    "args": proc.get("args", []) or [],
+                    "auto_restart": bool(proc.get("auto_restart", False)),
+                    "check_interval": int(proc.get("check_interval", 30)),
+                }
+                logger.info("process manager: %s → %s", pname, proc.get("path", ""))
+
+            # Backward compat: first process as default
+            default_process_mgr: ProcessManager = (
+                next(iter(process_mgrs.values()))
+                if process_mgrs
+                else ProcessManager(process_name="", process_path="", backup_dir="./backups")
             )
+            default_process_cfg = next(iter(process_configs.values()), {})
+            default_process_args: list[str] | None = default_process_cfg.get("args") or None
 
             # 6-1. Rec Client ProcessManager (optional)
             rec_client_mgr: ProcessManager | None = None
@@ -196,7 +223,7 @@ class AgentRuntime:
 
             # 8. Shared SystemMonitor
             system_monitor = SystemMonitor(
-                target_process_name=process_cfg.s("name", ""),
+                target_process_names=list(process_mgrs.keys()),
             )
             poller.system_monitor = system_monitor
 
@@ -208,16 +235,23 @@ class AgentRuntime:
             poller.updater = updater
             poller.log_watcher = watcher
 
-            # 10. Shared ProcessDeployer
-            process_deployer = ProcessDeployer(
-                process_mgr=process_mgr,
-                update_dir=updater.update_dir,
-                log_folders=monitoring_cfg.ls("log_folders", []),
+            # 10. Process Deployers (one per process)
+            process_deployers: dict[str, ProcessDeployer] = {}
+            for pname, pmgr in process_mgrs.items():
+                deployer = ProcessDeployer(
+                    process_mgr=pmgr,
+                    update_dir=updater.update_dir,
+                    log_folders=monitoring_cfg.ls("log_folders", []),
+                )
+                process_deployers[pname] = deployer
+            # Default deployer for backward compat
+            default_deployer: ProcessDeployer | None = (
+                next(iter(process_deployers.values())) if process_deployers else None
             )
 
             # 11. Wire poller shared dependencies
-            poller.process_deployer = process_deployer
-            poller.process_args = process_args or None
+            poller.process_deployer = default_deployer
+            poller.process_args = default_process_args
 
             # 12. Shared LLMRouter
             llm_cfg = cfg.sub("llm")
@@ -308,19 +342,19 @@ class AgentRuntime:
                     agent_id=agent_id,
                     agent_ver=agent_ver,
                     watcher=watcher,
-                    process_mgr=process_mgr,
+                    process_mgrs=process_mgrs,
+                    process_configs=process_configs,
                     monitoring_cfg=monitoring_cfg,
                     recording_cfg=recording_cfg,
                     rec_ownership=rec_ownership,
                     deploy_lock=deploy_lock,
-                    process_args=process_args or None,
                     rec_client_mgr=rec_client_mgr,
                     rec_client_args=rec_client_args or None,
                     remote_commands=remote_commands_cfg,
                     full_config=cfg,
                 )
                 conn.deploy_handler.updater = updater
-                conn.deploy_handler.process_deployer = process_deployer
+                conn.deploy_handler.process_deployers = process_deployers
                 connections.append(conn)
 
             self._connections = connections
@@ -356,28 +390,30 @@ class AgentRuntime:
                 enabled=alert_enabled,
             )
 
-            process_name = process_cfg.s("name", "")
-            if process_name:
-                monitor_loop = ProcessMonitorLoop(
-                    process_mgr=process_mgr,
-                    check_interval=float(check_interval),
-                    process_args=process_args or None,
+            for pname, pmgr in process_mgrs.items():
+                pcfg = process_configs[pname]
+                loop = ProcessMonitorLoop(
+                    process_mgr=pmgr,
+                    check_interval=float(pcfg["check_interval"]),
+                    process_args=pcfg["args"] or None,
                     on_notify=_notify,
                     enabled=True,
-                    auto_restart=auto_restart,
+                    auto_restart=pcfg["auto_restart"],
                 )
-                self._process_monitor = monitor_loop
-                monitor_task = asyncio.create_task(monitor_loop.run())
+                self._process_monitors[pname] = loop
+                monitor_tasks.append(asyncio.create_task(loop.run()))
 
-            # 20. ProcessScheduler
+            # 20. ProcessScheduler (one per process)
             if restart_times:
-                scheduler = ProcessScheduler(
-                    process_mgr=process_mgr,
-                    restart_times=restart_times,
-                    process_args=process_args or None,
-                    on_notify=_notify,
-                )
-                scheduler_task = asyncio.create_task(scheduler.run())
+                for pname, pmgr in process_mgrs.items():
+                    pcfg = process_configs[pname]
+                    scheduler = ProcessScheduler(
+                        process_mgr=pmgr,
+                        restart_times=restart_times,
+                        process_args=pcfg["args"] or None,
+                        on_notify=_notify,
+                    )
+                    scheduler_tasks.append(asyncio.create_task(scheduler.run()))
 
             # 21. Per-server connection-lost callback
             async def _on_server_connection_lost(conn: ServerConnection) -> None:
@@ -407,14 +443,16 @@ class AgentRuntime:
                     await task
 
             # 25. Cleanup shared/background tasks
-            if monitor_task is not None:
-                monitor_task.cancel()
+            for task in monitor_tasks:
+                task.cancel()
+            for task in monitor_tasks:
                 with contextlib.suppress(asyncio.CancelledError):
-                    await monitor_task
-            if scheduler_task is not None:
-                scheduler_task.cancel()
+                    await task
+            for task in scheduler_tasks:
+                task.cancel()
+            for task in scheduler_tasks:
                 with contextlib.suppress(asyncio.CancelledError):
-                    await scheduler_task
+                    await task
             if subscription_client is not None:
                 subscription_client.stop_revalidation()
 
@@ -479,13 +517,13 @@ class AgentRuntime:
                 if now >= next_heartbeat:
                     next_heartbeat = now + interval
                     try:
-                        ps = (
-                            self._process_monitor.process_status
-                            if self._process_monitor is not None
-                            else 0
-                        )
+                        process_statuses: dict[str, int] = {}
+                        for pname, mon in self._process_monitors.items():
+                            process_statuses[pname] = mon.process_status
                         await asyncio.wait_for(
-                            tcp_client.send_heartbeat(process_status=ps),
+                            tcp_client.send_heartbeat(
+                                process_statuses=process_statuses,
+                            ),
                             timeout=5.0,
                         )
                     except (ConnectionError, OSError, asyncio.TimeoutError):
@@ -561,12 +599,12 @@ class AgentRuntime:
         agent_id: str,
         agent_ver: str,
         watcher: LogWatcher,
-        process_mgr: ProcessManager,
+        process_mgrs: dict[str, ProcessManager],
+        process_configs: dict[str, dict],
         monitoring_cfg: ConfigView,
         recording_cfg: ConfigView,
         rec_ownership: RecordingOwnership,
         deploy_lock: asyncio.Lock,
-        process_args: list[str] | None = None,
         rec_client_mgr: ProcessManager | None = None,
         rec_client_args: list[str] | None = None,
         remote_commands: list | None = None,
@@ -599,7 +637,7 @@ class AgentRuntime:
 
         deploy_handler = DeployHandler(
             tcp_client=tcp_client,
-            process_mgr=process_mgr,
+            process_mgrs=process_mgrs,
             transfer_dir=monitoring_cfg.s("transfer_dir", "agent/storage/transfers"),
         )
         tcp_client.on_cmd_deploy = deploy_handler.handle_cmd_deploy
@@ -625,8 +663,8 @@ class AgentRuntime:
 
         ctrl_handler = CtrlHandler(
             tcp_client=tcp_client,
-            process_mgr=process_mgr,
-            process_args=process_args,
+            process_mgrs=process_mgrs,
+            process_configs=process_configs,
             rec_client_mgr=rec_client_mgr,
             rec_client_args=rec_client_args,
         )

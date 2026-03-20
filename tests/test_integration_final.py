@@ -244,7 +244,7 @@ async def test_tcp_full_chain_auth_log_heartbeat_deploy_disconnect(
     client = _make_client("agent-final-flow", port)
     deploy_handler = DeployHandler(
         tcp_client=client,
-        process_mgr=cast(ProcessManager, cast(object, process_mgr)),
+        process_mgrs={"test": cast(ProcessManager, cast(object, process_mgr))},
         transfer_dir=str(tmp_path / "incoming"),
     )
     client.on_cmd_deploy = deploy_handler.handle_cmd_deploy

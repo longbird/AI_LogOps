@@ -78,6 +78,32 @@ class _DeploySection:
         self._agent_combo.pack(side=tk.LEFT, padx=8)
         self._agent_combo.bind("<Button-1>", self._refresh_agents)
 
+        # 1-1행: 대상 프로세스 선택 (process target만)
+        if target == "process":
+            row1_1 = tk.Frame(frame, bg=BG_FRAME)
+            row1_1.pack(fill=tk.X, pady=(0, 4))
+
+            tk.Label(
+                row1_1,
+                text="대상 프로세스:",
+                bg=BG_FRAME,
+                fg=FG_DIM,
+                font=FONT_NORMAL,
+            ).pack(side=tk.LEFT)
+
+            self._process_combo = ttk.Combobox(
+                row1_1,
+                values=["(기본)"],
+                state="readonly",
+                width=22,
+                font=FONT_NORMAL,
+            )
+            self._process_combo.set("(기본)")
+            self._process_combo.pack(side=tk.LEFT, padx=8)
+            self._agent_combo.bind("<<ComboboxSelected>>", self._refresh_process_list)
+        else:
+            self._process_combo = None
+
         # 2행: 파일 선택
         row2 = tk.Frame(frame, bg=BG_FRAME)
         row2.pack(fill=tk.X, pady=(0, 4))
@@ -178,6 +204,36 @@ class _DeploySection:
         ids = self._app.get_connected_agent_ids()
         self._agent_combo["values"] = ["(auto)"] + ids
 
+    def _refresh_process_list(self, _event: Any = None) -> None:
+        """에이전트의 target_process 목록을 가져와서 콤보박스를 갱신합니다."""
+        if self._process_combo is None:
+            return
+        agent_id = self._agent_combo.get()
+        if not agent_id or agent_id == "(auto)":
+            self._process_combo["values"] = ["(기본)"]
+            self._process_combo.set("(기본)")
+            return
+        # Fetch agent config to get target_process names
+        result = self._app.api_get(f"/api/config/{agent_id}")
+        if result and "config" in result:
+            tp = result["config"].get("target_process", {})
+            if isinstance(tp, list):
+                names = [
+                    p.get("name", f"process-{i}")
+                    for i, p in enumerate(tp)
+                    if p.get("name")
+                ]
+                if names:
+                    self._process_combo["values"] = names
+                    self._process_combo.set(names[0])
+                    return
+            elif isinstance(tp, dict) and tp.get("name"):
+                self._process_combo["values"] = [tp["name"]]
+                self._process_combo.set(tp["name"])
+                return
+        self._process_combo["values"] = ["(기본)"]
+        self._process_combo.set("(기본)")
+
     def _select_file(self) -> None:
         path = filedialog.askopenfilename(
             title=f"배포 파일 선택 ({self._target})",
@@ -218,9 +274,16 @@ class _DeploySection:
         self._status_label.configure(text="배포 중...", fg="#cca700")
         self._log(f"[배포] {self._target} 배포 시작: {self._file_path}")
 
+        process_name = ""
+        if self._process_combo is not None:
+            process_name = self._process_combo.get()
+            if process_name == "(기본)":
+                process_name = ""
+
         def _do_deploy() -> None:
             result = self._app.api_deploy_upload(
-                self._file_path, agent_id, self._target
+                self._file_path, agent_id, self._target,
+                deploy_path=process_name,
             )
             self._log_text.after(0, self._on_deploy_done, result)
 
@@ -265,6 +328,10 @@ class _DeploySection:
             body: dict[str, Any] = {"action": action, "target": self._target}
             if agent_id:
                 body["agent_id"] = agent_id
+            if self._process_combo is not None:
+                name = self._process_combo.get()
+                if name and name != "(기본)":
+                    body["target_name"] = name
             result = self._app.api_post("/api/ctrl/restart", body)
             self._log_text.after(0, self._on_ctrl_done, result, action, btn)
 

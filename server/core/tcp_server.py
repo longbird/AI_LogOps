@@ -411,7 +411,9 @@ class TCPServer:
             if packet_type == PacketType.HEARTBEAT:
                 hb = HeartbeatPayload.unpack(payload)
                 self.session_mgr.update_heartbeat(
-                    agent_id, process_status=hb.process_status
+                    agent_id,
+                    process_status=hb.process_status,
+                    process_statuses=hb.process_statuses,
                 )
                 writer.write(Packet.build(PacketType.HEARTBEAT, payload))
                 await writer.drain()
@@ -970,10 +972,12 @@ class TCPServer:
         agent_id: str,
         action: CtrlAction,
         target: int = 1,
+        target_name: str = "",
     ) -> bool:
         """CMD_CTRL 패킷을 에이전트에 전송.
 
         target: DeployTarget 값 (0=AGENT, 1=PROCESS, 2=REC_CLIENT).
+        target_name: 멀티 프로세스 디스패치용 프로세스 이름 (선택).
         """
         session = self.session_mgr.get_session(agent_id)
         if session is None or session.writer is None:
@@ -981,14 +985,15 @@ class TCPServer:
         writer = cast(_WriterLike, session.writer)
         from shared.protocol import CmdCtrlPayload
 
-        cmd = CmdCtrlPayload(action=action, target=target)
+        cmd = CmdCtrlPayload(action=action, target=target, target_name=target_name)
         writer.write(Packet.build(PacketType.CMD_CTRL, cmd.pack()))
         await writer.drain()
         self._logger.info(
-            "CMD_CTRL sent: agent_id=%s action=%s target=%d",
+            "CMD_CTRL sent: agent_id=%s action=%s target=%d target_name=%s",
             agent_id,
             action.name,
             target,
+            target_name,
         )
         return True
 

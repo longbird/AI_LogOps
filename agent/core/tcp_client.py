@@ -165,7 +165,11 @@ class TCPClient:
 
         await self._close_connection()
 
-    async def send_heartbeat(self, process_status: int = 0) -> None:
+    async def send_heartbeat(
+        self,
+        process_status: int = 0,
+        process_statuses: dict[str, int] | None = None,
+    ) -> None:
         """HEARTBEAT 패킷 전송. psutil로 CPU/MEM 수집, 프로세스 상태 포함."""
 
         cpu = max(0, min(100, int(psutil.cpu_percent(interval=None))))
@@ -176,6 +180,7 @@ class TCPClient:
             cpu_percent=cpu,
             mem_percent=mem,
             process_status=process_status,
+            process_statuses=process_statuses or {},
         ).pack()
         await self.send_packet(PacketType.HEARTBEAT, payload)
 

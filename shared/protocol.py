@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, ClassVar, cast
 
@@ -517,17 +517,23 @@ class CmdCtrlPayload:
 
     target: DeployTarget 값 (0=AGENT, 1=PROCESS, 2=REC_CLIENT).
     레거시(1B) 수신 시 target=1(PROCESS) 기본값.
+    V3: [Action(1B)] [Target(1B)] [NameLen(1B)] [Name(variable)] — multi-process dispatch.
     """
 
     action: CtrlAction
     target: int = 1  # DeployTarget.PROCESS
+    target_name: str = ""  # process name for multi-process dispatch
 
     _STRUCT: ClassVar[struct.Struct] = struct.Struct("!BB")
     _SIZE: ClassVar[int] = 2
     _LEGACY_SIZE: ClassVar[int] = 1
 
     def pack(self) -> bytes:
-        return self._STRUCT.pack(CtrlAction(self.action), self.target)
+        base = self._STRUCT.pack(CtrlAction(self.action), self.target)
+        if self.target_name:
+            name_bytes = self.target_name.encode("utf-8")
+            return base + struct.pack("!B", len(name_bytes)) + name_bytes
+        return base
 
     @classmethod
     def unpack(cls, data: bytes) -> CmdCtrlPayload:
@@ -537,8 +543,20 @@ class CmdCtrlPayload:
         if len(data) == cls._LEGACY_SIZE:
             (action_raw,) = cast(tuple[int], struct.unpack("!B", data))
             return cls(action=CtrlAction(action_raw), target=1)
+        if len(data) > cls._SIZE:
+            # V3: with target_name
+            action_raw, target_raw = cast(
+                tuple[int, int], cls._STRUCT.unpack(data[: cls._SIZE])
+            )
+            name_len = data[2]
+            target_name = data[3 : 3 + name_len].decode("utf-8")
+            return cls(
+                action=CtrlAction(action_raw),
+                target=target_raw,
+                target_name=target_name,
+            )
         raise ValueError(
-            f"cmd_ctrl payload: expected {cls._SIZE} or {cls._LEGACY_SIZE} bytes, got {len(data)}"
+            f"cmd_ctrl payload: expected >= {cls._LEGACY_SIZE} bytes, got {len(data)}"
         )
 
 
@@ -806,10 +824,12 @@ class HeartbeatPayload:
     timestamp: int
     cpu_percent: int
     mem_percent: int
-    process_status: int = 0  # ProcessStatus (0=미설정, 1=실행중, 2=다운)
+    process_status: int = 0  # ProcessStatus aggregate (0=미설정, 1=실행중, 2=다운)
+    process_statuses: dict[str, int] = field(default_factory=dict)  # name -> ProcessStatus
 
     _STRUCT_V1: ClassVar[struct.Struct] = struct.Struct("!QBB")
     _STRUCT_V2: ClassVar[struct.Struct] = struct.Struct("!QBBB")
+    _STRUCT_V3_HEADER: ClassVar[struct.Struct] = struct.Struct("!QBBB")
     _SIZE_V1: ClassVar[int] = 10
     _SIZE_V2: ClassVar[int] = 11
 
@@ -818,6 +838,22 @@ class HeartbeatPayload:
             raise ValueError("cpu_percent must be between 0 and 100")
         if not 0 <= self.mem_percent <= 100:
             raise ValueError("mem_percent must be between 0 and 100")
+        if self.process_statuses:
+            # V3: variable length — [timestamp(8B)][cpu(1B)][mem(1B)][count(1B)] + per-process entries
+            header = self._STRUCT_V3_HEADER.pack(
+                self.timestamp,
+                self.cpu_percent,
+                self.mem_percent,
+                len(self.process_statuses),
+            )
+            parts: list[bytes] = [header]
+            for name, status in self.process_statuses.items():
+                name_bytes = name.encode("utf-8")
+                parts.append(struct.pack("!B", len(name_bytes)))
+                parts.append(name_bytes)
+                parts.append(struct.pack("!B", status))
+            return b"".join(parts)
+        # V2: backward compat
         return self._STRUCT_V2.pack(
             self.timestamp, self.cpu_percent, self.mem_percent, self.process_status
         )
@@ -845,9 +881,37 @@ class HeartbeatPayload:
                 mem_percent=mem_percent,
                 process_status=process_status,
             )
+        if len(data) > cls._SIZE_V2:
+            # V3: multi-process — header is !QBBB = 11 bytes
+            timestamp, cpu_percent, mem_percent, count = cast(
+                tuple[int, int, int, int],
+                cls._STRUCT_V3_HEADER.unpack(data[: cls._SIZE_V2]),
+            )
+            offset = cls._SIZE_V2  # 11
+            process_statuses: dict[str, int] = {}
+            for _ in range(count):
+                name_len = data[offset]
+                offset += 1
+                name = data[offset : offset + name_len].decode("utf-8")
+                offset += name_len
+                status = data[offset]
+                offset += 1
+                process_statuses[name] = status
+            # Compute aggregate: any DOWN → DOWN, any RUNNING → RUNNING, else NOT_MONITORED
+            agg = ProcessStatus.NOT_MONITORED
+            if any(v == ProcessStatus.DOWN for v in process_statuses.values()):
+                agg = ProcessStatus.DOWN
+            elif any(v == ProcessStatus.RUNNING for v in process_statuses.values()):
+                agg = ProcessStatus.RUNNING
+            return cls(
+                timestamp=timestamp,
+                cpu_percent=cpu_percent,
+                mem_percent=mem_percent,
+                process_status=agg,
+                process_statuses=process_statuses,
+            )
         raise ValueError(
-            f"heartbeat payload must be {cls._SIZE_V1} or {cls._SIZE_V2} bytes, "
-            f"got {len(data)}"
+            f"heartbeat payload must be >= {cls._SIZE_V1} bytes, got {len(data)}"
         )
 
 

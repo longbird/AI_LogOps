@@ -75,12 +75,17 @@ class SessionManager:
     def get_session(self, agent_id: str) -> AgentSession | None:
         return self._sessions.get(agent_id)
 
-    def update_heartbeat(self, agent_id: str, process_status: int = 0) -> None:
+    def update_heartbeat(
+        self, agent_id: str, process_status: int = 0,
+        process_statuses: dict[str, int] | None = None,
+    ) -> None:
         session = self._sessions.get(agent_id)
         if session is None:
             return
         session.last_heartbeat = time.time()
         session.process_status = process_status
+        if process_statuses is not None:
+            session.process_statuses = process_statuses
 
     def get_all_sessions(self) -> list[AgentSession]:
         return list(self._sessions.values())
