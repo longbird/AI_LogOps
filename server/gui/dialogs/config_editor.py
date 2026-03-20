@@ -1,6 +1,7 @@
 """에이전트 설정 원격 편집 다이얼로그."""
 from __future__ import annotations
 
+import copy
 import json
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -71,6 +72,84 @@ _REMOTE_COMMAND_TEMPLATE: dict[str, Any] = {
     "working_dir": "",
     "timeout": 60,
     "description": "",
+}
+
+# 섹션 표시 순서 (canonical order)
+_SECTION_ORDER = [
+    "agent",
+    "telegram",
+    "monitoring",
+    "target_process",
+    "schedule",
+    "recording",
+    "rec_client",
+    "llm",
+    "connection",
+    "servers",
+    "watch_folders",
+    "remote_commands",
+]
+
+# 각 섹션의 기본값 (config에 없는 섹션을 채울 때 사용)
+_SECTION_DEFAULTS: dict[str, Any] = {
+    "agent": {"id": "", "version": ""},
+    "connection": {
+        "host": "",
+        "port": 9500,
+        "token": "",
+        "heartbeat_interval": 30,
+        "reconnect_attempts": 5,
+        "reconnect_delay": 60,
+    },
+    "servers": [],
+    "monitoring": {
+        "log_folders": [],
+        "history_max_mb": 10,
+        "watch_extensions": [".log", ".txt"],
+        "alert": {"enabled": True, "cooldown": 300},
+    },
+    "telegram": {
+        "bot_token": "",
+        "admin_chat_id": 0,
+        "server_bot_token": "",
+        "server_chat_id": 0,
+    },
+    "llm": {
+        "auth_mode": "apikey",
+        "default_provider": "openai",
+        "system_prompt": "",
+        "max_tokens": 2000,
+        "openai": {"api_key": "", "model": "gpt-4o-mini"},
+        "claude": {"api_key": "", "model": "claude-sonnet-4-20250514"},
+        "openrouter": {"api_key": "", "model": "openai/gpt-4o-mini"},
+        "subscription": {"server_url": "", "key": "", "revalidate_hours": 24},
+    },
+    "recording": {
+        "enabled": False,
+        "watch_dir": "",
+        "extensions": [".wav"],
+        "upload_base_url": "",
+        "alert_on_anomaly": True,
+        "db": {
+            "host": "",
+            "port": 3306,
+            "user": "",
+            "password": "",
+            "database": "",
+        },
+    },
+    "target_process": {
+        "name": "",
+        "path": "",
+        "backup_dir": "",
+        "args": [],
+        "auto_restart": False,
+        "check_interval": 30,
+    },
+    "schedule": {"restart_times": []},
+    "rec_client": {"name": "", "path": "", "args": []},
+    "watch_folders": [],
+    "remote_commands": [],
 }
 
 
@@ -170,8 +249,12 @@ class ConfigEditorDialog(tk.Toplevel):
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
-        canvas.create_window((0, 0), window=self._form_frame, anchor="nw")
+        self._canvas_window_id = canvas.create_window((0, 0), window=self._form_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _sync_form_width(event: Any) -> None:
+            canvas.itemconfigure(self._canvas_window_id, width=event.width)
+        canvas.bind("<Configure>", _sync_form_width)
 
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -233,9 +316,22 @@ class ConfigEditorDialog(tk.Toplevel):
         self._set_status("설정 불러오기 완료")
 
     def _populate_sections(self) -> None:
-        """섹션 리스트를 채웁니다."""
+        """섹션 리스트를 채웁니다. 모든 가능한 섹션을 표시합니다."""
         self._section_listbox.delete(0, tk.END)
+        # Ensure all default sections exist in config
+        for key in _SECTION_ORDER:
+            if key not in self._config:
+                self._config[key] = copy.deepcopy(_SECTION_DEFAULTS.get(key, {}))
+        # Build ordered key list: _SECTION_ORDER first, then any extra keys from config
+        self._ordered_keys: list[str] = []
+        for key in _SECTION_ORDER:
+            if key in self._config:
+                self._ordered_keys.append(key)
         for key in self._config:
+            if key not in self._ordered_keys:
+                self._ordered_keys.append(key)
+        # Populate listbox
+        for key in self._ordered_keys:
             label = SECTION_LABELS.get(key, key)
             self._section_listbox.insert(tk.END, label)
         if self._section_listbox.size() > 0:
@@ -248,7 +344,7 @@ class ConfigEditorDialog(tk.Toplevel):
         if not sel:
             return
         idx = sel[0]
-        keys = list(self._config.keys())
+        keys = self._ordered_keys if hasattr(self, '_ordered_keys') else list(self._config.keys())
         if idx >= len(keys):
             return
         section_key = keys[idx]
