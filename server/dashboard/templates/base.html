@@ -46,6 +46,7 @@
                 <div class="hidden md:flex items-center space-x-6">
                     {% if 'dashboard' in perms %}<a href="/dashboard" class="hover:text-gray-300 text-sm">대시보드</a>{% endif %}
                     {% if 'logs' in perms %}<a href="/logs" class="hover:text-gray-300 text-sm">로그</a>{% endif %}
+                    {% if 'logs' in perms %}<a href="/batch-analysis" class="hover:text-gray-300 text-sm">로그 분석</a>{% endif %}
                     {% if 'deploys' in perms %}<a href="/deploys" class="hover:text-gray-300 text-sm">배포</a>{% endif %}
                     {% if 'recordings' in perms %}<a href="/recordings" class="hover:text-gray-300 text-sm">녹취 분석</a>{% endif %}
                     {% if 'rec_viewer' in perms %}<a href="/rec-viewer" class="hover:text-gray-300 text-sm">녹취 조회</a>{% endif %}
@@ -75,6 +76,7 @@
             <div class="px-4 py-3 space-y-2">
                 {% if 'dashboard' in perms %}<a href="/dashboard" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">대시보드</a>{% endif %}
                 {% if 'logs' in perms %}<a href="/logs" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">로그</a>{% endif %}
+                {% if 'logs' in perms %}<a href="/batch-analysis" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">로그 분석</a>{% endif %}
                 {% if 'deploys' in perms %}<a href="/deploys" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">배포</a>{% endif %}
                 {% if 'recordings' in perms %}<a href="/recordings" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">녹취 분석</a>{% endif %}
                 {% if 'rec_viewer' in perms %}<a href="/rec-viewer" class="block py-2 px-3 rounded hover:bg-gray-700 text-sm">녹취 조회</a>{% endif %}

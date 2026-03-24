@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from server.analysis.log_analyzer import AnalysisResult, DbFailCause, DurationMismatch, UnrecordedCall, VersionSegment
+from server.analysis.log_analyzer import AnalysisResult, DbFailCause, DurationMismatch, NormFailureDetail, UnrecordedCall, VersionSegment
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +51,9 @@ _DIR_FILTER_LABELS = {
 _UNRECORDED_REASON_LABELS = {
     "no_file_close": "FILE CLOSE 없음",
     "db_fail": "DB 실패",
+    "did_passthrough": "DID 패스스루",
+    "restart_gap": "재시작 gap",
+    "silent_recording": "무음 녹취",
 }
 
 
@@ -117,7 +120,7 @@ def _section_key_metrics(result: AnalysisResult) -> str:
         f"| DURATION-MISMATCH | {result.duration_mismatch_count} |",
         f"| Session invalidated | {result.session_invalidated_count} |",
         f"| SSPP 유실 (Idx:-1) | {result.sspp_loss_count} |",
-        f"| 정규화 실패 | {result.norm_failure_count} |",
+        f"| 정규화 실패 | {result.norm_failure_count} (실제 {sum(1 for d in result.norm_failure_details if not d.recovered)}, 회복 {sum(1 for d in result.norm_failure_details if d.recovered)}) |",
         f"| 크래시 (재시작) | {result.crash_count} |",
     ]
     return "\n".join(lines) + "\n"
@@ -222,7 +225,8 @@ def _section_smdr_matching(result: AnalysisResult) -> str:
         f"| SMDR 통화 (Duration>0) | {smdr_total:,} |",
         f"| 녹취 완료 (FILE CLOSE) | {file_total:,} |",
         f"| 녹취율 | {rate} |",
-        f"| 미녹취 | {unrecorded_count:,} |",
+        f"| 미녹취 (실제) | {sum(1 for u in result.unrecorded_calls if u.reason != 'did_passthrough'):,} |",
+        f"| 미녹취 (DID패스스루) | {sum(1 for u in result.unrecorded_calls if u.reason == 'did_passthrough'):,} |",
         f"| 시간 불일치 (녹취 부족) | {len(smdr_longer):,} |",
         f"| 시간 불일치 (녹취 초과) | {len(rec_longer):,} |",
     ]
@@ -271,22 +275,69 @@ def _section_duration_mismatches(mismatches: list[DurationMismatch]) -> str | No
 
 
 def _section_unrecorded_calls(calls: list[UnrecordedCall]) -> str | None:
-    """미녹취건 목록 (있을 경우만)."""
+    """미녹취건 목록 (있을 경우만). DID 패스스루는 요약만 표시."""
     if not calls:
         return None
 
+    did_calls = [c for c in calls if c.reason == "did_passthrough"]
+    real_calls = [c for c in calls if c.reason != "did_passthrough"]
+
     lines = [
-        f"## 9. 미녹취건 ({len(calls)}건)\n",
-        "| # | 시각 | 내선 | 발신 | 착신 | 통화시간 | 원인 |",
-        "|---|------|------|------|------|----------|------|",
+        f"## 9. 미녹취건 (실제 {len(real_calls)}건, DID패스스루 {len(did_calls)}건)\n",
     ]
-    for c in calls:
-        ts_short = c.timestamp[11:16] if len(c.timestamp) >= 16 else c.timestamp
-        reason_label = _UNRECORDED_REASON_LABELS.get(c.reason, c.reason)
-        lines.append(
-            f"| {c.seq} | {ts_short} | {c.ext} | {c.caller} | {c.called} "
-            f"| {c.duration}s | {reason_label} |"
-        )
+
+    if real_calls:
+        lines.extend([
+            "| # | 시각 | 내선 | 발신 | 착신 | 통화시간 | 원인 |",
+            "|---|------|------|------|------|----------|------|",
+        ])
+        for c in real_calls:
+            ts_short = c.timestamp[11:16] if len(c.timestamp) >= 16 else c.timestamp
+            reason_label = _UNRECORDED_REASON_LABELS.get(c.reason, c.reason)
+            lines.append(
+                f"| {c.seq} | {ts_short} | {c.ext} | {c.caller} | {c.called} "
+                f"| {c.duration}s | {reason_label} |"
+            )
+
+    if did_calls:
+        lines.append(f"\n*DID 패스스루 {len(did_calls)}건은 가상내선 경유 통화로 별도 녹취 대상 아님 (생략)*")
+
+    return "\n".join(lines) + "\n"
+
+
+def _section_norm_failures(details: list[NormFailureDetail]) -> str | None:
+    """정규화 실패 상세 (있을 경우만)."""
+    if not details:
+        return None
+
+    actual = [d for d in details if not d.recovered]
+    recovered = [d for d in details if d.recovered]
+
+    lines = [
+        f"## 10. 정규화 실패 ({len(details)}건: 실제 {len(actual)}, ENDED회복 {len(recovered)})\n",
+    ]
+
+    if actual:
+        lines.append(f"### 실제 미녹취 ({len(actual)}건)\n")
+        lines.extend([
+            "| 시각 | 원본 | 정규화 | 후보수 |",
+            "|------|------|--------|--------|",
+        ])
+        for d in actual:
+            ts_short = d.timestamp[11:16] if len(d.timestamp) >= 16 else d.timestamp
+            lines.append(f"| {ts_short} | {d.original} | {d.normalized} | {d.candidates} |")
+        lines.append("")
+
+    if recovered:
+        lines.append(f"### ENDED 매칭 회복 ({len(recovered)}건)\n")
+        lines.extend([
+            "| 시각 | 원본 | 정규화 | 후보수 |",
+            "|------|------|--------|--------|",
+        ])
+        for d in recovered:
+            ts_short = d.timestamp[11:16] if len(d.timestamp) >= 16 else d.timestamp
+            lines.append(f"| {ts_short} | {d.original} | {d.normalized} | {d.candidates} |")
+
     return "\n".join(lines) + "\n"
 
 
@@ -339,5 +390,10 @@ def generate_report(result: AnalysisResult) -> str:
     if unrec_section is not None:
         sections.append("---\n")
         sections.append(unrec_section)
+
+    norm_section = _section_norm_failures(result.norm_failure_details)
+    if norm_section is not None:
+        sections.append("---\n")
+        sections.append(norm_section)
 
     return "\n".join(sections)

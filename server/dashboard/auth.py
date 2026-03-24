@@ -291,6 +291,9 @@ def get_required_permission(path: str) -> str | list[str] | None:
         or path.startswith("/recordings/detail/")
     ):
         return ["recordings", "rec_viewer"]
+    # Batch Analysis (로그 배치 분석)
+    if path == "/batch-analysis" or path.startswith("/api/batch-analysis/"):
+        return "logs"
     # 기타 (인증만 필요)
     return None
 

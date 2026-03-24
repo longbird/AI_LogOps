@@ -55,15 +55,19 @@ RE_SSPP_LOSS = re.compile(r"Idx:\s*-1")
 
 # Normalization failure
 RE_NORM_FAILURE = re.compile(r"no match.*candidates")
+RE_NORM_FAILURE_DETAIL = re.compile(
+    r"Normalized callee:\s+(\S+)\s+->\s+(\S+)\s+\(no match,\s+(\d+)\s+candidates"
+)
 
 # SMDR event with details (flag:action Ext: ... Duration:)
 RE_SMDR_EVENT = re.compile(
     r"\[SMDR\]\s+\[\d+\]\s+(\w+):(\w+)\s+Ext:(\S+).*?Duration:(\d+)"
 )
 
-# FILE CLOSE (recording completion) — Channel, CID, Filename, Size, Time
+# FILE CLOSE (recording completion) — Channel, CID, Filename, Size, Time, RTP
 RE_FILE_CLOSE = re.compile(
     r"\[FILE\]\s+\[C:(\d+)\]\s+CLOSE\s+(\S+)\s+(\S+\.wav)\s+Size:(\d+)\s+Time:(\d+)"
+    r"(?:\s+RTP:(\d+),(\d+))?"
 )
 
 # DURATION-MISMATCH detail capture
@@ -130,6 +134,8 @@ class RecordingClose:
     filename: str
     size: int
     duration: int    # seconds
+    rtp_server: int = 0  # RTP packets (server side)
+    rtp_client: int = 0  # RTP packets (client side)
 
 
 @dataclass
@@ -143,6 +149,16 @@ class DurationMismatch:
     rec_duration: int
     diff: int
     cause: str
+
+
+@dataclass
+class NormFailureDetail:
+    """번호 정규화 실패 상세."""
+    timestamp: str
+    original: str    # 정규화 전 (예: 66101094808301)
+    normalized: str  # 정규화 후 (예: 01094808301)
+    candidates: int  # 시도한 후보 수
+    recovered: bool = False  # True면 ENDED 매칭으로 녹취 회복됨
 
 
 @dataclass
@@ -177,6 +193,7 @@ class AnalysisResult:
     session_invalidated_count: int
     sspp_loss_count: int
     norm_failure_count: int
+    norm_failure_details: list[NormFailureDetail]
     # SMDR vs Recording matching
     smdr_call_count: int               # SMDR 통화 (Duration>0) 총 건수
     file_close_count: int              # 녹취 완료 (FILE CLOSE, Size>0) 건수
@@ -256,6 +273,7 @@ class LogAnalyzer:
         self._session_invalidated_count: int = 0
         self._sspp_loss_count: int = 0
         self._norm_failure_count: int = 0
+        self._norm_failure_details: list[NormFailureDetail] = []
 
         # --- SMDR vs Recording matching ---
         self._smdr_calls: list[SmdrCall] = []
@@ -316,6 +334,9 @@ class LogAnalyzer:
         # Enrich DURATION-MISMATCH with caller/called from SMDR data
         self._enrich_duration_mismatches()
 
+        # Classify normalization failures: recovered (FILE CLOSE exists) vs actual
+        self._classify_norm_failures()
+
         return AnalysisResult(
             agent_id=self._agent_id,
             date=self._date,
@@ -336,6 +357,7 @@ class LogAnalyzer:
             session_invalidated_count=self._session_invalidated_count,
             sspp_loss_count=self._sspp_loss_count,
             norm_failure_count=self._norm_failure_count,
+            norm_failure_details=list(self._norm_failure_details),
             smdr_call_count=len(self._smdr_calls),
             file_close_count=len(self._file_closes),
             smdr_calls=list(self._smdr_calls),
@@ -477,6 +499,8 @@ class LogAnalyzer:
                     filename=m_fc.group(3),
                     size=size,
                     duration=int(m_fc.group(5)),
+                    rtp_server=int(m_fc.group(6)) if m_fc.group(6) else 0,
+                    rtp_client=int(m_fc.group(7)) if m_fc.group(7) else 0,
                 ))
             return
 
@@ -513,6 +537,14 @@ class LogAnalyzer:
         # --- Normalization failure ---
         if RE_NORM_FAILURE.search(line):
             self._norm_failure_count += 1
+            m_detail = RE_NORM_FAILURE_DETAIL.search(line)
+            if m_detail:
+                self._norm_failure_details.append(NormFailureDetail(
+                    timestamp=self._current_ts or "",
+                    original=m_detail.group(1),
+                    normalized=m_detail.group(2),
+                    candidates=int(m_detail.group(3)),
+                ))
             self._push_event(line_num, "norm_failure")
             return
 
@@ -613,23 +645,112 @@ class LogAnalyzer:
                     break
 
     # ------------------------------------------------------------------
+    # Normalization failure classification
+    # ------------------------------------------------------------------
+
+    def _classify_norm_failures(self) -> None:
+        """정규화 실패를 FILE CLOSE 존재 여부로 분류.
+
+        normalized 번호가 FILE CLOSE CID 또는 파일명에 포함되면
+        ENDED 매칭으로 녹취가 회복된 것이므로 recovered=True.
+        """
+        for nf in self._norm_failure_details:
+            nf_dt = _ts_to_datetime(nf.timestamp)
+            if nf_dt is None:
+                continue
+            for fc in self._file_closes:
+                fc_dt = _ts_to_datetime(fc.timestamp)
+                if fc_dt is None:
+                    continue
+                if abs((nf_dt - fc_dt).total_seconds()) > self.MATCH_WINDOW_SECONDS:
+                    continue
+                if nf.normalized in fc.cid or nf.normalized in fc.filename:
+                    nf.recovered = True
+                    break
+
+    # ------------------------------------------------------------------
     # SMDR → FILE CLOSE matching
     # ------------------------------------------------------------------
 
     # Matching time window (seconds)
     MATCH_WINDOW_SECONDS = 180
 
+    @staticmethod
+    def _normalize_dtmf(number: str) -> str:
+        """DTMF 특수문자(#, *) 제거하여 CID 매칭용 번호 생성.
+
+        SMDR에서 '01037232562#2'로 표기된 번호가
+        CID에서는 '010372325622'로 변환되므로 '#' 제거 후 비교.
+        """
+        return number.replace("#", "").replace("*", "")
+
+    def _detect_did_passthrough(self) -> tuple[list[SmdrCall], list[SmdrCall], set[str]]:
+        """DID 패스스루 통화를 자동 감지하여 SMDR을 분리.
+
+        DID 가상내선 경유 통화(예: 3301)는 별도 녹취가 없으므로
+        FC 매칭에서 제외해야 실제 통화의 FC를 잘못 소비하지 않는다.
+
+        Returns:
+            (normal_smdr, did_smdr, did_trunk_numbers)
+        """
+        # Step 1: DID 가상내선 번호 감지 (DB_FAIL cause=did_3301에서 추출)
+        did_extensions: set[str] = set()
+        for cause in self._db_fail_causes:
+            if cause.cause == "did_3301":
+                # detail에서 DID 번호 추출 (예: "Ext:7056 Caller:...")
+                # 또는 called 필드에서 3301 등
+                did_extensions.add("3301")
+                break
+
+        if not did_extensions:
+            return list(self._smdr_calls), [], set()
+
+        # Step 2: DID 가상내선 이벤트 타임스탬프 수집 (분 단위)
+        did_timestamps: set[str] = set()
+        for smdr in self._smdr_calls:
+            if smdr.called in did_extensions and smdr.timestamp:
+                did_timestamps.add(smdr.timestamp[:16])
+
+        # Step 3: DID 트렁크 번호 감지
+        # 같은 시각(분)에 트렁크(850x)에서 발생한 SMDR의 Called가 DID 트렁크 번호
+        did_trunk_numbers: set[str] = set()
+        for smdr in self._smdr_calls:
+            if (smdr.ext.startswith("850")
+                    and smdr.timestamp
+                    and smdr.timestamp[:16] in did_timestamps
+                    and smdr.called
+                    and smdr.called not in did_extensions):
+                did_trunk_numbers.add(smdr.called)
+
+        # Step 4: 분류
+        normal: list[SmdrCall] = []
+        did_related: list[SmdrCall] = []
+        for smdr in self._smdr_calls:
+            if (smdr.called in did_extensions
+                    or smdr.called in did_trunk_numbers
+                    or smdr.caller in did_trunk_numbers):
+                did_related.append(smdr)
+            else:
+                normal.append(smdr)
+
+        return normal, did_related, did_trunk_numbers
+
     def _find_unrecorded_calls(self) -> list[UnrecordedCall]:
         """Find SMDR calls without matching FILE CLOSE.
 
         Matching strategy:
-        - For each SMDR call, look for a FILE CLOSE within ±3 minutes
+        - DID 패스스루 통화는 FC 매칭에서 제외 (별도 녹취 없음)
+        - For each normal SMDR call, look for a FILE CLOSE within ±3 minutes
           where the cid contains the SMDR caller or called number.
+        - DTMF 특수문자(#, *) 정규화 후 비교.
         - FILE CLOSE cid format: "caller->called"
         - Matched FILE CLOSEs are consumed (1:1 matching).
         """
         if not self._smdr_calls:
             return []
+
+        # Partition DID pass-through calls
+        normal_smdr, did_smdr, _ = self._detect_did_passthrough()
 
         # Build list of available FILE CLOSE events (copy to consume)
         available_closes: list[tuple[int, RecordingClose]] = [
@@ -645,48 +766,151 @@ class LogAnalyzer:
 
         unrecorded: list[UnrecordedCall] = []
 
-        for smdr in self._smdr_calls:
+        # DID pass-through → automatically unrecorded
+        for smdr in did_smdr:
+            unrecorded.append(UnrecordedCall(
+                timestamp=smdr.timestamp,
+                ext=smdr.ext,
+                caller=smdr.caller,
+                called=smdr.called,
+                duration=smdr.duration,
+                seq=smdr.seq,
+                reason="did_passthrough",
+            ))
+
+        # Normal SMDR → match against FILE CLOSEs (2-pass)
+        # Pass 1: confident matches (duration diff ≤ 5s) — prevents
+        #         short/no-recording SMDRs from stealing FCs
+        # Pass 2: remaining SMDRs matched by best duration proximity
+        _CONFIDENT_DURATION_DIFF = 5
+
+        def _parse_filename_fields(filename: str) -> tuple[str, str, str]:
+            """Extract (caller, called, ext) from recording filename.
+
+            Format: HHMMSS.dir.caller.called.ext.did.dnis.seq.wav
+            Fields use '_' for empty values.
+            """
+            parts = filename.rsplit(".wav", 1)[0].split(".")
+            if len(parts) >= 5:
+                fn_caller = parts[2] if parts[2] != "_" else ""
+                fn_called = parts[3] if parts[3] != "_" else ""
+                fn_ext = parts[4]
+                return fn_caller, fn_called, fn_ext
+            return "", "", ""
+
+        def _num_match(a: str, b: str) -> bool:
+            """Check if two phone numbers match, handling ** masking.
+
+            SMDR may have '02214945**' while FILE CLOSE has '02214945'.
+            Strip trailing ** then check suffix match (shorter must be
+            a suffix of longer) to avoid false positives from outbound
+            prefixes like '192' + '01073382135'.
+            """
+            if not a or not b:
+                return False
+            a_clean = a.rstrip("*")
+            b_clean = b.rstrip("*")
+            if not a_clean or not b_clean:
+                return False
+            if a_clean == b_clean:
+                return True
+            # Shorter must be a suffix of longer (outbound prefixes
+            # are prepended, so the real number is always the tail)
+            short, long = (a_clean, b_clean) if len(a_clean) <= len(b_clean) else (b_clean, a_clean)
+            return long.endswith(short)
+
+        def _find_candidates(
+            smdr: SmdrCall,
+        ) -> list[tuple[int, RecordingClose]]:
             smdr_dt = _ts_to_datetime(smdr.timestamp)
             if smdr_dt is None:
-                continue
-
-            matched = False
+                return []
+            norm_caller = self._normalize_dtmf(smdr.caller) if smdr.caller else ""
+            norm_called = self._normalize_dtmf(smdr.called) if smdr.called else ""
+            hits: list[tuple[int, RecordingClose]] = []
             for idx, fc in available_closes:
                 if idx in used_indices:
                     continue
                 fc_dt = _ts_to_datetime(fc.timestamp)
                 if fc_dt is None:
                     continue
-
                 time_diff = abs((smdr_dt - fc_dt).total_seconds())
                 if time_diff > self.MATCH_WINDOW_SECONDS:
                     continue
-
-                # Check if cid matches caller/called
+                # Collect all phone numbers from FC (direction-agnostic)
                 cid_parts = fc.cid.split("->")
+                fc_caller = cid_parts[0] if len(cid_parts) >= 1 else ""
+                fc_called = cid_parts[1] if len(cid_parts) >= 2 else ""
+                fn_caller, fn_called, fn_ext = _parse_filename_fields(
+                    fc.filename,
+                )
+                all_fc_numbers = {fc_caller, fc_called, fn_caller, fn_called} - {""}
+
+                # --- Match logic ---
+                # Match SMDR caller or called against any FC number
+                caller_hit = any(
+                    _num_match(norm_caller, n) for n in all_fc_numbers
+                ) if norm_caller else False
+                called_hit = any(
+                    _num_match(norm_called, n) for n in all_fc_numbers
+                ) if norm_called else False
+
                 cid_match = False
-                if len(cid_parts) == 2:
-                    fc_caller, fc_called = cid_parts
-                    if smdr.caller and (smdr.caller in fc_caller or fc_caller in smdr.caller):
-                        cid_match = True
-                    elif smdr.called and (smdr.called in fc_called or fc_called in smdr.called):
-                        cid_match = True
-                    elif smdr.ext and (smdr.ext in fc_caller or smdr.ext in fc_called):
-                        cid_match = True
-                if not cid_match:
-                    # Fallback: if ext matches channel or any part of cid
-                    if smdr.ext and smdr.ext in fc.cid:
-                        cid_match = True
+                if caller_hit:
+                    cid_match = True
+                elif called_hit and not norm_caller:
+                    # Called-only match when SMDR has no caller
+                    cid_match = True
+
+                # Last resort: exact ext match from filename
+                if not cid_match and smdr.ext and fn_ext and smdr.ext == fn_ext:
+                    cid_match = True
 
                 if cid_match:
-                    used_indices.add(idx)
-                    matched = True
-                    break
+                    hits.append((idx, fc))
+            return hits
 
+        matched_smdr: set[int] = set()  # indices into normal_smdr
+
+        # Pass 1: confident matches only
+        for si, smdr in enumerate(normal_smdr):
+            candidates = _find_candidates(smdr)
+            if not candidates:
+                continue
+            best_idx, best_fc = min(
+                candidates,
+                key=lambda t: abs(smdr.duration - t[1].duration),
+            )
+            if abs(smdr.duration - best_fc.duration) <= _CONFIDENT_DURATION_DIFF:
+                used_indices.add(best_idx)
+                matched_smdr.add(si)
+
+        # Pass 2: remaining SMDRs — best duration match
+        for si, smdr in enumerate(normal_smdr):
+            if si in matched_smdr:
+                continue
+            candidates = _find_candidates(smdr)
+            if not candidates:
+                continue
+            best_idx, _ = min(
+                candidates,
+                key=lambda t: abs(smdr.duration - t[1].duration),
+            )
+            used_indices.add(best_idx)
+            matched_smdr.add(si)
+
+        # Collect unrecorded
+        for si, smdr in enumerate(normal_smdr):
+            matched = si in matched_smdr
             if not matched:
-                # Determine reason
+                # Determine reason (priority order)
                 smdr_minute = smdr.timestamp[:16] if smdr.timestamp else ""
-                reason = "db_fail" if smdr_minute in db_fail_times else "no_file_close"
+                if self._is_restart_gap(smdr.timestamp):
+                    reason = "restart_gap"
+                elif smdr_minute in db_fail_times:
+                    reason = "db_fail"
+                else:
+                    reason = "no_file_close"
                 unrecorded.append(UnrecordedCall(
                     timestamp=smdr.timestamp,
                     ext=smdr.ext,
@@ -697,7 +921,63 @@ class LogAnalyzer:
                     reason=reason,
                 ))
 
+        # Post-process: detect silent recordings (FILE CLOSE exists but RTP:0,0)
+        self._detect_silent_recordings(unrecorded)
+
         return unrecorded
+
+    def _is_restart_gap(self, timestamp: str) -> bool:
+        """SMDR 이벤트가 재시작 직후 gap 구간에 해당하는지 판별.
+
+        InitInstance 후 RESTART_GAP_SECONDS 이내이면 restart_gap.
+        """
+        if not self._version_segments:
+            return False
+        ts_dt = _ts_to_datetime(timestamp)
+        if ts_dt is None:
+            return False
+        for seg in self._version_segments:
+            seg_dt = _ts_to_datetime(seg.start_time)
+            if seg_dt is None:
+                continue
+            gap = (ts_dt - seg_dt).total_seconds()
+            if 0 <= gap <= self.RESTART_GAP_SECONDS:
+                return True
+        return False
+
+    def _detect_silent_recordings(self, unrecorded: list[UnrecordedCall]) -> None:
+        """미녹취 중 실제로는 FILE CLOSE가 있으나 RTP:0,0인 건을 silent_recording으로 재분류.
+
+        FILE CLOSE는 있지만 RTP 패킷이 0인 경우 = 파일은 존재하나 음성 없음.
+        """
+        silent_fcs = [
+            fc for fc in self._file_closes
+            if fc.rtp_server == 0 and fc.rtp_client == 0 and fc.size > 0
+        ]
+        if not silent_fcs:
+            return
+
+        for unrec in unrecorded:
+            if unrec.reason != "no_file_close":
+                continue
+            unrec_dt = _ts_to_datetime(unrec.timestamp)
+            if unrec_dt is None:
+                continue
+            norm_caller = self._normalize_dtmf(unrec.caller) if unrec.caller else ""
+            norm_called = self._normalize_dtmf(unrec.called) if unrec.called else ""
+            for fc in silent_fcs:
+                fc_dt = _ts_to_datetime(fc.timestamp)
+                if fc_dt is None:
+                    continue
+                if abs((unrec_dt - fc_dt).total_seconds()) > self.MATCH_WINDOW_SECONDS:
+                    continue
+                # Check if this silent FC matches the unrecorded call
+                if norm_caller and norm_caller in fc.cid:
+                    unrec.reason = "silent_recording"
+                    break
+                if norm_called and norm_called in fc.cid:
+                    unrec.reason = "silent_recording"
+                    break
 
     # ------------------------------------------------------------------
     # DB_FAIL classification

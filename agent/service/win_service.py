@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from agent.core.agent_runtime import AgentHooks, AgentRuntime
 from shared.utils import setup_file_logging, setup_logging

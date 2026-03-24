@@ -352,6 +352,7 @@ class AgentRuntime:
                     rec_client_args=rec_client_args or None,
                     remote_commands=remote_commands_cfg,
                     full_config=cfg,
+                    process_deployers=process_deployers,
                 )
                 conn.deploy_handler.updater = updater
                 conn.deploy_handler.process_deployers = process_deployers
@@ -609,6 +610,7 @@ class AgentRuntime:
         rec_client_args: list[str] | None = None,
         remote_commands: list | None = None,
         full_config: ConfigView | None = None,
+        process_deployers: dict | None = None,
     ) -> ServerConnection:
         from agent.core.ctrl_handler import CtrlHandler
         from agent.core.deploy_handler import DeployHandler
@@ -667,6 +669,7 @@ class AgentRuntime:
             process_configs=process_configs,
             rec_client_mgr=rec_client_mgr,
             rec_client_args=rec_client_args,
+            process_deployers=process_deployers,
         )
         tcp_client.on_cmd_ctrl = ctrl_handler.handle_cmd_ctrl
 

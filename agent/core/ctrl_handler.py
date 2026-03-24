@@ -17,6 +17,7 @@ from shared.utils import setup_logging
 if TYPE_CHECKING:
     from agent.core.process_mgr import ProcessManager
     from agent.core.tcp_client import TCPClient
+    from agent.updater.process_deploy import ProcessDeployer
 
 logger = setup_logging("ctrl_handler")
 
@@ -31,12 +32,14 @@ class CtrlHandler:
         process_configs: dict[str, dict],
         rec_client_mgr: ProcessManager | None = None,
         rec_client_args: list[str] | None = None,
+        process_deployers: dict[str, ProcessDeployer] | None = None,
     ) -> None:
         self._client = tcp_client
         self._process_mgrs = process_mgrs
         self._process_configs = process_configs
         self._rec_client_mgr = rec_client_mgr
         self._rec_client_args = rec_client_args
+        self._process_deployers = process_deployers or {}
 
     def _resolve_mgr(
         self, target: int, target_name: str = "",
@@ -44,17 +47,28 @@ class CtrlHandler:
         """target 값에 따라 적절한 ProcessManager 반환."""
         if target == DeployTarget.REC_CLIENT:
             return self._rec_client_mgr, self._rec_client_args, "rec_client"
-        # PROCESS: resolve by target_name
+        # PROCESS: resolve by target_name (exact match required)
         if target_name and target_name in self._process_mgrs:
             mgr = self._process_mgrs[target_name]
             args = self._process_configs.get(target_name, {}).get("args")
             return mgr, args, target_name
-        # Fallback: first process manager
-        if self._process_mgrs:
+        # target_name 미지정 또는 미매칭: 단일 프로세스일 때만 허용
+        if not target_name and len(self._process_mgrs) == 1:
             first_name = next(iter(self._process_mgrs))
             mgr = self._process_mgrs[first_name]
             args = self._process_configs.get(first_name, {}).get("args")
             return mgr, args, first_name
+        # 다중 프로세스인데 target_name 미지정 또는 미매칭 → 에러
+        if target_name:
+            logger.error(
+                "target_name '%s' not found in process_mgrs (available: %s)",
+                target_name, list(self._process_mgrs.keys()),
+            )
+        else:
+            logger.error(
+                "target_name required for multi-process config (available: %s)",
+                list(self._process_mgrs.keys()),
+            )
         return None, None, "process"
 
     async def handle_cmd_ctrl(self, payload_data: bytes) -> None:
@@ -80,7 +94,7 @@ class CtrlHandler:
         )
 
         if cmd.action == CtrlAction.RESTART:
-            await self._handle_restart(mgr, args, cmd.action)
+            await self._handle_restart(mgr, args, cmd.action, label)
         elif cmd.action == CtrlAction.STOP:
             await self._handle_stop(mgr, cmd.action)
         elif cmd.action == CtrlAction.START:
@@ -89,9 +103,30 @@ class CtrlHandler:
             logger.warning("unknown ctrl action: %s", cmd.action)
 
     async def _handle_restart(
-        self, mgr: ProcessManager, args: list[str] | None, action: CtrlAction,
+        self,
+        mgr: ProcessManager,
+        args: list[str] | None,
+        action: CtrlAction,
+        label: str = "",
     ) -> None:
-        """대상 프로세스 재시작."""
+        """대상 프로세스 재시작. 스테이징 파일이 있으면 deployer로 배포 후 시작."""
+        deployer = self._process_deployers.get(label)
+        if deployer and deployer.has_staged_files:
+            logger.info("staged update found, using deployer for %s", label)
+            try:
+                result = await deployer.execute_deploy(process_args=args)
+                if result.success:
+                    logger.info("process deployed and restarted: pid=%d", result.pid)
+                    await self._send_ack(action, CtrlAckStatus.SUCCESS, result.pid)
+                else:
+                    logger.error("deploy failed for %s: %s", label, result.error)
+                    await self._send_ack(action, CtrlAckStatus.FAILED, 0)
+            except Exception:
+                logger.exception("deploy-restart failed for %s", label)
+                await self._send_ack(action, CtrlAckStatus.FAILED, 0)
+            return
+
+        # No staged files: bare restart
         killed = mgr.kill_all()
         if not killed:
             logger.warning("failed to kill process, attempting start anyway")
