@@ -252,6 +252,8 @@ class ServerTab(tk.Frame):
             self._stop_btn.configure(state=tk.NORMAL)
             self._restart_btn.configure(state=tk.NORMAL)
             self._dashboard_btn.configure(state=tk.NORMAL)
+            # 대시보드 자동 시작 (config.enabled=false여도 GUI에서는 API 필요)
+            self.after(3000, self._auto_start_dashboard)
 
     def _stop_server(self) -> None:
         ok = self._app.stop_server()
@@ -273,6 +275,16 @@ class ServerTab(tk.Frame):
             self._app.send_server_command("dashboard start")
             self._dashboard_running = True
             self._dashboard_btn.configure(text="Dashboard 종료", bg="#c0392b")
+
+    def _auto_start_dashboard(self) -> None:
+        """서버 시작 후 대시보드 자동 시작 (API 엔드포인트 필요)."""
+        if not self._app.is_server_running():
+            return
+        if self._dashboard_running:
+            return
+        self._app.send_server_command("dashboard start")
+        self._dashboard_running = True
+        self._dashboard_btn.configure(text="Dashboard 종료", bg="#c0392b")
 
     def on_server_stopped(self) -> None:
         """서버 프로세스가 종료되었을 때 UI 갱신."""

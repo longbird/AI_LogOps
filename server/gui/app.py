@@ -54,14 +54,14 @@ class ServerGUI:
 
         # 설정
         self._config = self._load_config()
-        self._dashboard_port: int = int(
-            self._config.get("dashboard", {}).get("port", 8080)
-        )
+        dash_cfg = self._config.get("dashboard", {})
+        server_cfg = self._config.get("server", {})
+        self._dashboard_port: int = int(dash_cfg.get("port", 8080))
         self._dashboard_url = f"http://localhost:{self._dashboard_port}"
-        self._tcp_port: int = int(self._config.get("tcp", {}).get("port", 9500))
-        self._auth_token: str = str(
-            self._config.get("tcp", {}).get("auth_token", "")
-        ) or os.environ.get("TCP_AUTH_TOKEN", "default-auth-token")
+        self._tcp_port: int = int(server_cfg.get("tcp_port", 9500))
+        self._auth_token: str = os.environ.get(
+            "TCP_AUTH_TOKEN", "default-auth-token"
+        )
         self._jwt_cookie: str = ""
         self._auth_failed: bool = False  # 로그인 실패 시 반복 시도 방지
 
