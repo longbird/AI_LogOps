@@ -10,7 +10,7 @@
 ## Environment
 
 - Python 3.13 (`audioop` 모듈 사용 불가)
-- Server: 61.42.53.61 (TCP 9500, Dashboard 9090)
+- Server: 61.42.53.61 (TCP 9500, Dashboard 8080)
 - Agent: PC-DAERIGO (D:\AirSoft\AILogOps-Agent)
 - Agent DB: 127.0.0.1:56200/vrms2
 
@@ -26,7 +26,7 @@
 
 **빌드 + 서버 경유 배포 (권장):**
 ```bash
-python deploy.py --server http://61.42.53.61:9090 --agent-id PC-DAERIGO
+python deploy.py --server http://61.42.53.61:8080 --agent-id PC-DAERIGO
 ```
 - PyInstaller 빌드 → zip 압축 (config.yaml 제외) → HTTP API 업로드 → TCP로 에이전트 자동 전송
 - auth_token: `server/config.yaml` → `connection.token` 또는 환경변수 `TCP_AUTH_TOKEN`
@@ -56,7 +56,7 @@ python deploy.py --skip-send
 ### 3. Process Deployment (모니터링 프로세스 배포)
 
 ```bash
-python deploy.py --target process --process-dir "D:\Work\Setup\AirREC\Server" --server http://61.42.53.61:9090
+python deploy.py --target process --process-dir "D:\Work\Setup\AirREC\Server" --server http://61.42.53.61:8080
 ```
 - 프로세스 소스 디렉토리를 zip 압축 → 서버 경유 → 에이전트의 ProcessDeployer가 실행
 

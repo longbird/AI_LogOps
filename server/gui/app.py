@@ -55,7 +55,7 @@ class ServerGUI:
         # 설정
         self._config = self._load_config()
         self._dashboard_port: int = int(
-            self._config.get("dashboard", {}).get("port", 9090)
+            self._config.get("dashboard", {}).get("port", 8080)
         )
         self._dashboard_url = f"http://localhost:{self._dashboard_port}"
         self._tcp_port: int = int(self._config.get("tcp", {}).get("port", 9500))

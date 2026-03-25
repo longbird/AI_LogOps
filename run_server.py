@@ -510,7 +510,7 @@ async def _main(args: argparse.Namespace) -> None:
 
     dash_cfg: dict[str, Any] = cfg.get("dashboard", {})
     dash_host: str = str(dash_cfg.get("host", "0.0.0.0"))
-    dash_port: int = int(dash_cfg.get("port", 9090))
+    dash_port: int = int(dash_cfg.get("port", 8080))
     dash_public_url: str = str(dash_cfg.get("public_url", "")).strip()
     dash_secret: str = str(dash_cfg.get("secret_key", "CHANGE_ME"))
 

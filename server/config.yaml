@@ -33,10 +33,10 @@ dashboard:
   # 텔레그램 /dashboard start 명령으로 필요할 때 시작 가능
   enabled: false
   host: "0.0.0.0"
-  port: 9090
+  port: 8080
   # 에이전트가 접근 가능한 서버 공개 URL (녹취 업로드용)
   # 미설정 시 http://{host}:{port} 사용 (원격 에이전트는 반드시 설정 필요)
-  public_url: "http://61.42.53.61:9090"  # DASHBOARD_SECRET_KEY 환경변수로도 설정 가능
+  public_url: "http://61.42.53.61:8080"  # DASHBOARD_SECRET_KEY 환경변수로도 설정 가능
   secret_key: "CHANGE_ME"
 
 storage:
