@@ -76,7 +76,7 @@ def _print_banner(
     if dashboard_enabled:
         print(f"  Dashboard    : http://{dashboard_host}:{dashboard_port}")
     else:
-        print("  Dashboard    : disabled")
+        print(f"  Dashboard    : on-demand (:{dashboard_port})")
     print(f"  Telegram Bot : {'enabled' if telegram_enabled else 'disabled'}")
     print(f"  Health Mon.  : {'enabled' if health_enabled else 'disabled'}")
     print()
@@ -101,6 +101,11 @@ def _parse_args() -> argparse.Namespace:
         "--no-dashboard",
         action="store_true",
         help="대시보드(FastAPI/uvicorn) 비활성화",
+    )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="대시보드 강제 활성화 (config.yaml의 enabled: false 무시)",
     )
     parser.add_argument(
         "--no-telegram",
@@ -185,6 +190,7 @@ async def _run_telegram(
     storage_mgr: Any,
     ai_pipeline: Any,
     shutdown_event: asyncio.Event,
+    dashboard_ctrl: Any | None = None,
 ) -> None:
     """서버봇 텔레그램: 관리자 명령 수신 → TCP 기반 처리 → 응답 전송."""
     try:
@@ -228,6 +234,12 @@ async def _run_telegram(
 
     rec_cmd = RecCommandHandler(tcp_server=tcp_server, session_mgr=session_mgr)
     rec_cmd.register_all(tg_handler)
+
+    if dashboard_ctrl is not None:
+        from server.telegram.server_commands import ServerCommandHandler
+
+        srv_cmd = ServerCommandHandler(dashboard_ctrl=dashboard_ctrl)
+        srv_cmd.register_all(tg_handler)
 
     # ── 서버봇: 결과 수신 폴링 ──
     application = Application.builder().token(server_bot_token).build()
@@ -283,6 +295,7 @@ async def _run_telegram(
         "fix",
         "auto",
         "rec_analyze",
+        "dashboard",
     ]
     for cmd_name in known_commands:
         application.add_handler(CommandHandler(cmd_name, _handle_command))
@@ -347,56 +360,120 @@ class _PollingAccessLogFilter(logging.Filter):
         return not any(ep in msg for ep in self._SUPPRESS)
 
 
-async def _run_dashboard(
-    fastapi_app: Any,
-    host: str,
-    port: int,
+class DashboardController:
+    """대시보드(uvicorn) 온디맨드 시작/종료 컨트롤러.
+
+    서버 시작 시 항상 생성되지만, uvicorn은 enabled일 때만 자동 시작.
+    텔레그램 /dashboard 명령으로 수동 시작/종료 가능.
+    """
+
+    def __init__(self, fastapi_app: Any, host: str, port: int) -> None:
+        self.app = fastapi_app
+        self.host = host
+        self.port = port
+        self._server: Any = None
+        self._serve_task: asyncio.Task[Any] | None = None
+        self._running = False
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    async def start(self) -> str:
+        """대시보드를 시작한다. 이미 실행 중이면 메시지만 반환."""
+        if self._running:
+            return f"대시보드가 이미 실행 중입니다: http://{self.host}:{self.port}"
+
+        try:
+            import uvicorn  # type: ignore[import]
+        except ImportError:
+            return "uvicorn 패키지가 설치되지 않았습니다."
+
+        # 폴링 엔드포인트 access log 필터 적용
+        logging.getLogger("uvicorn.access").addFilter(_PollingAccessLogFilter())
+
+        config = uvicorn.Config(
+            app=self.app,
+            host=self.host,
+            port=self.port,
+            log_level="info",
+            access_log=True,
+        )
+        self._server = uvicorn.Server(config)
+
+        # uvicorn이 자체 시그널 핸들러를 설치하지 않도록 설정 (Windows 호환)
+        setattr(self._server, "install_signal_handlers", lambda: None)
+
+        self._serve_task = asyncio.create_task(self._server.serve())
+        self._running = True
+        logger.info("대시보드 시작됨: http://%s:%s", self.host, self.port)
+        return f"대시보드 시작됨: http://{self.host}:{self.port}"
+
+    async def stop(self) -> str:
+        """대시보드를 종료한다. 실행 중이 아니면 메시지만 반환."""
+        if not self._running:
+            return "대시보드가 실행 중이 아닙니다."
+
+        self._server.should_exit = True
+        try:
+            await asyncio.wait_for(self._serve_task, timeout=10.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            if self._serve_task is not None:
+                self._serve_task.cancel()
+                try:
+                    await self._serve_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        self._running = False
+        self._server = None
+        self._serve_task = None
+        logger.info("대시보드 종료됨")
+        return "대시보드가 종료되었습니다."
+
+    def status(self) -> str:
+        """대시보드 상태 반환."""
+        if self._running:
+            return f"대시보드 실행 중: http://{self.host}:{self.port}"
+        return "대시보드 중지 상태"
+
+
+# ---------------------------------------------------------------------------
+# stdin 제어 리더 (GUI에서 파이프로 명령 수신)
+# ---------------------------------------------------------------------------
+
+
+async def _stdin_control_reader(
+    dashboard_ctrl: DashboardController | None,
     shutdown_event: asyncio.Event,
 ) -> None:
-    """uvicorn.Server를 asyncio 태스크로 실행한다 (블로킹 없음)."""
-    try:
-        import uvicorn  # type: ignore[import]
-    except ImportError:
-        logger.error(
-            "uvicorn 패키지가 설치되지 않았습니다. pip install uvicorn 으로 설치하세요."
-        )
+    """stdin에서 제어 명령을 읽어 처리한다. GUI가 파이프로 전송."""
+    if sys.stdin is None or sys.stdin.isatty():
+        # 터미널 모드에서는 stdin 리더 비활성화
+        await shutdown_event.wait()
         return
 
-    # 폴링 엔드포인트 access log 필터 적용
-    logging.getLogger("uvicorn.access").addFilter(_PollingAccessLogFilter())
+    loop = asyncio.get_event_loop()
 
-    config = uvicorn.Config(
-        app=fastapi_app,
-        host=host,
-        port=port,
-        log_level="info",
-        access_log=True,
-    )
-    server = uvicorn.Server(config)
-
-    # uvicorn이 자체 시그널 핸들러를 설치하지 않도록 설정 (Windows 호환)
-    # setattr으로 인스턴스 메서드를 no-op으로 교체
-    setattr(server, "install_signal_handlers", lambda: None)
-
-    logger.info("대시보드 시작 중: http://%s:%s", host, port)
-
-    # serve()를 태스크로 실행하고 shutdown_event 대기
-    serve_task = asyncio.create_task(server.serve())
-
-    await shutdown_event.wait()
-
-    # uvicorn 정상 종료
-    server.should_exit = True
-    try:
-        await asyncio.wait_for(serve_task, timeout=10.0)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        serve_task.cancel()
+    def _readline() -> str:
         try:
-            await serve_task
-        except (asyncio.CancelledError, Exception):
-            pass
+            return sys.stdin.readline()
+        except (EOFError, OSError):
+            return ""
 
-    logger.info("대시보드 종료됨")
+    while not shutdown_event.is_set():
+        line = await loop.run_in_executor(None, _readline)
+        if not line:
+            break
+        cmd = line.strip().lower()
+        if cmd == "dashboard start" and dashboard_ctrl is not None:
+            result = await dashboard_ctrl.start()
+            logger.info("stdin 명령 → %s", result)
+        elif cmd == "dashboard stop" and dashboard_ctrl is not None:
+            result = await dashboard_ctrl.stop()
+            logger.info("stdin 명령 → %s", result)
+        elif cmd == "dashboard status" and dashboard_ctrl is not None:
+            logger.info("stdin 명령 → %s", dashboard_ctrl.status())
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +510,7 @@ async def _main(args: argparse.Namespace) -> None:
 
     dash_cfg: dict[str, Any] = cfg.get("dashboard", {})
     dash_host: str = str(dash_cfg.get("host", "0.0.0.0"))
-    dash_port: int = int(dash_cfg.get("port", 8080))
+    dash_port: int = int(dash_cfg.get("port", 9090))
     dash_public_url: str = str(dash_cfg.get("public_url", "")).strip()
     dash_secret: str = str(dash_cfg.get("secret_key", "CHANGE_ME"))
 
@@ -445,7 +522,13 @@ async def _main(args: argparse.Namespace) -> None:
     health_cfg: dict[str, Any] = cfg.get("health", {})
 
     # 4. 컴포넌트 활성화 여부 결정
-    dashboard_enabled = not args.no_dashboard
+    # --no-dashboard > --dashboard > config enabled
+    if args.no_dashboard:
+        dashboard_auto_start = False
+    elif args.dashboard:
+        dashboard_auto_start = True
+    else:
+        dashboard_auto_start = dash_cfg.get("enabled", True)
     health_enabled = not args.no_health
 
     # 텔레그램: --no-telegram 또는 토큰 미설정 시 비활성화
@@ -471,7 +554,7 @@ async def _main(args: argparse.Namespace) -> None:
     _print_banner(
         tcp_host=tcp_host,
         tcp_port=tcp_port,
-        dashboard_enabled=dashboard_enabled,
+        dashboard_enabled=dashboard_auto_start,
         dashboard_host=dash_host,
         dashboard_port=dash_port,
         telegram_enabled=telegram_enabled,
@@ -602,23 +685,28 @@ async def _main(args: argparse.Namespace) -> None:
             telegram_notifier=_health_notify if telegram_enabled else None,
         )
 
-    # 11. 대시보드 앱 생성
-    fastapi_app = None
-    if dashboard_enabled:
-        try:
-            from server.dashboard.app import create_app
+    # 11. 대시보드 컨트롤러 생성 (항상 생성, 시작은 조건부)
+    # --no-dashboard 시에도 앱은 생성하여 텔레그램으로 온디맨드 시작 가능
+    dashboard_ctrl: DashboardController | None = None
+    try:
+        from server.dashboard.app import create_app
 
-            fastapi_app = create_app(
-                session_mgr=session_mgr,
-                storage_mgr=storage_mgr,
-                tcp_server=tcp_server,
-                secret_key=dash_secret,
-                rec_storage=rec_storage,
-            )
-            logger.info("대시보드 앱 생성 완료")
-        except Exception:
-            logger.exception("대시보드 앱 생성 실패. 대시보드를 비활성화합니다.")
-            dashboard_enabled = False
+        fastapi_app = create_app(
+            session_mgr=session_mgr,
+            storage_mgr=storage_mgr,
+            tcp_server=tcp_server,
+            secret_key=dash_secret,
+            rec_storage=rec_storage,
+        )
+        dashboard_ctrl = DashboardController(fastapi_app, dash_host, dash_port)
+        if dashboard_auto_start:
+            logger.info("대시보드 컨트롤러 생성 완료 (자동 시작)")
+        else:
+            logger.info("대시보드 컨트롤러 생성 완료 (온디맨드 — /dashboard start 로 시작)")
+
+    except Exception:
+        logger.exception("대시보드 앱 생성 실패. 대시보드를 비활성화합니다.")
+        dashboard_auto_start = False
 
     # 12. 종료 이벤트
     shutdown_event = asyncio.Event()
@@ -645,14 +733,18 @@ async def _main(args: argparse.Namespace) -> None:
 
     tasks.append(asyncio.create_task(_wait_tcp_shutdown(), name="tcp-shutdown-waiter"))
 
-    # 대시보드 태스크
-    if dashboard_enabled and fastapi_app is not None:
-        tasks.append(
-            asyncio.create_task(
-                _run_dashboard(fastapi_app, dash_host, dash_port, shutdown_event),
-                name="dashboard",
-            )
+    # 대시보드 자동 시작 (enabled=true 일 때)
+    if dashboard_auto_start and dashboard_ctrl is not None:
+        result = await dashboard_ctrl.start()
+        logger.info(result)
+
+    # stdin 제어 리더 (GUI 파이프 모드)
+    tasks.append(
+        asyncio.create_task(
+            _stdin_control_reader(dashboard_ctrl, shutdown_event),
+            name="stdin-control",
         )
+    )
 
     # 텔레그램 태스크
     if telegram_enabled:
@@ -666,6 +758,7 @@ async def _main(args: argparse.Namespace) -> None:
                     storage_mgr=storage_mgr,
                     ai_pipeline=ai_pipeline,
                     shutdown_event=shutdown_event,
+                    dashboard_ctrl=dashboard_ctrl,
                 ),
                 name="telegram",
             )
@@ -691,6 +784,10 @@ async def _main(args: argparse.Namespace) -> None:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+
+        # 대시보드 종료
+        if dashboard_ctrl is not None and dashboard_ctrl.is_running:
+            await dashboard_ctrl.stop()
 
         # 헬스 모니터 종료
         if health_monitor is not None:

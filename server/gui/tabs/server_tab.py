@@ -100,6 +100,24 @@ class ServerTab(tk.Frame):
         )
         self._restart_btn.pack(side=tk.RIGHT, padx=(4, 0))
 
+        self._dashboard_btn = Button(
+            ctrl,
+            text="Dashboard 시작",
+            command=self._toggle_dashboard,
+            bg="#2d8659",
+            fg=FG_WHITE,
+            activebackground="#34a068",
+            activeforeground=FG_WHITE,
+            relief=tk.FLAT,
+            font=FONT_NORMAL,
+            padx=16,
+            pady=3,
+            cursor="hand2",
+            state=tk.DISABLED,
+        )
+        self._dashboard_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        self._dashboard_running = False
+
         # ── 상태 정보 ──
         info = tk.Frame(self, bg=BG_FRAME, padx=12, pady=6)
         info.pack(fill=tk.X, padx=8, pady=(4, 4))
@@ -233,6 +251,7 @@ class ServerTab(tk.Frame):
             self._start_btn.configure(state=tk.DISABLED)
             self._stop_btn.configure(state=tk.NORMAL)
             self._restart_btn.configure(state=tk.NORMAL)
+            self._dashboard_btn.configure(state=tk.NORMAL)
 
     def _stop_server(self) -> None:
         ok = self._app.stop_server()
@@ -244,6 +263,17 @@ class ServerTab(tk.Frame):
         self._stop_server()
         self.after(2000, self._start_server)
 
+    def _toggle_dashboard(self) -> None:
+        """대시보드 시작/종료 토글."""
+        if self._dashboard_running:
+            self._app.send_server_command("dashboard stop")
+            self._dashboard_running = False
+            self._dashboard_btn.configure(text="Dashboard 시작", bg="#2d8659")
+        else:
+            self._app.send_server_command("dashboard start")
+            self._dashboard_running = True
+            self._dashboard_btn.configure(text="Dashboard 종료", bg="#c0392b")
+
     def on_server_stopped(self) -> None:
         """서버 프로세스가 종료되었을 때 UI 갱신."""
         self._status_var.set("중지됨")
@@ -252,6 +282,10 @@ class ServerTab(tk.Frame):
         self._start_btn.configure(state=tk.NORMAL)
         self._stop_btn.configure(state=tk.DISABLED)
         self._restart_btn.configure(state=tk.DISABLED)
+        self._dashboard_btn.configure(
+            state=tk.DISABLED, text="Dashboard 시작", bg="#2d8659"
+        )
+        self._dashboard_running = False
 
     # ── 로그 폴링 ──
 

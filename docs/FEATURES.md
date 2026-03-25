@@ -177,16 +177,16 @@ Python 3.10 이상의 환경에서 PyInstaller를 사용하여 빌드합니다.
 python deploy.py --skip-send
 
 # 서버 경유 자동 배포 — 대화형 에이전트 선택
-python deploy.py --server http://서버IP:8080
+python deploy.py --server http://서버IP:9090
 
 # 서버 경유 — 특정 에이전트 지정
-python deploy.py --server http://서버IP:8080 --agent-id PC-DAERIGO
+python deploy.py --server http://서버IP:9090 --agent-id PC-DAERIGO
 
 # 서버 경유 — 전체 에이전트 동시 배포
-python deploy.py --server http://서버IP:8080 --agent-id all
+python deploy.py --server http://서버IP:9090 --agent-id all
 
 # 빌드 생략 + 서버 배포 (이미 빌드된 경우)
-python deploy.py --skip-build --server http://서버IP:8080
+python deploy.py --skip-build --server http://서버IP:9090
 
 # 빌드 후 특정 경로로 직접 업데이트 적용 (서비스 중지, 복사, 시작 포함)
 python deploy.py --target-dir D:\Agent

@@ -2,8 +2,8 @@
 """빌드 → 배포 자동화 스크립트.
 
 사용법:
-    python deploy.py --server http://서버:8080            # 빌드 + 서버 경유 자동 배포 (권장)
-    python deploy.py --server http://서버:8080 --agent-id PC-01  # 특정 에이전트 지정
+    python deploy.py --server http://서버:9090            # 빌드 + 서버 경유 자동 배포 (권장)
+    python deploy.py --server http://서버:9090 --agent-id PC-01  # 특정 에이전트 지정
     python deploy.py --target-dir PATH                  # 빌드 + 직접 업데이트 (로컬)
     python deploy.py --target-dir PATH --bot-token ...  # 빌드 + 직접 업데이트 + Telegram 알림
     python deploy.py --skip-build --target-dir PATH     # 빌드 생략, 직접 업데이트만
@@ -349,7 +349,7 @@ def server_deploy(
     """서버 HTTP API로 zip 업로드 → 서버가 TCP로 에이전트에 자동 배포.
 
     Args:
-        server_url: 서버 대시보드 URL (예: http://192.168.1.100:8080)
+        server_url: 서버 대시보드 URL (예: http://192.168.1.100:9090)
         zip_path: 업로드할 zip 파일 경로
         auth_token: TCP 인증 토큰 (서버 설정과 동일해야 함)
         agent_id: 대상 에이전트 ID. 'all'=전체 배포, 비어있으면 대화형 선택
@@ -542,7 +542,7 @@ def main() -> None:
     parser.add_argument(
         "--server",
         default="",
-        help="서버 URL → 서버 경유 자동 배포 (예: http://192.168.1.100:8080)",
+        help="서버 URL → 서버 경유 자동 배포 (예: http://192.168.1.100:9090)",
     )
     parser.add_argument(
         "--agent-id",

@@ -282,7 +282,7 @@ telegram:
 
 dashboard:
   host: "0.0.0.0"
-  port: 8080
+  port: 9090
   secret_key: "CHANGE_ME"
 
 storage:

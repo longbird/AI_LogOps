@@ -55,7 +55,7 @@ class ServerGUI:
         # 설정
         self._config = self._load_config()
         self._dashboard_port: int = int(
-            self._config.get("dashboard", {}).get("port", 8080)
+            self._config.get("dashboard", {}).get("port", 9090)
         )
         self._dashboard_url = f"http://localhost:{self._dashboard_port}"
         self._tcp_port: int = int(self._config.get("tcp", {}).get("port", 9500))
@@ -225,6 +225,7 @@ class ServerGUI:
             self._server_proc = subprocess.Popen(
                 [sys.executable, "-u", "run_server.py"],
                 cwd=str(ROOT_DIR),
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -276,6 +277,19 @@ class ServerGUI:
 
     def is_server_running(self) -> bool:
         return self._server_proc is not None and self._server_proc.poll() is None
+
+    def send_server_command(self, command: str) -> bool:
+        """서버 프로세스의 stdin으로 명령 전송. 성공 시 True."""
+        proc = self._server_proc
+        if proc is None or proc.poll() is not None or proc.stdin is None:
+            return False
+        try:
+            proc.stdin.write(command + "\n")
+            proc.stdin.flush()
+            return True
+        except Exception as e:
+            self._server_log_queue.put(f"[ERROR] 명령 전송 실패: {e}")
+            return False
 
     def get_connected_agent_ids(self) -> list[str]:
         """에이전트 탭에서 현재 접속된 에이전트 ID 목록 반환."""
