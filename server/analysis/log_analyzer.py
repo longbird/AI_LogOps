@@ -70,6 +70,13 @@ RE_FILE_CLOSE = re.compile(
     r"(?:\s+RTP:(\d+),(\d+))?"
 )
 
+# FILE CLOSE corrupted by RTP-INFO-GRACE — empty CID, no filename, RTP:0,0
+# Format: [FILE] [C:93] CLOSE ->  Size:1973166 Time:61 RTP:0,0
+RE_FILE_CLOSE_GRACE = re.compile(
+    r"\[FILE\]\s+\[C:(\d+)\]\s+CLOSE\s+->\s+Size:(\d+)\s+Time:(\d+)"
+    r"(?:\s+RTP:(\d+),(\d+))?"
+)
+
 # DURATION-MISMATCH detail capture
 RE_DURATION_MISMATCH_DETAIL = re.compile(
     r"\[DURATION-MISMATCH\]"
@@ -162,6 +169,15 @@ class NormFailureDetail:
 
 
 @dataclass
+class GraceClose:
+    """RTP-INFO-GRACE로 인한 훼손된 FILE CLOSE (CID/파일명 누락)."""
+    timestamp: str
+    channel: str
+    size: int
+    duration: int    # seconds
+
+
+@dataclass
 class UnrecordedCall:
     """SMDR에 있지만 녹취되지 않은 통화."""
     timestamp: str
@@ -170,7 +186,7 @@ class UnrecordedCall:
     called: str
     duration: int
     seq: int         # SMDR 순번
-    reason: str      # no_file_close | db_fail
+    reason: str      # no_file_close | db_fail | grace_close
 
 
 @dataclass
@@ -278,6 +294,7 @@ class LogAnalyzer:
         # --- SMDR vs Recording matching ---
         self._smdr_calls: list[SmdrCall] = []
         self._file_closes: list[RecordingClose] = []
+        self._grace_closes: list[GraceClose] = []
         self._duration_mismatches_detail: list[DurationMismatch] = []
         self._smdr_seq: int = 0
 
@@ -501,6 +518,19 @@ class LogAnalyzer:
                     duration=int(m_fc.group(5)),
                     rtp_server=int(m_fc.group(6)) if m_fc.group(6) else 0,
                     rtp_client=int(m_fc.group(7)) if m_fc.group(7) else 0,
+                ))
+            return
+
+        # --- FILE CLOSE corrupted by RTP-INFO-GRACE ---
+        m_gc = RE_FILE_CLOSE_GRACE.search(line)
+        if m_gc:
+            size = int(m_gc.group(2))
+            if size > 0:
+                self._grace_closes.append(GraceClose(
+                    timestamp=self._current_ts or "",
+                    channel=m_gc.group(1),
+                    size=size,
+                    duration=int(m_gc.group(3)),
                 ))
             return
 
@@ -945,6 +975,40 @@ class LogAnalyzer:
             best_fi, _ = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
             used_indices.add(best_fi)
             matched_smdr.add(si)
+
+        # Pass 4: grace-close recovery — match against corrupted CLOSE
+        # lines (RTP-INFO-GRACE: empty CID, RTP:0,0) by timestamp + duration.
+        # The recording file EXISTS on disk but the log entry lost CID/filename.
+        if self._grace_closes:
+            gc_by_second: dict[int, list[tuple[int, int]]] = defaultdict(list)
+            for gi, gc in enumerate(self._grace_closes):
+                gc_sec = _ts_to_seconds(gc.timestamp)
+                if gc_sec is not None:
+                    gc_by_second[gc_sec].append((gi, gc.duration))
+
+            used_gc: set[int] = set()
+            _GC_TIME_WINDOW = 5  # seconds — grace CLOSE is within ~1s of SMDR
+            _GC_DURATION_DIFF = 15  # seconds — SMDR vs grace duration tolerance
+
+            for si, smdr in enumerate(normal_smdr):
+                if si in matched_smdr:
+                    continue
+                sec = smdr_data[si][0]
+                if sec < 0:
+                    continue
+                best_gi = -1
+                best_diff = _GC_DURATION_DIFF + 1
+                for offset in range(-_GC_TIME_WINDOW, _GC_TIME_WINDOW + 1):
+                    for gi, gc_dur in gc_by_second.get(sec + offset, ()):
+                        if gi in used_gc:
+                            continue
+                        dur_diff = abs(smdr.duration - gc_dur)
+                        if dur_diff < best_diff:
+                            best_diff = dur_diff
+                            best_gi = gi
+                if best_gi >= 0:
+                    used_gc.add(best_gi)
+                    matched_smdr.add(si)
 
         # Collect unrecorded
         for si, smdr in enumerate(normal_smdr):
