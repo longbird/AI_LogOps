@@ -821,7 +821,17 @@ class LogAnalyzer:
 
         def _find_candidates(
             smdr: SmdrCall,
+            *,
+            ext_only: bool = False,
         ) -> list[tuple[int, RecordingClose]]:
+            """Find FILE CLOSE candidates for an SMDR call.
+
+            Args:
+                smdr: The SMDR call to match.
+                ext_only: If True, match ONLY by extension (for Pass 3
+                    last-resort matching of orphaned SMDRs). If False,
+                    match by phone number only — no ext fallback.
+            """
             smdr_dt = _ts_to_datetime(smdr.timestamp)
             if smdr_dt is None:
                 return []
@@ -844,9 +854,16 @@ class LogAnalyzer:
                 fn_caller, fn_called, fn_ext = _parse_filename_fields(
                     fc.filename,
                 )
+
+                if ext_only:
+                    # Pass 3: ext-only matching for orphaned SMDRs
+                    if smdr.ext and fn_ext and smdr.ext == fn_ext:
+                        hits.append((idx, fc))
+                    continue
+
                 all_fc_numbers = {fc_caller, fc_called, fn_caller, fn_called} - {""}
 
-                # --- Match logic ---
+                # --- Match logic (phone number only) ---
                 # Match SMDR caller or called against any FC number
                 caller_hit = any(
                     _num_match(norm_caller, n) for n in all_fc_numbers
@@ -862,17 +879,13 @@ class LogAnalyzer:
                     # Called-only match when SMDR has no caller
                     cid_match = True
 
-                # Last resort: exact ext match from filename
-                if not cid_match and smdr.ext and fn_ext and smdr.ext == fn_ext:
-                    cid_match = True
-
                 if cid_match:
                     hits.append((idx, fc))
             return hits
 
         matched_smdr: set[int] = set()  # indices into normal_smdr
 
-        # Pass 1: confident matches only
+        # Pass 1: number-based confident matches (duration diff ≤ 5s)
         for si, smdr in enumerate(normal_smdr):
             candidates = _find_candidates(smdr)
             if not candidates:
@@ -885,11 +898,27 @@ class LogAnalyzer:
                 used_indices.add(best_idx)
                 matched_smdr.add(si)
 
-        # Pass 2: remaining SMDRs — best duration match
+        # Pass 2: number-based remaining — best duration match
         for si, smdr in enumerate(normal_smdr):
             if si in matched_smdr:
                 continue
             candidates = _find_candidates(smdr)
+            if not candidates:
+                continue
+            best_idx, _ = min(
+                candidates,
+                key=lambda t: abs(smdr.duration - t[1].duration),
+            )
+            used_indices.add(best_idx)
+            matched_smdr.add(si)
+
+        # Pass 3: ext-based last resort — only for orphaned SMDRs
+        # that could not be matched by phone number. This prevents
+        # ext matching from stealing FCs that belong to other SMDRs.
+        for si, smdr in enumerate(normal_smdr):
+            if si in matched_smdr:
+                continue
+            candidates = _find_candidates(smdr, ext_only=True)
             if not candidates:
                 continue
             best_idx, _ = min(
