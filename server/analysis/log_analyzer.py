@@ -738,10 +738,11 @@ class LogAnalyzer:
     def _find_unrecorded_calls(self) -> list[UnrecordedCall]:
         """Find SMDR calls without matching FILE CLOSE.
 
-        Matching strategy:
+        Matching strategy (3-pass, index-based):
         - DID 패스스루 통화는 FC 매칭에서 제외 (별도 녹취 없음)
-        - For each normal SMDR call, look for a FILE CLOSE within ±3 minutes
-          where the cid contains the SMDR caller or called number.
+        - Pass 1: 번호 매칭 + duration ≤ 5s (confident)
+        - Pass 2: 번호 매칭 + any duration (remaining)
+        - Pass 3: ext 매칭 (번호 매칭 실패 고아 SMDR만)
         - DTMF 특수문자(#, *) 정규화 후 비교.
         - FILE CLOSE cid format: "caller->called"
         - Matched FILE CLOSEs are consumed (1:1 matching).
@@ -749,13 +750,11 @@ class LogAnalyzer:
         if not self._smdr_calls:
             return []
 
+        from collections import defaultdict
+
         # Partition DID pass-through calls
         normal_smdr, did_smdr, _ = self._detect_did_passthrough()
 
-        # Build list of available FILE CLOSE events (copy to consume)
-        available_closes: list[tuple[int, RecordingClose]] = [
-            (i, fc) for i, fc in enumerate(self._file_closes)
-        ]
         used_indices: set[int] = set()
 
         # DB_FAIL timestamps for cross-reference
@@ -778,18 +777,23 @@ class LogAnalyzer:
                 reason="did_passthrough",
             ))
 
-        # Normal SMDR → match against FILE CLOSEs (2-pass)
-        # Pass 1: confident matches (duration diff ≤ 5s) — prevents
-        #         short/no-recording SMDRs from stealing FCs
-        # Pass 2: remaining SMDRs matched by best duration proximity
+        # Normal SMDR → match against FILE CLOSEs (3-pass)
         _CONFIDENT_DURATION_DIFF = 5
+        _SUFFIX_LEN = 8  # phone number suffix length for index key
+
+        # ----------------------------------------------------------
+        # Pre-parse all FC entries and build indexes
+        # ----------------------------------------------------------
+        def _ts_to_seconds(ts: str) -> int | None:
+            """Convert 'YYYY-MM-DD HH:MM:SS' to seconds since midnight."""
+            try:
+                t = ts.split(" ")[1]
+                h, m, s = t.split(":")
+                return int(h) * 3600 + int(m) * 60 + int(s)
+            except (IndexError, ValueError):
+                return None
 
         def _parse_filename_fields(filename: str) -> tuple[str, str, str]:
-            """Extract (caller, called, ext) from recording filename.
-
-            Format: HHMMSS.dir.caller.called.ext.did.dnis.seq.wav
-            Fields use '_' for empty values.
-            """
             parts = filename.rsplit(".wav", 1)[0].split(".")
             if len(parts) >= 5:
                 fn_caller = parts[2] if parts[2] != "_" else ""
@@ -799,133 +803,147 @@ class LogAnalyzer:
             return "", "", ""
 
         def _num_match(a: str, b: str) -> bool:
-            """Check if two phone numbers match, handling ** masking.
-
-            SMDR may have '02214945**' while FILE CLOSE has '02214945'.
-            Strip trailing ** then check suffix match (shorter must be
-            a suffix of longer) to avoid false positives from outbound
-            prefixes like '192' + '01073382135'.
-            """
             if not a or not b:
                 return False
-            a_clean = a.rstrip("*")
-            b_clean = b.rstrip("*")
-            if not a_clean or not b_clean:
-                return False
-            if a_clean == b_clean:
+            if a == b:
                 return True
-            # Shorter must be a suffix of longer (outbound prefixes
-            # are prepended, so the real number is always the tail)
-            short, long = (a_clean, b_clean) if len(a_clean) <= len(b_clean) else (b_clean, a_clean)
+            short, long = (a, b) if len(a) <= len(b) else (b, a)
             return long.endswith(short)
 
-        def _find_candidates(
-            smdr: SmdrCall,
-            *,
-            ext_only: bool = False,
-        ) -> list[tuple[int, RecordingClose]]:
-            """Find FILE CLOSE candidates for an SMDR call.
+        # Pre-parsed FC data: (seconds, duration, [numbers], fn_ext)
+        fc_parsed: list[tuple[int, int, list[str], str]] = []
+        # Indexes: suffix → list of fc indices
+        fc_by_suffix: dict[str, list[int]] = defaultdict(list)
+        fc_by_ext: dict[str, list[int]] = defaultdict(list)
 
-            Args:
-                smdr: The SMDR call to match.
-                ext_only: If True, match ONLY by extension (for Pass 3
-                    last-resort matching of orphaned SMDRs). If False,
-                    match by phone number only — no ext fallback.
-            """
-            smdr_dt = _ts_to_datetime(smdr.timestamp)
-            if smdr_dt is None:
-                return []
-            norm_caller = self._normalize_dtmf(smdr.caller) if smdr.caller else ""
-            norm_called = self._normalize_dtmf(smdr.called) if smdr.called else ""
-            hits: list[tuple[int, RecordingClose]] = []
-            for idx, fc in available_closes:
-                if idx in used_indices:
+        for i, fc in enumerate(self._file_closes):
+            sec = _ts_to_seconds(fc.timestamp)
+            if sec is None:
+                fc_parsed.append((-1, fc.duration, [], ""))
+                continue
+            cid_parts = fc.cid.split("->")
+            fc_caller = cid_parts[0] if len(cid_parts) >= 1 else ""
+            fc_called = cid_parts[1] if len(cid_parts) >= 2 else ""
+            fn_caller, fn_called, fn_ext = _parse_filename_fields(fc.filename)
+
+            numbers = list({fc_caller, fc_called, fn_caller, fn_called} - {""})
+            fc_parsed.append((sec, fc.duration, numbers, fn_ext))
+
+            # Index by number suffixes (for fast lookup)
+            for n in numbers:
+                clean = n.rstrip("*")
+                if clean:
+                    key = clean[-_SUFFIX_LEN:] if len(clean) >= _SUFFIX_LEN else clean
+                    fc_by_suffix[key].append(i)
+            # Index by ext
+            if fn_ext:
+                fc_by_ext[fn_ext].append(i)
+
+        # ----------------------------------------------------------
+        # Candidate lookup (index-based, O(1) per number)
+        # ----------------------------------------------------------
+        def _get_candidates_by_number(
+            smdr_sec: int,
+            norm_caller: str,
+            norm_called: str,
+        ) -> list[tuple[int, int]]:
+            """Return [(fc_index, fc_duration)] matching by phone number."""
+            # Collect candidate FC indices from suffix index
+            candidate_set: set[int] = set()
+            if norm_caller:
+                key = norm_caller[-_SUFFIX_LEN:] if len(norm_caller) >= _SUFFIX_LEN else norm_caller
+                candidate_set.update(fc_by_suffix.get(key, ()))
+            if not norm_caller and norm_called:
+                key = norm_called[-_SUFFIX_LEN:] if len(norm_called) >= _SUFFIX_LEN else norm_called
+                candidate_set.update(fc_by_suffix.get(key, ()))
+
+            hits: list[tuple[int, int]] = []
+            for fi in candidate_set:
+                if fi in used_indices:
                     continue
-                fc_dt = _ts_to_datetime(fc.timestamp)
-                if fc_dt is None:
+                fc_sec, fc_dur, fc_nums, _ = fc_parsed[fi]
+                if fc_sec < 0:
                     continue
-                time_diff = abs((smdr_dt - fc_dt).total_seconds())
-                if time_diff > self.MATCH_WINDOW_SECONDS:
+                if abs(smdr_sec - fc_sec) > self.MATCH_WINDOW_SECONDS:
                     continue
-                # Collect all phone numbers from FC (direction-agnostic)
-                cid_parts = fc.cid.split("->")
-                fc_caller = cid_parts[0] if len(cid_parts) >= 1 else ""
-                fc_called = cid_parts[1] if len(cid_parts) >= 2 else ""
-                fn_caller, fn_called, fn_ext = _parse_filename_fields(
-                    fc.filename,
-                )
-
-                if ext_only:
-                    # Pass 3: ext-only matching for orphaned SMDRs
-                    if smdr.ext and fn_ext and smdr.ext == fn_ext:
-                        hits.append((idx, fc))
-                    continue
-
-                all_fc_numbers = {fc_caller, fc_called, fn_caller, fn_called} - {""}
-
-                # --- Match logic (phone number only) ---
-                # Match SMDR caller or called against any FC number
-                caller_hit = any(
-                    _num_match(norm_caller, n) for n in all_fc_numbers
-                ) if norm_caller else False
-                called_hit = any(
-                    _num_match(norm_called, n) for n in all_fc_numbers
-                ) if norm_called else False
-
-                cid_match = False
-                if caller_hit:
-                    cid_match = True
-                elif called_hit and not norm_caller:
-                    # Called-only match when SMDR has no caller
-                    cid_match = True
-
-                if cid_match:
-                    hits.append((idx, fc))
+                # Verify full number match (suffix index may have collisions)
+                if norm_caller:
+                    if any(_num_match(norm_caller, n) for n in fc_nums):
+                        hits.append((fi, fc_dur))
+                elif norm_called:
+                    if any(_num_match(norm_called, n) for n in fc_nums):
+                        hits.append((fi, fc_dur))
             return hits
 
-        matched_smdr: set[int] = set()  # indices into normal_smdr
+        def _get_candidates_by_ext(
+            smdr_sec: int,
+            ext: str,
+        ) -> list[tuple[int, int]]:
+            """Return [(fc_index, fc_duration)] matching by extension only."""
+            hits: list[tuple[int, int]] = []
+            for fi in fc_by_ext.get(ext, ()):
+                if fi in used_indices:
+                    continue
+                fc_sec, fc_dur, _, _ = fc_parsed[fi]
+                if fc_sec < 0:
+                    continue
+                if abs(smdr_sec - fc_sec) > self.MATCH_WINDOW_SECONDS:
+                    continue
+                hits.append((fi, fc_dur))
+            return hits
+
+        # ----------------------------------------------------------
+        # 3-pass matching
+        # ----------------------------------------------------------
+        matched_smdr: set[int] = set()
+
+        # Pre-compute SMDR data
+        smdr_data: list[tuple[int, str, str]] = []
+        for smdr in normal_smdr:
+            sec = _ts_to_seconds(smdr.timestamp)
+            nc = self._normalize_dtmf(smdr.caller) if smdr.caller else ""
+            nd = self._normalize_dtmf(smdr.called) if smdr.called else ""
+            smdr_data.append((sec if sec is not None else -1, nc, nd))
 
         # Pass 1: number-based confident matches (duration diff ≤ 5s)
         for si, smdr in enumerate(normal_smdr):
-            candidates = _find_candidates(smdr)
+            sec, nc, nd = smdr_data[si]
+            if sec < 0:
+                continue
+            candidates = _get_candidates_by_number(sec, nc, nd)
             if not candidates:
                 continue
-            best_idx, best_fc = min(
-                candidates,
-                key=lambda t: abs(smdr.duration - t[1].duration),
-            )
-            if abs(smdr.duration - best_fc.duration) <= _CONFIDENT_DURATION_DIFF:
-                used_indices.add(best_idx)
+            best_fi, best_dur = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
+            if abs(smdr.duration - best_dur) <= _CONFIDENT_DURATION_DIFF:
+                used_indices.add(best_fi)
                 matched_smdr.add(si)
 
         # Pass 2: number-based remaining — best duration match
         for si, smdr in enumerate(normal_smdr):
             if si in matched_smdr:
                 continue
-            candidates = _find_candidates(smdr)
+            sec, nc, nd = smdr_data[si]
+            if sec < 0:
+                continue
+            candidates = _get_candidates_by_number(sec, nc, nd)
             if not candidates:
                 continue
-            best_idx, _ = min(
-                candidates,
-                key=lambda t: abs(smdr.duration - t[1].duration),
-            )
-            used_indices.add(best_idx)
+            best_fi, _ = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
+            used_indices.add(best_fi)
             matched_smdr.add(si)
 
         # Pass 3: ext-based last resort — only for orphaned SMDRs
-        # that could not be matched by phone number. This prevents
-        # ext matching from stealing FCs that belong to other SMDRs.
         for si, smdr in enumerate(normal_smdr):
             if si in matched_smdr:
                 continue
-            candidates = _find_candidates(smdr, ext_only=True)
+            sec = smdr_data[si][0]
+            if sec < 0 or not smdr.ext:
+                continue
+            candidates = _get_candidates_by_ext(sec, smdr.ext)
             if not candidates:
                 continue
-            best_idx, _ = min(
-                candidates,
-                key=lambda t: abs(smdr.duration - t[1].duration),
-            )
-            used_indices.add(best_idx)
+            best_fi, _ = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
+            used_indices.add(best_fi)
             matched_smdr.add(si)
 
         # Collect unrecorded
