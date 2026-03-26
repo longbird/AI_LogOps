@@ -840,8 +840,10 @@ class LogAnalyzer:
             short, long = (a, b) if len(a) <= len(b) else (b, a)
             return long.endswith(short)
 
-        # Pre-parsed FC data: (seconds, duration, [numbers], fn_ext)
-        fc_parsed: list[tuple[int, int, list[str], str]] = []
+        # Pre-parsed FC data:
+        #   (seconds, duration, caller_nums, called_nums, all_nums, fn_ext)
+        # caller_nums/called_nums for direction-aware matching.
+        fc_parsed: list[tuple[int, int, list[str], list[str], list[str], str]] = []
         # Indexes: suffix → list of fc indices
         fc_by_suffix: dict[str, list[int]] = defaultdict(list)
         fc_by_ext: dict[str, list[int]] = defaultdict(list)
@@ -849,18 +851,20 @@ class LogAnalyzer:
         for i, fc in enumerate(self._file_closes):
             sec = _ts_to_seconds(fc.timestamp)
             if sec is None:
-                fc_parsed.append((-1, fc.duration, [], ""))
+                fc_parsed.append((-1, fc.duration, [], [], [], ""))
                 continue
             cid_parts = fc.cid.split("->")
             fc_caller = cid_parts[0] if len(cid_parts) >= 1 else ""
             fc_called = cid_parts[1] if len(cid_parts) >= 2 else ""
             fn_caller, fn_called, fn_ext = _parse_filename_fields(fc.filename)
 
-            numbers = list({fc_caller, fc_called, fn_caller, fn_called} - {""})
-            fc_parsed.append((sec, fc.duration, numbers, fn_ext))
+            caller_nums = list({fc_caller, fn_caller} - {""})
+            called_nums = list({fc_called, fn_called} - {""})
+            all_nums = list({fc_caller, fc_called, fn_caller, fn_called} - {""})
+            fc_parsed.append((sec, fc.duration, caller_nums, called_nums, all_nums, fn_ext))
 
             # Index by number suffixes (for fast lookup)
-            for n in numbers:
+            for n in all_nums:
                 clean = n.rstrip("*")
                 if clean:
                     key = clean[-_SUFFIX_LEN:] if len(clean) >= _SUFFIX_LEN else clean
@@ -872,12 +876,21 @@ class LogAnalyzer:
         # ----------------------------------------------------------
         # Candidate lookup (index-based, O(1) per number)
         # ----------------------------------------------------------
+        # Direction penalty: when sorting candidates, same-direction
+        # matches rank before cross-direction matches at equal duration diff.
+        _DIR_PENALTY = 1000  # added to duration diff for cross-direction
+
         def _get_candidates_by_number(
             smdr_sec: int,
             norm_caller: str,
             norm_called: str,
         ) -> list[tuple[int, int]]:
-            """Return [(fc_index, fc_duration)] matching by phone number."""
+            """Return [(fc_index, fc_duration)] matching by phone number.
+
+            Direction-aware: prefers FC where the matching number is on the
+            same side (caller→caller, called→called). Cross-direction matches
+            still work but get a duration penalty so same-direction wins.
+            """
             # Collect candidate FC indices from suffix index
             candidate_set: set[int] = set()
             if norm_caller:
@@ -891,18 +904,35 @@ class LogAnalyzer:
             for fi in candidate_set:
                 if fi in used_indices:
                     continue
-                fc_sec, fc_dur, fc_nums, _ = fc_parsed[fi]
+                fc_sec, fc_dur, fc_ca_nums, fc_cd_nums, fc_all, _ = fc_parsed[fi]
                 if fc_sec < 0:
                     continue
                 if abs(smdr_sec - fc_sec) > self.MATCH_WINDOW_SECONDS:
                     continue
-                # Verify full number match (suffix index may have collisions)
+                # Verify full number match + direction check
                 if norm_caller:
-                    if any(_num_match(norm_caller, n) for n in fc_nums):
+                    # Inbound SMDR: prefer FC with caller on caller side
+                    same_dir = any(_num_match(norm_caller, n) for n in fc_ca_nums)
+                    cross_dir = (
+                        not same_dir
+                        and any(_num_match(norm_caller, n) for n in fc_cd_nums)
+                    )
+                    if same_dir:
                         hits.append((fi, fc_dur))
+                    elif cross_dir:
+                        # Penalize duration so same-direction is preferred
+                        hits.append((fi, fc_dur + _DIR_PENALTY))
                 elif norm_called:
-                    if any(_num_match(norm_called, n) for n in fc_nums):
+                    # Outbound SMDR: prefer FC with called on called side
+                    same_dir = any(_num_match(norm_called, n) for n in fc_cd_nums)
+                    cross_dir = (
+                        not same_dir
+                        and any(_num_match(norm_called, n) for n in fc_ca_nums)
+                    )
+                    if same_dir:
                         hits.append((fi, fc_dur))
+                    elif cross_dir:
+                        hits.append((fi, fc_dur + _DIR_PENALTY))
             return hits
 
         def _get_candidates_by_ext(
@@ -914,7 +944,7 @@ class LogAnalyzer:
             for fi in fc_by_ext.get(ext, ()):
                 if fi in used_indices:
                     continue
-                fc_sec, fc_dur, _, _ = fc_parsed[fi]
+                fc_sec, fc_dur = fc_parsed[fi][0], fc_parsed[fi][1]
                 if fc_sec < 0:
                     continue
                 if abs(smdr_sec - fc_sec) > self.MATCH_WINDOW_SECONDS:
