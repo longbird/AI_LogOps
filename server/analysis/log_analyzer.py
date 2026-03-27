@@ -70,6 +70,19 @@ RE_FILE_CLOSE = re.compile(
     r"(?:\s+RTP:(\d+),(\d+))?"
 )
 
+# FILE CLOSE path-only line (1st of 2-line pair) — has full path but no Size/Time
+# Format: [FILE] [C:10] CLOSE 01088943936->02214945 D:\path\filename.wav
+RE_FILE_CLOSE_PATH = re.compile(
+    r"\[FILE\]\s+\[C:(\d+)\]\s+CLOSE\s+(\S+)\s+\S+[/\\](\S+\.wav)\s*$"
+)
+
+# FILE CLOSE with CID-polluted metadata (no .wav filename, but has Size/Time)
+# Format: [FILE] [C:10] CLOSE 01022264436->  Size:1213486 Time:37 RTP:1892,1895
+RE_FILE_CLOSE_POLLUTED = re.compile(
+    r"\[FILE\]\s+\[C:(\d+)\]\s+CLOSE\s+(\S+?->)\S*\s+Size:(\d+)\s+Time:(\d+)"
+    r"(?:\s+RTP:(\d+),(\d+))?"
+)
+
 # FILE CLOSE corrupted by RTP-INFO-GRACE — empty CID, no filename, RTP:0,0
 # Format: [FILE] [C:93] CLOSE ->  Size:1973166 Time:61 RTP:0,0
 RE_FILE_CLOSE_GRACE = re.compile(
@@ -175,6 +188,15 @@ class GraceClose:
     channel: str
     size: int
     duration: int    # seconds
+
+
+@dataclass
+class PendingClose:
+    """채널 경합으로 Size 줄이 분리된 FILE CLOSE 1줄째 (경로만)."""
+    timestamp: str
+    channel: str
+    cid: str
+    filename: str
 
 
 @dataclass
@@ -295,6 +317,7 @@ class LogAnalyzer:
         self._smdr_calls: list[SmdrCall] = []
         self._file_closes: list[RecordingClose] = []
         self._grace_closes: list[GraceClose] = []
+        self._pending_closes: dict[str, PendingClose] = {}  # channel -> PendingClose
         self._duration_mismatches_detail: list[DurationMismatch] = []
         self._smdr_seq: int = 0
 
@@ -509,9 +532,12 @@ class LogAnalyzer:
         if m_fc:
             size = int(m_fc.group(4))
             if size > 0:
+                channel = m_fc.group(1)
+                # Consume pending close for this channel (2-line merge)
+                self._pending_closes.pop(channel, None)
                 self._file_closes.append(RecordingClose(
                     timestamp=self._current_ts or "",
-                    channel=m_fc.group(1),
+                    channel=channel,
                     cid=m_fc.group(2),
                     filename=m_fc.group(3),
                     size=size,
@@ -519,6 +545,51 @@ class LogAnalyzer:
                     rtp_server=int(m_fc.group(6)) if m_fc.group(6) else 0,
                     rtp_client=int(m_fc.group(7)) if m_fc.group(7) else 0,
                 ))
+            return
+
+        # --- FILE CLOSE CID-polluted (channel reuse race: no filename, has Size) ---
+        # Format: [FILE] [C:10] CLOSE 01022264436->  Size:1213486 Time:37 RTP:1892,1895
+        # Merge with pending close from same channel to recover the real filename/CID.
+        m_cp = RE_FILE_CLOSE_POLLUTED.search(line)
+        if m_cp:
+            channel = m_cp.group(1)
+            size = int(m_cp.group(3))
+            if size > 0:
+                pending = self._pending_closes.pop(channel, None)
+                if pending:
+                    # Merge: use CID/filename from pending (1st line), Size/Time from this (2nd line)
+                    self._file_closes.append(RecordingClose(
+                        timestamp=pending.timestamp,
+                        channel=channel,
+                        cid=pending.cid,
+                        filename=pending.filename,
+                        size=size,
+                        duration=int(m_cp.group(4)),
+                        rtp_server=int(m_cp.group(5)) if m_cp.group(5) else 0,
+                        rtp_client=int(m_cp.group(6)) if m_cp.group(6) else 0,
+                    ))
+                else:
+                    # No pending — treat as grace close (CID unreliable, no filename)
+                    self._grace_closes.append(GraceClose(
+                        timestamp=self._current_ts or "",
+                        channel=channel,
+                        size=size,
+                        duration=int(m_cp.group(4)),
+                    ))
+            return
+
+        # --- FILE CLOSE path-only (1st line of 2-line pair, no Size) ---
+        # Format: [FILE] [C:10] CLOSE CID D:\path\filename.wav
+        # Store as pending; will be merged when 2nd line (with Size) arrives.
+        m_fp = RE_FILE_CLOSE_PATH.search(line)
+        if m_fp:
+            channel = m_fp.group(1)
+            self._pending_closes[channel] = PendingClose(
+                timestamp=self._current_ts or "",
+                channel=channel,
+                cid=m_fp.group(2),
+                filename=m_fp.group(3),
+            )
             return
 
         # --- FILE CLOSE corrupted by RTP-INFO-GRACE ---
@@ -781,6 +852,19 @@ class LogAnalyzer:
             return []
 
         from collections import defaultdict
+
+        # Flush remaining pending closes — 2nd line never arrived (channel race)
+        # Convert to RecordingClose with size=0 so filename-based matching can work.
+        for pending in self._pending_closes.values():
+            self._file_closes.append(RecordingClose(
+                timestamp=pending.timestamp,
+                channel=pending.channel,
+                cid=pending.cid,
+                filename=pending.filename,
+                size=0,
+                duration=0,
+            ))
+        self._pending_closes.clear()
 
         # Partition DID pass-through calls
         normal_smdr, did_smdr, _ = self._detect_did_passthrough()
