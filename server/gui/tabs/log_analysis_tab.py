@@ -416,11 +416,23 @@ class LogAnalysisTab(tk.Frame):
             try:
                 from server.analysis.log_analyzer import LogAnalyzer
                 from server.analysis.report_generator import generate_report
+                from server.analysis.rtp_first_analyzer import (
+                    analyze_rtp_first,
+                    generate_rtp_first_report,
+                )
 
+                # 1) SMDR-FC 매칭 분석
                 analyzer = LogAnalyzer(agent_id, date_str)
                 result = analyzer.analyze_files(files)
                 report_md = generate_report(result)
-                self.after(0, _on_done, result, report_md)
+
+                # 2) RTP-First Safety Net 분석 (동일 파일)
+                rtp_stats = analyze_rtp_first(agent_id, date_str, files)
+                rtp_report = generate_rtp_first_report(rtp_stats)
+
+                # 통합 보고서
+                combined = report_md + "\n---\n\n" + rtp_report
+                self.after(0, _on_done, result, combined)
             except Exception as exc:
                 self.after(0, _on_error, str(exc))
 
