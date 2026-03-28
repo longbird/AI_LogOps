@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from logging import Logger
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from shared.protocol import (
@@ -21,25 +22,50 @@ class ExecHandler:
     """서버로부터 원격 커맨드 실행 요청을 처리합니다.
 
     보안: config.yaml의 remote_commands에 사전 등록된 커맨드만 실행 가능.
+    config 변경 시 자동 reload.
     """
 
     def __init__(
         self,
         tcp_client: TCPClient,
         remote_commands: list[dict[str, Any]],
+        config_path: Path | None = None,
     ) -> None:
         self._tcp_client = tcp_client
+        self._config_path = config_path
         self._commands: dict[str, dict[str, Any]] = {}
-        for cmd in remote_commands:
-            name = cmd.get("name", "")
-            if name:
-                self._commands[name] = cmd
+        self._load_commands(remote_commands)
         self._logger: Logger = setup_logging("exec_handler")
         if self._commands:
             self._logger.info(
                 "remote commands registered: %s",
                 list(self._commands.keys()),
             )
+
+    def _load_commands(self, remote_commands: list[dict[str, Any]]) -> None:
+        self._commands.clear()
+        for cmd in remote_commands:
+            name = cmd.get("name", "")
+            if name:
+                self._commands[name] = cmd
+
+    def _reload_from_config(self) -> None:
+        """config.yaml에서 remote_commands를 다시 로드합니다."""
+        if self._config_path is None or not self._config_path.exists():
+            return
+        try:
+            import yaml
+            with open(self._config_path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            cmds = data.get("remote_commands", [])
+            if cmds and isinstance(cmds, list):
+                self._load_commands(cmds)
+                self._logger.info(
+                    "remote commands reloaded: %s",
+                    list(self._commands.keys()),
+                )
+        except Exception as e:
+            self._logger.warning("config reload failed: %s", e)
 
     async def handle_cmd_exec(self, payload_bytes: bytes) -> None:
         """CMD_EXEC 패킷 처리."""
@@ -52,8 +78,11 @@ class ExecHandler:
         command_name = cmd.command_name
         self._logger.info("exec request: %s", command_name)
 
-        # 등록된 커맨드인지 확인
+        # 등록된 커맨드인지 확인 (없으면 config reload 후 재시도)
         cmd_config = self._commands.get(command_name)
+        if cmd_config is None:
+            self._reload_from_config()
+            cmd_config = self._commands.get(command_name)
         if cmd_config is None:
             self._logger.warning("unknown command: %s", command_name)
             await self._send_ack(

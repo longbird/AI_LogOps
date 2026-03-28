@@ -706,6 +706,7 @@ class AgentRuntime:
         exec_handler = ExecHandler(
             tcp_client=tcp_client,
             remote_commands=list(remote_commands) if remote_commands else [],
+            config_path=self._base_dir / "config.yaml",
         )
         tcp_client.on_cmd_exec = exec_handler.handle_cmd_exec
 
