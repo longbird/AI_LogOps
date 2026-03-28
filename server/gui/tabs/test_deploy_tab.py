@@ -152,6 +152,13 @@ class TestDeployTab(tk.Frame):
         )
         self._deploy_btn.pack(side=tk.LEFT, padx=(0, 4))
 
+        self._direct_btn = Button(
+            action_frame, text="파일만 전송", width=10,
+            bg="#8e44ad", fg=FG_WHITE,
+            command=self._do_direct_deploy,
+        )
+        self._direct_btn.pack(side=tk.LEFT, padx=4)
+
         Button(
             action_frame, text="중지", width=8,
             bg="#e74c3c", fg=FG_WHITE,
@@ -170,6 +177,12 @@ class TestDeployTab(tk.Frame):
             command=self._do_rollback,
         )
         self._rollback_btn.pack(side=tk.LEFT, padx=4)
+
+        Button(
+            action_frame, text="배포 확인", width=8,
+            bg=BG_BTN, fg=FG_TEXT,
+            command=self._do_verify,
+        ).pack(side=tk.LEFT, padx=4)
 
         self._status_label = tk.Label(
             action_frame, text="", bg=BG_DARK, fg=FG_DIM, font=FONT_SMALL,
@@ -406,9 +419,68 @@ class TestDeployTab(tk.Frame):
         }
 
         def _run() -> None:
-            self._log_safe("배포 시작...")
-            result = self._app.api_post("/api/test-deploy/execute", body)
-            self._log_text.after(0, self._on_deploy_done, result)
+            import tempfile
+            import time
+            import zipfile
+
+            # 1) ZIP 생성
+            self._log_safe("ZIP 생성 중...")
+            try:
+                tmp = tempfile.NamedTemporaryFile(
+                    delete=False, suffix=".zip", prefix="td_",
+                )
+                tmp.close()
+                with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for f in self._files:
+                        zf.write(f["local_path"], f["filename"])
+                zip_size = Path(tmp.name).stat().st_size / (1024 * 1024)
+                self._log_safe(f"ZIP 생성 완료 ({zip_size:.1f} MB)")
+            except Exception as e:
+                self._log_safe(f"ZIP 생성 실패: {e}")
+                self._log_text.after(0, self._on_deploy_done, {"error": str(e)})
+                return
+
+            # 2) api_deploy_upload으로 ZIP 전송 (스테이징)
+            self._log_safe("에이전트 전송 중...")
+            try:
+                upload_result = self._app.api_deploy_upload(
+                    tmp.name, agent_id, "process",
+                    deploy_path=target_name,
+                )
+            finally:
+                Path(tmp.name).unlink(missing_ok=True)
+
+            if upload_result is None or "error" in upload_result:
+                err = (upload_result or {}).get("error", "전송 실패")
+                self._log_safe(f"전송 실패: {err}")
+                self._log_text.after(0, self._on_deploy_done, upload_result)
+                return
+
+            self._log_safe("전송 완료, 스테이징 대기 중...")
+            # 전송 + 스테이징 완료 대기 (ZIP 크기에 비례)
+            wait_sec = max(10, int(zip_size * 3))
+            time.sleep(wait_sec)
+
+            # 3) RESTART → ProcessDeployer가 backup → stop → copy → start
+            self._log_safe("프로세스 재시작 중...")
+            restart_result = self._app.api_post(
+                "/api/test-deploy/restart-process",
+                {"agent_id": agent_id, "target_name": target_name},
+            )
+            if restart_result and restart_result.get("success"):
+                pid = restart_result.get("result", {}).get("pid", 0)
+                self._log_safe(f"재시작 완료 (pid={pid})")
+                self._log_text.after(0, self._on_deploy_done, {
+                    "success": True, "pid": pid,
+                    "files": [f["filename"] for f in self._files],
+                    "steps": [],
+                })
+            else:
+                err = (restart_result or {}).get("result", {}).get("error", "재시작 실패")
+                self._log_safe(f"재시작 실패: {err}")
+                self._log_text.after(0, self._on_deploy_done, {
+                    "success": False, "error": err, "steps": [],
+                })
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -449,6 +521,193 @@ class TestDeployTab(tk.Frame):
             err = result.get("error", "")
             self._status_label.configure(text=f"배포 실패: {err}", fg="#f44747")
             self._log(f"배포 실패: {err}")
+
+    # ── 직접 배포 (파일만 전송) ─────────────────────────────
+
+    def _do_direct_deploy(self) -> None:
+        """프로세스 중지/재시작 없이 파일만 대상 경로에 직접 전송."""
+        if self._deploying:
+            return
+        if not self._files:
+            self._status_label.configure(text="파일을 추가하세요", fg="#f44747")
+            return
+        if not self._app.is_server_running():
+            self._status_label.configure(text="서버 미실행", fg="#f44747")
+            return
+
+        agent_id = self._agent_combo.get().strip()
+        if agent_id == "(auto)":
+            agent_id = ""
+        target_name = self._process_combo.get().strip()
+        if target_name == "(기본)":
+            target_name = ""
+
+        process_info = getattr(self, "_process_info_map", {}).get(target_name, {})
+        proc_path = process_info.get("path", "")
+        target_dir = str(Path(proc_path).parent).replace("\\", "/") if proc_path else ""
+
+        if not target_dir:
+            self._status_label.configure(text="대상 경로 없음", fg="#f44747")
+            return
+
+        file_names = "\n".join(f"  - {f['filename']}" for f in self._files)
+        confirmed = messagebox.askyesno(
+            "직접 전송 확인",
+            f"프로세스 중지 없이 파일만 전송합니다.\n"
+            f"실행 중인 파일은 전송 실패할 수 있습니다.\n\n"
+            f"대상: {target_dir}\n\n"
+            f"파일:\n{file_names}",
+        )
+        if not confirmed:
+            return
+
+        self._deploying = True
+        self._deploy_btn.configure(state=tk.DISABLED)
+        self._direct_btn.configure(state=tk.DISABLED)
+        self._status_label.configure(text="전송 중...", fg="#cca700")
+
+        def _run() -> None:
+            ok_count = 0
+            fail_count = 0
+            for f in self._files:
+                filename = f["filename"]
+                remote_path = f"{target_dir}/{filename}"
+                self._log_safe(f"전송: {filename} → {remote_path}")
+                result = self._app.api_post(
+                    "/api/files/transfer",
+                    {
+                        "direction": "to_agent",
+                        "agent_id": agent_id,
+                        "local_path": f["local_path"],
+                        "remote_path": remote_path,
+                    },
+                )
+                if result and result.get("success"):
+                    size_mb = f["size"] / (1024 * 1024)
+                    self._log_safe(f"  [OK] {filename} ({size_mb:.1f} MB)")
+                    ok_count += 1
+                else:
+                    err = (result or {}).get("error", "알 수 없는 오류")
+                    self._log_safe(f"  [FAIL] {filename}: {err}")
+                    fail_count += 1
+
+            self._log_text.after(0, self._on_direct_done, ok_count, fail_count)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_direct_done(self, ok: int, fail: int) -> None:
+        self._deploying = False
+        self._deploy_btn.configure(state=tk.NORMAL)
+        self._direct_btn.configure(state=tk.NORMAL)
+        total = ok + fail
+        if fail == 0:
+            self._status_label.configure(text=f"전송 완료 ({ok}개)", fg="#51cf66")
+            self._log(f"직접 전송 완료: {ok}/{total}")
+        else:
+            self._status_label.configure(
+                text=f"전송: {ok} 성공, {fail} 실패", fg="#f39c12",
+            )
+            self._log(f"직접 전송: {ok} 성공, {fail} 실패 / {total}")
+
+    # ── 배포 확인 ─────────────────────────────────────────────
+
+    def _do_verify(self) -> None:
+        """에이전트의 대상 경로 파일 정보를 조회하여 로컬과 비교."""
+        if not self._app.is_server_running():
+            self._status_label.configure(text="서버 미실행", fg="#f44747")
+            return
+
+        agent_id = self._agent_combo.get().strip()
+        if agent_id == "(auto)":
+            ids = self._app.get_connected_agent_ids()
+            agent_id = ids[0] if ids else ""
+        if not agent_id:
+            self._status_label.configure(text="에이전트 없음", fg="#f44747")
+            return
+
+        target_name = self._process_combo.get().strip()
+        if target_name == "(기본)":
+            target_name = ""
+        process_info = getattr(self, "_process_info_map", {}).get(target_name, {})
+        proc_path = process_info.get("path", "")
+        target_dir = str(Path(proc_path).parent).replace("\\", "/") if proc_path else ""
+        if not target_dir:
+            self._status_label.configure(text="대상 경로 없음", fg="#f44747")
+            return
+
+        self._log("배포 확인 중...")
+
+        def _run() -> None:
+            result = self._app.api_get(
+                f"/api/files/agent/{agent_id}/list?path={target_dir}",
+            )
+            self._log_text.after(0, self._on_verify_done, result, target_dir)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_verify_done(self, result: dict | None, target_dir: str) -> None:
+        if result is None or not result.get("success"):
+            err = (result or {}).get("error", "조회 실패")
+            self._log(f"배포 확인 실패: {err}")
+            return
+
+        remote_files = {
+            e["name"]: e for e in result.get("entries", []) if not e.get("is_dir")
+        }
+
+        self._log(f"─── 배포 확인: {target_dir} ───")
+        local_map = {f["filename"]: f for f in self._files}
+        all_names = sorted(set(list(local_map.keys()) + [
+            n for n in remote_files if n.endswith((".exe", ".map", ".dll"))
+        ]))
+
+        match_count = 0
+        for name in all_names:
+            local = local_map.get(name)
+            remote = remote_files.get(name)
+
+            if local and remote:
+                local_size = local["size"]
+                remote_size = remote.get("size", 0)
+                remote_mtime = remote.get("modified", 0)
+                remote_time = datetime.fromtimestamp(remote_mtime).strftime(
+                    "%m-%d %H:%M:%S",
+                ) if remote_mtime else "?"
+                local_mtime = Path(local["local_path"]).stat().st_mtime
+                local_time = datetime.fromtimestamp(local_mtime).strftime(
+                    "%m-%d %H:%M:%S",
+                )
+                size_match = local_size == remote_size
+                icon = "OK" if size_match else "DIFF"
+                if size_match:
+                    match_count += 1
+                self._log(
+                    f"  [{icon}] {name}\n"
+                    f"        로컬: {local_size:>10,} bytes  {local_time}\n"
+                    f"      에이전트: {remote_size:>10,} bytes  {remote_time}",
+                )
+            elif local and not remote:
+                self._log(f"  [MISS] {name} — 에이전트에 없음")
+            elif remote and not local:
+                remote_size = remote.get("size", 0)
+                remote_mtime = remote.get("modified", 0)
+                remote_time = datetime.fromtimestamp(remote_mtime).strftime(
+                    "%m-%d %H:%M:%S",
+                ) if remote_mtime else "?"
+                self._log(
+                    f"  [INFO] {name} — 에이전트만 존재"
+                    f" ({remote_size:,} bytes, {remote_time})",
+                )
+
+        total = len(local_map)
+        if total > 0:
+            self._log(f"─── 결과: {match_count}/{total} 일치 ───")
+            if match_count == total:
+                self._status_label.configure(text="배포 확인 OK", fg="#51cf66")
+            else:
+                self._status_label.configure(
+                    text=f"불일치: {total - match_count}개", fg="#f39c12",
+                )
 
     # ── 프로세스 제어 ────────────────────────────────────────
 

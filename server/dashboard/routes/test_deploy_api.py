@@ -1,4 +1,4 @@
-"""테스트 배포 API — 기존 deploy 파이프라인 활용."""
+"""테스트 배포 API — 기존 deploy/upload 파이프라인 경유."""
 
 from __future__ import annotations
 
@@ -21,17 +21,11 @@ router = APIRouter()
 
 
 class _TCPServerLike(Protocol):
-    async def send_deploy(
-        self, agent_id: str, file_path: str,
-        deploy_target: str = ..., original_filename: str = ...,
-        deploy_path: str = ...,
-    ) -> bool: ...
     async def send_ctrl_command_and_wait(
         self, agent_id: str, action: CtrlAction,
         target: int = ..., target_name: str = ...,
         timeout: float = ...,
     ) -> dict: ...
-    def get_deploy_result_future(self, agent_id: str) -> Any: ...
     async def send_config_command(
         self, agent_id: str, action: ConfigAction, config_data: str = ...,
     ) -> bool: ...
@@ -96,7 +90,10 @@ async def test_deploy_info(request: Request, agent_id: str) -> JSONResponse:
 
 @router.post("/api/test-deploy/execute")
 async def test_deploy_execute(request: Request) -> JSONResponse:
-    """테스트 배포: ZIP 생성 → 백그라운드 send_deploy → RESTART 대기."""
+    """테스트 배포: ZIP → /api/deploy/upload 경유 → RESTART.
+
+    내부적으로 deploy/upload API와 동일한 파이프라인 사용 (검증됨).
+    """
     state = _state(request)
     tcp = state.tcp_server
     if tcp is None:
@@ -117,7 +114,6 @@ async def test_deploy_execute(request: Request) -> JSONResponse:
     if err:
         return JSONResponse({"error": err}, status_code=404)
 
-    # 파일 존재 확인
     for f in files:
         if not Path(f.get("local_path", "")).exists():
             return JSONResponse({"error": f"파일 없음: {f.get('local_path')}"}, status_code=400)
@@ -135,17 +131,32 @@ async def test_deploy_execute(request: Request) -> JSONResponse:
     except Exception as e:
         return JSONResponse({"error": f"ZIP 생성 실패: {e}"}, status_code=500)
 
-    steps: list[dict] = [{"step": "zip", "success": True, "files": file_names, "size_mb": round(zip_size, 2)}]
+    steps: list[dict] = [
+        {"step": "zip", "success": True, "files": file_names, "size_mb": round(zip_size, 2)},
+    ]
 
-    # 2) 백그라운드 배포 + RESTART 트리거 → 결과 대기
+    # 2) 내부적으로 deploy/upload와 동일한 방식으로 전송
+    #    deploy_api.upload_deploy의 핵심 로직 재현: 파일 저장 → send_deploy 백그라운드
+    from server.dashboard.routes.deploy_api import DEPLOY_DIR
+    import uuid as _uuid
+
+    deploy_id = _uuid.uuid4().hex[:12]
+    temp_deploy = DEPLOY_DIR / f"td_{deploy_id}.zip"
+    try:
+        DEPLOY_DIR.mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.copy2(zip_path, str(temp_deploy))
+    finally:
+        Path(zip_path).unlink(missing_ok=True)
+
+    # 백그라운드 배포 + RESTART
     result_holder: dict[str, Any] = {}
     done_event = asyncio.Event()
 
     async def _deploy_and_restart() -> None:
         try:
-            # send_deploy: ZIP 전송 → 에이전트 스테이징
-            ok = await tcp.send_deploy(
-                agent_id, zip_path,
+            ok = await tcp.send_deploy(  # type: ignore[attr-defined]
+                agent_id, str(temp_deploy),
                 deploy_target="process",
                 original_filename="test_deploy.zip",
                 deploy_path=target_name,
@@ -155,7 +166,7 @@ async def test_deploy_execute(request: Request) -> JSONResponse:
                 return
 
             # 스테이징 ACK 대기
-            deploy_fut = tcp.get_deploy_result_future(agent_id)
+            deploy_fut = tcp.get_deploy_result_future(agent_id)  # type: ignore[attr-defined]
             if deploy_fut is not None:
                 try:
                     ack = await asyncio.wait_for(deploy_fut, timeout=120)
@@ -181,12 +192,12 @@ async def test_deploy_execute(request: Request) -> JSONResponse:
             result_holder["error"] = str(exc)
             logger.exception("test-deploy error")
         finally:
-            Path(zip_path).unlink(missing_ok=True)
+            await asyncio.sleep(5)
+            temp_deploy.unlink(missing_ok=True)
             done_event.set()
 
     asyncio.create_task(_deploy_and_restart())
 
-    # 최대 180초 대기
     try:
         await asyncio.wait_for(done_event.wait(), timeout=180)
     except asyncio.TimeoutError:
@@ -200,10 +211,35 @@ async def test_deploy_execute(request: Request) -> JSONResponse:
 
     return JSONResponse({
         "success": result_holder.get("success", False),
-        "agent_id": agent_id,
-        "files": file_names,
-        "pid": result_holder.get("pid", 0),
-        "steps": steps,
+        "agent_id": agent_id, "files": file_names,
+        "pid": result_holder.get("pid", 0), "steps": steps,
+    })
+
+
+@router.post("/api/test-deploy/restart-process")
+async def test_deploy_restart(request: Request) -> JSONResponse:
+    """스테이징된 파일로 프로세스 재시작 (ProcessDeployer 트리거)."""
+    state = _state(request)
+    tcp = state.tcp_server
+    if tcp is None:
+        return JSONResponse({"error": "서버 미실행"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "잘못된 JSON"}, status_code=400)
+    raw_agent_id = body.get("agent_id", "")
+    target_name = body.get("target_name", "")
+    agent_id, err = _resolve_agent(state, raw_agent_id)
+    if err:
+        return JSONResponse({"error": err}, status_code=404)
+    result = await tcp.send_ctrl_command_and_wait(
+        agent_id, CtrlAction.RESTART,
+        target=DeployTarget.PROCESS, target_name=target_name,
+        timeout=60.0,
+    )
+    return JSONResponse({
+        "success": result.get("success", False),
+        "result": result,
     })
 
 
