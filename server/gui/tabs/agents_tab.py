@@ -48,6 +48,8 @@ class AgentsTab(tk.Frame):
         self._log_mode: tk.StringVar  # "realtime" / "history"
         self._is_streaming = False  # 실시간 스트리밍 활성 상태
         self._analysis_visible = True  # 분석 패널 표시 여부
+        self._tp_cache: dict[str, str] = {}  # agent_id → target_process 요약 (캐시)
+        self._tp_versions: dict[str, str] = {}  # agent_id → 마지막 조회 시 agent version
         self._build_ui()
         self._schedule_refresh()
 
@@ -118,7 +120,7 @@ class AgentsTab(tk.Frame):
         )
         style.map("Agent.Treeview", background=[("selected", "#264f78")])
 
-        columns = ("agent_id", "version", "state", "process", "heartbeat")
+        columns = ("agent_id", "version", "state", "process", "target_ver", "heartbeat")
         self._tree = ttk.Treeview(
             list_frame,
             columns=columns,
@@ -130,13 +132,15 @@ class AgentsTab(tk.Frame):
         self._tree.heading("version", text="Version")
         self._tree.heading("state", text="State")
         self._tree.heading("process", text="Process")
+        self._tree.heading("target_ver", text="Target Version")
         self._tree.heading("heartbeat", text="Heartbeat")
 
-        self._tree.column("agent_id", width=180, minwidth=120)
-        self._tree.column("version", width=80, minwidth=60)
-        self._tree.column("state", width=100, minwidth=80)
-        self._tree.column("process", width=80, minwidth=60)
-        self._tree.column("heartbeat", width=100, minwidth=80)
+        self._tree.column("agent_id", width=130, minwidth=100)
+        self._tree.column("version", width=50, minwidth=40)
+        self._tree.column("state", width=80, minwidth=60)
+        self._tree.column("process", width=60, minwidth=50)
+        self._tree.column("target_ver", width=280, minwidth=150)
+        self._tree.column("heartbeat", width=80, minwidth=60)
 
         tree_scroll = ttk.Scrollbar(
             list_frame, orient=tk.VERTICAL, command=self._tree.yview
@@ -525,7 +529,7 @@ class AgentsTab(tk.Frame):
         self._schedule_refresh()
 
     def _do_fetch(self) -> None:
-        """백그라운드 스레드에서 에이전트 목록 조회."""
+        """백그라운드 스레드에서 에이전트 목록 + target_process 정보 조회."""
 
         def _fetch() -> None:
             try:
@@ -538,11 +542,62 @@ class AgentsTab(tk.Frame):
                     data = dict(json.loads(resp.read().decode()))
             except Exception:
                 data = None
-            self.after(0, self._update_tree, data)
+
+            # target_process 정보: 에이전트 버전 변경 시에만 config 조회 (캐시)
+            if data:
+                for agent in data.get("agents", []):
+                    aid = agent.get("agent_id", "")
+                    ver = agent.get("version", "")
+                    if not aid or agent.get("state") != "CONNECTED":
+                        continue
+                    # 버전 변경 또는 캐시 없음 → config + 파일 정보 조회
+                    if self._tp_versions.get(aid) != ver or aid not in self._tp_cache:
+                        try:
+                            cfg = self._app.api_get(f"/api/config/{aid}")
+                            if cfg and "config" in cfg:
+                                tp = cfg["config"].get("target_process", {})
+                                items = tp if isinstance(tp, list) else ([tp] if tp else [])
+                                parts = []
+                                for p in items:
+                                    name = p.get("name", "")
+                                    path = p.get("path", "")
+                                    if not name:
+                                        continue
+                                    # 파일 수정시간 조회
+                                    mtime_str = ""
+                                    if path:
+                                        from pathlib import PurePosixPath
+                                        parent = str(PurePosixPath(path.replace("\\", "/")).parent)
+                                        fl = self._app.api_get(
+                                            f"/api/files/agent/{aid}/list?path={parent}",
+                                        )
+                                        if fl and fl.get("success"):
+                                            for e in fl.get("entries", []):
+                                                if e.get("name") == name:
+                                                    mt = e.get("modified", 0)
+                                                    if mt:
+                                                        from datetime import datetime as _dt
+                                                        mtime_str = _dt.fromtimestamp(mt).strftime("%m-%d %H:%M")
+                                                    break
+                                    if mtime_str:
+                                        parts.append(f"{name} ({mtime_str})")
+                                    else:
+                                        parts.append(name)
+                                self._tp_cache[aid] = "  |  ".join(parts) if parts else "-"
+                            else:
+                                self._tp_cache[aid] = "-"
+                            self._tp_versions[aid] = ver
+                        except Exception:
+                            if aid not in self._tp_cache:
+                                self._tp_cache[aid] = "?"
+
+            self.after(0, self._update_tree, data, self._tp_cache)
 
         threading.Thread(target=_fetch, daemon=True).start()
 
-    def _update_tree(self, data: dict[str, Any] | None) -> None:
+    def _update_tree(
+        self, data: dict[str, Any] | None, tp_map: dict[str, str] | None = None,
+    ) -> None:
         # 현재 선택 기억
         sel = self._selected_agent
 
@@ -554,6 +609,8 @@ class AgentsTab(tk.Frame):
 
         agents = data.get("agents", [])
         self._count_label.configure(text=f"{len(agents)} agents")
+        if tp_map is None:
+            tp_map = {}
 
         _PROCESS_LABELS = {0: "-", 1: "Running", 2: "Down"}
 
@@ -565,12 +622,13 @@ class AgentsTab(tk.Frame):
                 state = "CONNECTED"
             ps = agent.get("process_status", 0)
             process_text = _PROCESS_LABELS.get(ps, "-")
+            target_ver = tp_map.get(agent_id, "-")
             heartbeat = agent.get("last_heartbeat_ago", "-")
             self._tree.insert(
                 "",
                 tk.END,
                 iid=agent_id,
-                values=(agent_id, version, state, process_text, heartbeat),
+                values=(agent_id, version, state, process_text, target_ver, heartbeat),
             )
 
         # 이전 선택 복원
