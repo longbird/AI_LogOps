@@ -839,11 +839,14 @@ class LogAnalyzer:
     def _find_unrecorded_calls(self) -> list[UnrecordedCall]:
         """Find SMDR calls without matching FILE CLOSE.
 
-        Matching strategy (3-pass, index-based):
+        Matching strategy (5-pass, index-based):
         - DID 패스스루 통화는 FC 매칭에서 제외 (별도 녹취 없음)
         - Pass 1: 번호 매칭 + duration ≤ 5s (confident)
         - Pass 2: 번호 매칭 + any duration (remaining)
         - Pass 3: ext 매칭 (번호 매칭 실패 고아 SMDR만)
+        - Pass 4: grace-close recovery (RTP-INFO-GRACE 훼손 CLOSE)
+        - Pass 5: 시작시간 근사 매칭 (부분 녹취 복구 — BYE 후 통화 계속)
+        - 부분 녹취 감지: 매칭 후 FC.duration / SMDR.duration < 70% → partial_recording
         - DTMF 특수문자(#, *) 정규화 후 비교.
         - FILE CLOSE cid format: "caller->called"
         - Matched FILE CLOSEs are consumed (1:1 matching).
@@ -1037,9 +1040,10 @@ class LogAnalyzer:
             return hits
 
         # ----------------------------------------------------------
-        # 3-pass matching
+        # 5-pass matching
         # ----------------------------------------------------------
         matched_smdr: set[int] = set()
+        matched_pairs: dict[int, int] = {}  # smdr_idx → fc_idx (부분 녹취 감지용)
 
         # Pre-compute SMDR data
         smdr_data: list[tuple[int, str, str]] = []
@@ -1061,6 +1065,7 @@ class LogAnalyzer:
             if abs(smdr.duration - best_dur) <= _CONFIDENT_DURATION_DIFF:
                 used_indices.add(best_fi)
                 matched_smdr.add(si)
+                matched_pairs[si] = best_fi
 
         # Pass 2: number-based remaining — best duration match
         for si, smdr in enumerate(normal_smdr):
@@ -1075,6 +1080,7 @@ class LogAnalyzer:
             best_fi, _ = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
             used_indices.add(best_fi)
             matched_smdr.add(si)
+            matched_pairs[si] = best_fi
 
         # Pass 3: ext-based last resort — only for orphaned SMDRs
         for si, smdr in enumerate(normal_smdr):
@@ -1089,6 +1095,7 @@ class LogAnalyzer:
             best_fi, _ = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
             used_indices.add(best_fi)
             matched_smdr.add(si)
+            matched_pairs[si] = best_fi
 
         # Pass 4: grace-close recovery — match against corrupted CLOSE
         # lines (RTP-INFO-GRACE: empty CID, RTP:0,0) by timestamp + duration.
@@ -1124,10 +1131,76 @@ class LogAnalyzer:
                     used_gc.add(best_gi)
                     matched_smdr.add(si)
 
+        # Pass 5: start-time-based partial recording recovery
+        # BYE 후 통화 계속 시 FC는 SMDR보다 훨씬 일찍 닫힘.
+        # end-time 기반 윈도우(180s)를 초과하므로 start-time 근사로 재매칭.
+        # 예: SMDR 21:16 dur=275 → start≈21:11, FC 21:12 dur=68 → start≈21:11
+        for si, smdr in enumerate(normal_smdr):
+            if si in matched_smdr:
+                continue
+            sec, nc, nd = smdr_data[si]
+            if sec < 0:
+                continue
+            smdr_start = sec - smdr.duration
+            # Collect candidates by number with start-time window
+            candidate_set: set[int] = set()
+            if nc:
+                key = nc[-_SUFFIX_LEN:] if len(nc) >= _SUFFIX_LEN else nc
+                candidate_set.update(fc_by_suffix.get(key, ()))
+            if not nc and nd:
+                key = nd[-_SUFFIX_LEN:] if len(nd) >= _SUFFIX_LEN else nd
+                candidate_set.update(fc_by_suffix.get(key, ()))
+            hits: list[tuple[int, int]] = []
+            for fi in candidate_set:
+                if fi in used_indices:
+                    continue
+                fc_sec, fc_dur, fc_ca_nums, fc_cd_nums, fc_all, _ = fc_parsed[fi]
+                if fc_sec < 0 or fc_dur <= 0:
+                    continue
+                # Start-time approximation window
+                fc_start = fc_sec - fc_dur
+                if abs(smdr_start - fc_start) > self.MATCH_WINDOW_SECONDS:
+                    continue
+                # Verify number match (direction-aware)
+                if nc:
+                    if any(_num_match(nc, n) for n in fc_ca_nums):
+                        hits.append((fi, fc_dur))
+                    elif any(_num_match(nc, n) for n in fc_cd_nums):
+                        hits.append((fi, fc_dur + _DIR_PENALTY))
+                elif nd:
+                    if any(_num_match(nd, n) for n in fc_cd_nums):
+                        hits.append((fi, fc_dur))
+                    elif any(_num_match(nd, n) for n in fc_ca_nums):
+                        hits.append((fi, fc_dur + _DIR_PENALTY))
+            if hits:
+                best_fi, _ = min(hits, key=lambda t: abs(smdr.duration - t[1]))
+                used_indices.add(best_fi)
+                matched_smdr.add(si)
+                matched_pairs[si] = best_fi
+
+        # ----------------------------------------------------------
+        # Post-process: detect partial recordings
+        # FC가 매칭되었으나 녹취 시간이 SMDR 통화 시간의 70% 미만이면
+        # partial_recording으로 분류하여 미녹취 목록에 포함.
+        # ----------------------------------------------------------
+        _PARTIAL_RATIO = 0.7
+        _PARTIAL_MIN_DURATION = 30  # 30초 미만 통화는 부분 녹취 판정 제외
+        partial_smdr: set[int] = set()
+        for si, fi in matched_pairs.items():
+            smdr_dur = normal_smdr[si].duration
+            if smdr_dur < _PARTIAL_MIN_DURATION:
+                continue
+            fc_dur = self._file_closes[fi].duration if fi < len(self._file_closes) else 0
+            if fc_dur > 0 and (fc_dur / smdr_dur) < _PARTIAL_RATIO:
+                partial_smdr.add(si)
+
         # Collect unrecorded
         for si, smdr in enumerate(normal_smdr):
-            matched = si in matched_smdr
-            if not matched:
+            if si in matched_smdr and si not in partial_smdr:
+                continue
+            if si in partial_smdr:
+                reason = "partial_recording"
+            else:
                 # Determine reason (priority order)
                 smdr_minute = smdr.timestamp[:16] if smdr.timestamp else ""
                 if self._is_restart_gap(smdr.timestamp):
@@ -1136,15 +1209,15 @@ class LogAnalyzer:
                     reason = "db_fail"
                 else:
                     reason = "no_file_close"
-                unrecorded.append(UnrecordedCall(
-                    timestamp=smdr.timestamp,
-                    ext=smdr.ext,
-                    caller=smdr.caller,
-                    called=smdr.called,
-                    duration=smdr.duration,
-                    seq=smdr.seq,
-                    reason=reason,
-                ))
+            unrecorded.append(UnrecordedCall(
+                timestamp=smdr.timestamp,
+                ext=smdr.ext,
+                caller=smdr.caller,
+                called=smdr.called,
+                duration=smdr.duration,
+                seq=smdr.seq,
+                reason=reason,
+            ))
 
         # Post-process: detect silent recordings (FILE CLOSE exists but RTP:0,0)
         self._detect_silent_recordings(unrecorded)

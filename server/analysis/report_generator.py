@@ -54,6 +54,7 @@ _UNRECORDED_REASON_LABELS = {
     "did_passthrough": "DID 패스스루",
     "restart_gap": "재시작 gap",
     "silent_recording": "무음 녹취",
+    "partial_recording": "부분 녹취",
 }
 
 
@@ -225,8 +226,9 @@ def _section_smdr_matching(result: AnalysisResult) -> str:
         f"| SMDR 통화 (Duration>0) | {smdr_total:,} |",
         f"| 녹취 완료 (FILE CLOSE) | {file_total:,} |",
         f"| 녹취율 | {rate} |",
-        f"| 미녹취 (실제) | {sum(1 for u in result.unrecorded_calls if u.reason != 'did_passthrough'):,} |",
+        f"| 미녹취 (실제) | {sum(1 for u in result.unrecorded_calls if u.reason not in ('did_passthrough', 'partial_recording')):,} |",
         f"| 미녹취 (DID패스스루) | {sum(1 for u in result.unrecorded_calls if u.reason == 'did_passthrough'):,} |",
+        f"| 부분 녹취 | {sum(1 for u in result.unrecorded_calls if u.reason == 'partial_recording'):,} |",
         f"| 시간 불일치 (녹취 부족) | {len(smdr_longer):,} |",
         f"| 시간 불일치 (녹취 초과) | {len(rec_longer):,} |",
     ]
