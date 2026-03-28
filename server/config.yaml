@@ -31,7 +31,7 @@ telegram:
 dashboard:
   # false로 설정하면 서버 시작 시 대시보드를 자동으로 시작하지 않음
   # 텔레그램 /dashboard start 명령으로 필요할 때 시작 가능
-  enabled: false
+  enabled: true
   host: "0.0.0.0"
   port: 9090
   # 에이전트가 접근 가능한 서버 공개 URL (녹취 업로드용)

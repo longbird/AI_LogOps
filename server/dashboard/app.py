@@ -70,6 +70,10 @@ def create_app(
         APIRouter,
         importlib.import_module("server.dashboard.routes.batch_analysis").router,
     )
+    test_deploy_api_router = cast(
+        APIRouter,
+        importlib.import_module("server.dashboard.routes.test_deploy_api").router,
+    )
 
     templates_dir = Path(__file__).parent / "templates"
     static_dir = Path(__file__).parent / "static"
@@ -200,6 +204,7 @@ def create_app(
     app.include_router(config_api_router)
     app.include_router(file_api_router)
     app.include_router(batch_analysis_router)
+    app.include_router(test_deploy_api_router)
 
     # 녹취 파일 업로드/스트리밍 라우터 (에이전트 → 서버 HTTP 업로드, GUI → WAV 스트리밍)
     if rec_storage is not None:

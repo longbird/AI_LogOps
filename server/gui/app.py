@@ -172,6 +172,7 @@ class ServerGUI:
         from server.gui.tabs.admin_tab import AdminTab
         from server.gui.tabs.file_manager_tab import FileManagerTab
         from server.gui.tabs.log_analysis_tab import LogAnalysisTab
+        from server.gui.tabs.test_deploy_tab import TestDeployTab
 
         self._server_tab = ServerTab(self._notebook, self)
         self._agents_tab = AgentsTab(self._notebook, self)
@@ -181,6 +182,7 @@ class ServerGUI:
         self._admin_tab = AdminTab(self._notebook, self)
         self._file_manager_tab = FileManagerTab(self._notebook, self)
         self._log_analysis_tab = LogAnalysisTab(self._notebook, self)
+        self._test_deploy_tab = TestDeployTab(self._notebook, self)
 
         self._notebook.add(self._server_tab, text=" 서버 ")
         self._notebook.add(self._agents_tab, text=" 에이전트 ")
@@ -190,6 +192,7 @@ class ServerGUI:
         self._notebook.add(self._admin_tab, text=" 계정 관리 ")
         self._notebook.add(self._file_manager_tab, text=" 파일 관리 ")
         self._notebook.add(self._log_analysis_tab, text=" 로그 분석 ")
+        self._notebook.add(self._test_deploy_tab, text=" 테스트 배포 ")
 
         # ── 하단 바 ──
         footer = tk.Frame(root, bg="#1e1e1e", height=24)

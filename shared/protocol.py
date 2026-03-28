@@ -61,6 +61,8 @@ class CtrlAction(IntEnum):
     STOP = 0x00
     START = 0x01
     RESTART = 0x02
+    BACKUP = 0x03
+    ROLLBACK = 0x04
 
 
 class CtrlAckStatus(IntEnum):

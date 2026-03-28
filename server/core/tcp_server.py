@@ -93,6 +93,7 @@ class TCPServer:
         self._server: asyncio.base_events.Server | None = None
         self._is_running: bool = False
         self._deploy_results: dict[str, asyncio.Future[CmdCtrlAckPayload]] = {}
+        self._ctrl_ack_futures: dict[str, asyncio.Future] = {}
         self._rec_data_futures: dict[str, asyncio.Future[RecDataRespPayload]] = {}
         self._config_futures: dict[str, asyncio.Future[dict]] = {}
         self._exec_futures: dict[str, asyncio.Future] = {}
@@ -625,6 +626,11 @@ class TCPServer:
         if future is not None and not future.done():
             future.set_result(ack)
 
+        ctrl_key = f"{agent_id}:{ack.action.value}"
+        ctrl_future = self._ctrl_ack_futures.get(ctrl_key)
+        if ctrl_future is not None and not ctrl_future.done():
+            ctrl_future.set_result(ack)
+
         if ack.status == CtrlAckStatus.DEPLOY_VERIFIED:
             self._logger.info("deploy verified: agent_id=%s pid=%s", agent_id, ack.pid)
             asyncio.create_task(
@@ -996,6 +1002,49 @@ class TCPServer:
             target_name,
         )
         return True
+
+    async def send_ctrl_command_and_wait(
+        self,
+        agent_id: str,
+        action: CtrlAction,
+        target: int = 1,
+        target_name: str = "",
+        timeout: float = 30.0,
+    ) -> dict:
+        """CMD_CTRL 전송 후 에이전트 ACK 대기."""
+        session = self.session_mgr.get_session(agent_id)
+        if session is None or session.writer is None:
+            return {"success": False, "error": "에이전트 미연결"}
+
+        loop = asyncio.get_running_loop()
+        key = f"{agent_id}:{action.value}"
+        self._ctrl_ack_futures[key] = loop.create_future()
+
+        writer = cast(_WriterLike, session.writer)
+        from shared.protocol import CmdCtrlPayload
+
+        cmd = CmdCtrlPayload(action=action, target=target, target_name=target_name)
+        writer.write(Packet.build(PacketType.CMD_CTRL, cmd.pack()))
+        await writer.drain()
+        self._logger.info(
+            "CMD_CTRL sent (await): agent=%s action=%s target=%d",
+            agent_id, action.name, target,
+        )
+
+        try:
+            ack = await asyncio.wait_for(
+                self._ctrl_ack_futures[key], timeout=timeout,
+            )
+            return {
+                "success": ack.status in (CtrlAckStatus.SUCCESS, CtrlAckStatus.DEPLOY_VERIFIED),
+                "action": ack.action.name,
+                "pid": ack.pid,
+                "status": ack.status.name,
+            }
+        except asyncio.TimeoutError:
+            return {"success": False, "error": f"ACK 시간 초과 ({timeout}s)"}
+        finally:
+            self._ctrl_ack_futures.pop(key, None)
 
     async def send_log_command(
         self,

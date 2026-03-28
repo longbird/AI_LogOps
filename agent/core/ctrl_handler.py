@@ -99,6 +99,10 @@ class CtrlHandler:
             await self._handle_stop(mgr, cmd.action)
         elif cmd.action == CtrlAction.START:
             await self._handle_start(mgr, args, cmd.action)
+        elif cmd.action == CtrlAction.BACKUP:
+            await self._handle_backup(mgr, cmd.action, label)
+        elif cmd.action == CtrlAction.ROLLBACK:
+            await self._handle_rollback(mgr, args, cmd.action, label)
         else:
             logger.warning("unknown ctrl action: %s", cmd.action)
 
@@ -155,6 +159,42 @@ class CtrlHandler:
             await self._send_ack(action, CtrlAckStatus.SUCCESS, pid)
         except Exception:
             logger.exception("failed to start process")
+            await self._send_ack(action, CtrlAckStatus.FAILED, 0)
+
+    async def _handle_backup(
+        self, mgr: ProcessManager, action: CtrlAction, label: str = "",
+    ) -> None:
+        """대상 프로세스 파일 백업."""
+        try:
+            backup_path = mgr.backup_current()
+            logger.info("backup created for %s: %s", label, backup_path)
+            await self._send_ack(action, CtrlAckStatus.SUCCESS, 0)
+        except FileNotFoundError:
+            logger.warning("backup target not found for %s", label)
+            await self._send_ack(action, CtrlAckStatus.FAILED, 0)
+        except Exception:
+            logger.exception("backup failed for %s", label)
+            await self._send_ack(action, CtrlAckStatus.FAILED, 0)
+
+    async def _handle_rollback(
+        self,
+        mgr: ProcessManager,
+        args: list[str] | None,
+        action: CtrlAction,
+        label: str = "",
+    ) -> None:
+        """최신 백업으로 롤백 후 재시작."""
+        mgr.kill_all()
+        if not mgr.rollback():
+            logger.error("rollback failed for %s: no backup available", label)
+            await self._send_ack(action, CtrlAckStatus.FAILED, 0)
+            return
+        try:
+            pid = mgr.start(args=args)
+            logger.info("rollback + restart for %s: pid=%d", label, pid)
+            await self._send_ack(action, CtrlAckStatus.SUCCESS, pid)
+        except Exception:
+            logger.exception("rollback ok but restart failed for %s", label)
             await self._send_ack(action, CtrlAckStatus.FAILED, 0)
 
     async def _send_ack(
