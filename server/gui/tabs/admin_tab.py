@@ -76,12 +76,29 @@ class AdminTab(tk.Frame):
         tree_frame = tk.Frame(self, bg=BG_FRAME)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
+        style = ttk.Style()
+        style.configure(
+            "Admin.Treeview",
+            background="#1e1e1e",
+            foreground=FG_TEXT,
+            fieldbackground="#1e1e1e",
+            font=FONT_NORMAL,
+            rowheight=24,
+        )
+        style.configure(
+            "Admin.Treeview.Heading",
+            background=BG_BTN,
+            foreground=FG_TEXT,
+        )
+        style.map("Admin.Treeview", background=[("selected", "#264f78")])
+
         columns = ("username", "role", "permissions", "created_at")
         self._tree = ttk.Treeview(
             tree_frame,
             columns=columns,
             show="headings",
             selectmode="browse",
+            style="Admin.Treeview",
         )
         self._tree.heading("username", text="사용자명")
         self._tree.heading("role", text="역할")

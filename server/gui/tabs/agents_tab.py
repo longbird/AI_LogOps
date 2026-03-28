@@ -54,9 +54,12 @@ class AgentsTab(tk.Frame):
         self._schedule_refresh()
 
     def _build_ui(self) -> None:
-        # ── 상단: 에이전트 리스트 ──
-        list_frame = tk.Frame(self, bg=BG_FRAME, padx=8, pady=8)
-        list_frame.pack(fill=tk.X, padx=8, pady=(8, 4))
+        # ── 상단: 에이전트 리스트 (expand=True로 로그 숨김 시 전체 차지) ──
+        self._list_container = tk.Frame(self, bg=BG_DARK)
+        self._list_container.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+
+        list_frame = tk.Frame(self._list_container, bg=BG_FRAME, padx=8, pady=8)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
 
         header = tk.Frame(list_frame, bg=BG_FRAME)
         header.pack(fill=tk.X, pady=(0, 4))
@@ -151,8 +154,27 @@ class AgentsTab(tk.Frame):
 
         self._tree.bind("<<TreeviewSelect>>", self._on_agent_selected)
 
+        # ── 로그 보기 버튼 (에이전트 리스트 하단) ──
+        self._log_toggle_btn = Button(
+            self._list_container,
+            text="▼ 로그 보기",
+            command=self._toggle_log_panel,
+            bg=BG_BTN,
+            fg=FG_DIM,
+            relief=tk.FLAT,
+            font=FONT_SMALL,
+            padx=12,
+            cursor="hand2",
+        )
+        self._log_toggle_btn.pack(pady=(2, 4))
+
+        # ── 로그 전체 컨테이너 (초기 숨김) ──
+        self._log_container = tk.Frame(self, bg=BG_DARK)
+        self._log_visible = False
+        # pack하지 않음 — _toggle_log_panel()에서 토글
+
         # ── 로그 헤더 ──
-        log_header = tk.Frame(self, bg=BG_FRAME, padx=12, pady=4)
+        log_header = tk.Frame(self._log_container, bg=BG_FRAME, padx=12, pady=4)
         log_header.pack(fill=tk.X, padx=8, pady=(4, 0))
 
         self._log_title = tk.Label(
@@ -199,7 +221,7 @@ class AgentsTab(tk.Frame):
         ).pack(side=tk.RIGHT, padx=4)
 
         # ── 로그 모드 컨트롤 바 ──
-        mode_bar = tk.Frame(self, bg=BG_FRAME, padx=12, pady=4)
+        mode_bar = tk.Frame(self._log_container, bg=BG_FRAME, padx=12, pady=4)
         mode_bar.pack(fill=tk.X, padx=8, pady=(0, 2))
 
         # 모드 선택 라디오 버튼
@@ -377,7 +399,7 @@ class AgentsTab(tk.Frame):
 
         # ── 하단: 로그(좌) + 분석 패널(우) — PanedWindow ──
         self._paned = paned = tk.PanedWindow(
-            self,
+            self._log_container,
             orient=tk.HORIZONTAL,
             bg=BG_DARK,
             sashwidth=5,
@@ -492,6 +514,21 @@ class AgentsTab(tk.Frame):
             return
         from server.gui.dialogs.config_editor import ConfigEditorDialog
         ConfigEditorDialog(self, self._app, self._selected_agent)
+
+    # ── 로그 패널 토글 ──
+
+    def _toggle_log_panel(self) -> None:
+        """로그 영역 보기/숨기기 토글."""
+        if self._log_visible:
+            self._log_container.pack_forget()
+            self._list_container.pack_configure(expand=True)
+            self._log_toggle_btn.configure(text="▼ 로그 보기")
+            self._log_visible = False
+        else:
+            self._list_container.pack_configure(expand=False)
+            self._log_container.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+            self._log_toggle_btn.configure(text="▲ 로그 숨기기")
+            self._log_visible = True
 
     # ── 분석 패널 토글 ──
 

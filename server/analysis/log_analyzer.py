@@ -351,6 +351,9 @@ class LogAnalyzer:
         # Last InitInstance timestamp (for restart_gap detection)
         self._last_init_ts: str | None = None
 
+        # IVR/시스템 내선 제외 목록 (미녹취 판정에서 제외)
+        self._ivr_extensions: set[str] = {"3001", "3002"}
+
     def analyze_files(self, file_paths: list[Path]) -> AnalysisResult:
         """Analyze multiple log files and return aggregated result.
 
@@ -1203,7 +1206,9 @@ class LogAnalyzer:
             else:
                 # Determine reason (priority order)
                 smdr_minute = smdr.timestamp[:16] if smdr.timestamp else ""
-                if self._is_restart_gap(smdr.timestamp):
+                if smdr.ext in self._ivr_extensions and smdr.duration <= 2:
+                    reason = "ivr_system"
+                elif self._is_restart_gap(smdr.timestamp):
                     reason = "restart_gap"
                 elif smdr_minute in db_fail_times:
                     reason = "db_fail"

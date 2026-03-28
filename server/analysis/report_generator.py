@@ -52,6 +52,7 @@ _UNRECORDED_REASON_LABELS = {
     "no_file_close": "FILE CLOSE 없음",
     "db_fail": "DB 실패",
     "did_passthrough": "DID 패스스루",
+    "ivr_system": "IVR/시스템",
     "restart_gap": "재시작 gap",
     "silent_recording": "무음 녹취",
     "partial_recording": "부분 녹취",
@@ -226,8 +227,9 @@ def _section_smdr_matching(result: AnalysisResult) -> str:
         f"| SMDR 통화 (Duration>0) | {smdr_total:,} |",
         f"| 녹취 완료 (FILE CLOSE) | {file_total:,} |",
         f"| 녹취율 | {rate} |",
-        f"| 미녹취 (실제) | {sum(1 for u in result.unrecorded_calls if u.reason not in ('did_passthrough', 'partial_recording')):,} |",
+        f"| 미녹취 (실제) | {sum(1 for u in result.unrecorded_calls if u.reason not in ('did_passthrough', 'partial_recording', 'ivr_system')):,} |",
         f"| 미녹취 (DID패스스루) | {sum(1 for u in result.unrecorded_calls if u.reason == 'did_passthrough'):,} |",
+        f"| 미녹취 (IVR/시스템) | {sum(1 for u in result.unrecorded_calls if u.reason == 'ivr_system'):,} |",
         f"| 부분 녹취 | {sum(1 for u in result.unrecorded_calls if u.reason == 'partial_recording'):,} |",
         f"| 시간 불일치 (녹취 부족) | {len(smdr_longer):,} |",
         f"| 시간 불일치 (녹취 초과) | {len(rec_longer):,} |",
@@ -282,10 +284,11 @@ def _section_unrecorded_calls(calls: list[UnrecordedCall]) -> str | None:
         return None
 
     did_calls = [c for c in calls if c.reason == "did_passthrough"]
-    real_calls = [c for c in calls if c.reason != "did_passthrough"]
+    ivr_calls = [c for c in calls if c.reason == "ivr_system"]
+    real_calls = [c for c in calls if c.reason not in ("did_passthrough", "ivr_system")]
 
     lines = [
-        f"## 9. 미녹취건 (실제 {len(real_calls)}건, DID패스스루 {len(did_calls)}건)\n",
+        f"## 9. 미녹취건 (실제 {len(real_calls)}건, DID패스스루 {len(did_calls)}건, IVR/시스템 {len(ivr_calls)}건)\n",
     ]
 
     if real_calls:
