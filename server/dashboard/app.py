@@ -145,6 +145,7 @@ def create_app(
             or request.url.path.startswith("/api/logs/")
             or request.url.path.startswith("/api/analysis/")
             or request.url.path.startswith("/api/config/")
+            or request.url.path.startswith("/api/test-deploy/")
         ):
             return await call_next(request)
 

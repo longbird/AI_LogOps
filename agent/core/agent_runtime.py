@@ -654,6 +654,15 @@ class AgentRuntime:
         tcp_client.on_cmd_file_put = file_handler.handle_cmd_file_put
         tcp_client.on_cmd_file_run = file_handler.handle_cmd_file_run
 
+        # CMD_DEPLOY 수신 시 stale file_put receiver 리셋
+        _orig_deploy_handler = deploy_handler.handle_cmd_deploy
+
+        async def _deploy_with_reset(payload_data: bytes) -> None:
+            file_handler.reset_receiver()
+            await _orig_deploy_handler(payload_data)
+
+        tcp_client.on_cmd_deploy = _deploy_with_reset
+
         async def _route_file_chunk(payload_data: bytes) -> None:
             """FILE_CHUNK를 활성 전송 컨텍스트로 라우팅."""
             if file_handler.is_receiving_file:

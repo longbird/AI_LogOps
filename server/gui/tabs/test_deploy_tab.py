@@ -6,7 +6,7 @@ import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from server.gui.constants import (
@@ -85,7 +85,7 @@ class TestDeployTab(tk.Frame):
         )
         self._info_label.pack(fill=tk.X, pady=(4, 0))
 
-        # ── 2) 파일 목록 ──
+        # ── 2) 빌드 경로 + 파일 목록 ──
         file_frame = tk.LabelFrame(
             container,
             text="  배포 파일  ",
@@ -95,6 +95,23 @@ class TestDeployTab(tk.Frame):
             relief=tk.GROOVE, bd=1,
         )
         file_frame.pack(fill=tk.X, pady=4)
+
+        # 빌드 경로
+        build_row = tk.Frame(file_frame, bg=BG_FRAME)
+        build_row.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(build_row, text="빌드 경로:", bg=BG_FRAME, fg=FG_DIM,
+                 font=FONT_NORMAL).pack(side=tk.LEFT)
+        self._build_dir_var = tk.StringVar(value="D:/Work/Setup/AirREC/Server")
+        self._build_dir_entry = tk.Entry(
+            build_row, textvariable=self._build_dir_var,
+            bg=BG_DARK, fg=FG_TEXT, font=FONT_NORMAL,
+            insertbackground=FG_TEXT, relief=tk.FLAT, bd=1,
+        )
+        self._build_dir_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        Button(
+            build_row, text="...", width=3,
+            command=self._browse_build_dir,
+        ).pack(side=tk.LEFT)
 
         list_row = tk.Frame(file_frame, bg=BG_FRAME)
         list_row.pack(fill=tk.X)
@@ -197,12 +214,14 @@ class TestDeployTab(tk.Frame):
             self._process_combo.set("(기본)")
             self._info_label.configure(text="")
             return
+        self._info_label.configure(text="설정 조회 중...", fg="#cca700")
         threading.Thread(
             target=self._fetch_process_info, args=(agent_id,), daemon=True,
         ).start()
 
     def _fetch_process_info(self, agent_id: str) -> None:
-        result = self._app.api_get(f"/api/test-deploy/info/{agent_id}")
+        """에이전트 config에서 target_process 정보 직접 조회."""
+        result = self._app.api_get(f"/api/config/{agent_id}")
         self._log_text.after(0, self._apply_process_info, result)
 
     def _apply_process_info(self, result: dict | None) -> None:
@@ -210,39 +229,107 @@ class TestDeployTab(tk.Frame):
             err = (result or {}).get("error", "조회 실패")
             self._info_label.configure(text=f"오류: {err}", fg="#f44747")
             return
-        name = result.get("process_name", "")
-        target_dir = result.get("target_dir", "")
-        if name:
-            self._process_combo["values"] = [name]
-            self._process_combo.set(name)
+        config = result.get("config", {})
+        tp = config.get("target_process", {})
+
+        # 리스트 또는 단일 dict 모두 처리
+        if isinstance(tp, list):
+            tp_list = [p for p in tp if p.get("name")]
+        elif isinstance(tp, dict) and tp.get("name"):
+            tp_list = [tp]
+        else:
+            tp_list = []
+
+        if not tp_list:
+            self._process_combo["values"] = ["(기본)"]
+            self._process_combo.set("(기본)")
+            self._info_label.configure(text="target_process 미설정", fg="#f44747")
+            return
+
+        # 프로세스 이름-경로 매핑 저장 (배포 시 경로 표시용)
+        self._process_info_map = {p["name"]: p for p in tp_list}
+        names = [p["name"] for p in tp_list]
+        self._process_combo["values"] = names
+        self._process_combo.set(names[0])
+        self._update_path_label(names[0])
+        self._process_combo.bind("<<ComboboxSelected>>", self._on_process_selected)
+
+    def _on_process_selected(self, _event: Any = None) -> None:
+        name = self._process_combo.get()
+        self._update_path_label(name)
+        self._auto_load_files(name)
+
+    def _update_path_label(self, name: str) -> None:
+        info = getattr(self, "_process_info_map", {}).get(name, {})
+        path = info.get("path", "")
+        target_dir = str(Path(path).parent) if path else ""
         self._info_label.configure(
-            text=f"대상 경로: {target_dir}", fg=FG_DIM,
+            text=f"대상 경로: {target_dir}" if target_dir else "",
+            fg=FG_DIM,
         )
 
+    def _auto_load_files(self, process_name: str) -> None:
+        """선택된 프로세스에 맞는 빌드 파일 자동 로드."""
+        build_dir = Path(self._build_dir_var.get())
+        if not build_dir.exists():
+            return
+
+        stem = Path(process_name).stem  # "REC_SVR2.exe" → "REC_SVR2"
+        candidates = []
+        for ext in ("*.exe", "*.map"):
+            for f in build_dir.glob(ext):
+                if f.stem == stem:
+                    candidates.append(f)
+
+        if not candidates:
+            return
+
+        # 기존 목록 초기화 후 로드
+        self._files.clear()
+        self._file_listbox.delete(0, tk.END)
+        for f in candidates:
+            self._add_file_entry(f)
+
     # ── 파일 관리 ────────────────────────────────────────────
+
+    def _browse_build_dir(self) -> None:
+        d = filedialog.askdirectory(
+            title="빌드 출력 디렉토리 선택",
+            initialdir=self._build_dir_var.get(),
+        )
+        if d:
+            self._build_dir_var.set(d)
+
+    def _add_file_entry(self, path: Path) -> None:
+        """파일 하나를 목록에 추가 (중복 무시). 파일명·크기·수정시간 표시."""
+        if any(f["local_path"] == str(path) for f in self._files):
+            return
+        stat = path.stat()
+        mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%m-%d %H:%M")
+        size_mb = stat.st_size / (1024 * 1024)
+        entry = {
+            "local_path": str(path),
+            "filename": path.name,
+            "size": stat.st_size,
+        }
+        self._files.append(entry)
+        self._file_listbox.insert(
+            tk.END,
+            f"  {entry['filename']:<24s} {size_mb:>6.1f} MB  {mtime}",
+        )
 
     def _add_files(self) -> None:
         paths = filedialog.askopenfilenames(
             title="배포할 파일 선택",
             filetypes=[
+                ("실행/디버그 파일", "*.exe *.dll *.map"),
                 ("실행 파일", "*.exe *.dll"),
+                ("MAP 파일", "*.map"),
                 ("모든 파일", "*.*"),
             ],
         )
         for p in paths:
-            path = Path(p)
-            if any(f["local_path"] == str(path) for f in self._files):
-                continue
-            entry = {
-                "local_path": str(path),
-                "filename": path.name,
-                "size": path.stat().st_size,
-            }
-            self._files.append(entry)
-            size_mb = entry["size"] / (1024 * 1024)
-            self._file_listbox.insert(
-                tk.END, f"  {entry['filename']:<30s} ({size_mb:.1f} MB)",
-            )
+            self._add_file_entry(Path(p))
 
     def _remove_selected(self) -> None:
         selected = list(self._file_listbox.curselection())
@@ -276,6 +363,21 @@ class TestDeployTab(tk.Frame):
             self._status_label.configure(text="서버 미실행", fg="#f44747")
             return
 
+        # 운영 프로세스 배포 재확인
+        agent_id = self._agent_combo.get().strip()
+        display_agent = agent_id if agent_id != "(auto)" else "(자동 선택)"
+        file_names = "\n".join(f"  - {f['filename']}" for f in self._files)
+        confirmed = messagebox.askyesno(
+            "배포 확인",
+            f"다음 파일을 배포하고 프로세스를 재시작합니다.\n\n"
+            f"에이전트: {display_agent}\n"
+            f"프로세스: {self._process_combo.get()}\n\n"
+            f"배포 파일:\n{file_names}\n\n"
+            f"프로세스가 중지됩니다. 계속하시겠습니까?",
+        )
+        if not confirmed:
+            return
+
         self._deploying = True
         self._deploy_btn.configure(state=tk.DISABLED)
         self._rollback_btn.configure(state=tk.DISABLED)
@@ -288,9 +390,15 @@ class TestDeployTab(tk.Frame):
         if target_name == "(기본)":
             target_name = ""
 
+        # 선택된 프로세스의 대상 경로를 직접 전달 (config 재조회 불필요)
+        process_info = getattr(self, "_process_info_map", {}).get(target_name, {})
+        proc_path = process_info.get("path", "")
+        target_dir = str(Path(proc_path).parent).replace("\\", "/") if proc_path else ""
+
         body = {
             "agent_id": agent_id,
             "target_name": target_name,
+            "target_dir": target_dir,
             "files": [
                 {"local_path": f["local_path"], "filename": f["filename"]}
                 for f in self._files

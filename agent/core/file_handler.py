@@ -53,6 +53,14 @@ class FileHandler:
         ]
         self._max_file_size: int = fm_cfg.i("max_file_size_mb", 100) * 1024 * 1024
 
+    def reset_receiver(self) -> None:
+        """Stale 수신 상태 초기화. CMD_DEPLOY 시작 시 호출."""
+        if self._receiver is not None:
+            self._logger.warning("resetting stale file_put receiver")
+            self._receiver = None
+            self._put_request_id = ""
+            self._put_remote_path = ""
+
     def _is_enabled(self) -> tuple[bool, str]:
         """파일 관리 활성화 여부. (enabled, error_msg)."""
         if not self._enabled:
