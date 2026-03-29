@@ -92,6 +92,31 @@ class LogWatcher:
 
         self._started = False
 
+    async def update_config(
+        self, watch_dirs: list[str], extensions: list[str],
+    ) -> None:
+        """핫리로드: 감시 폴더/확장자 변경. Observer를 재시작합니다."""
+        from shared.utils import setup_logging
+        logger = setup_logging("log_watcher")
+
+        new_dirs = {str(Path(p)) for p in watch_dirs}
+        old_dirs = {str(d) for d in self._watch_dirs}
+        new_exts = {e.lower() for e in extensions}
+
+        if new_dirs == old_dirs and new_exts == self._extensions:
+            return  # 변경 없음
+
+        logger.info(
+            "hot-reload: watch_dirs %s -> %s, extensions %s -> %s",
+            old_dirs, new_dirs, self._extensions, new_exts,
+        )
+
+        await self.stop()
+        self._watch_dirs = [Path(p) for p in watch_dirs]
+        self._extensions = new_exts
+        self._observer = Observer()
+        await self.start()
+
     def read_history(self, filepath: str, max_mb: int = 10) -> bytes:
         """파일 전체 또는 max_mb 제한만큼 읽기. 파일 끝에서 역방향."""
 

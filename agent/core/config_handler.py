@@ -1,13 +1,14 @@
 """에이전트 설정 원격 관리 핸들러."""
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import yaml
 
@@ -32,9 +33,18 @@ if TYPE_CHECKING:
 class ConfigHandler:
     """서버로부터 설정 조회/업데이트 요청을 처리합니다."""
 
-    def __init__(self, base_dir: Path, tcp_client: "TCPClient") -> None:
+    # 핫리로드 콜백 시그니처: (changed_sections, decrypted_config) -> None
+    OnReloadCallback = Callable[[list[str], dict[str, Any]], Awaitable[None]]
+
+    def __init__(
+        self,
+        base_dir: Path,
+        tcp_client: "TCPClient",
+        on_reload: "ConfigHandler.OnReloadCallback | None" = None,
+    ) -> None:
         self._base_dir = base_dir
         self._tcp_client = tcp_client
+        self._on_reload = on_reload
         self._logger = setup_logging(self.__class__.__name__)
         self._config_path = base_dir / "config.yaml"
         self._env_path = base_dir / ".env"
@@ -151,6 +161,13 @@ class ConfigHandler:
                 result["needs_restart"] = needs_restart
 
                 self._logger.info("config updated: changed=%s needs_restart=%s", changed_sections, needs_restart)
+
+                # 핫리로드: 변경된 섹션을 실행 중인 컴포넌트에 반영
+                if self._on_reload:
+                    try:
+                        await self._on_reload(changed_sections, merged)
+                    except Exception as reload_err:
+                        self._logger.warning("config hot-reload failed: %s", reload_err)
         except Exception as e:
             self._logger.exception("config UPDATE failed: %s", e)
             result["message"] = f"설정 업데이트 실패: {e}"

@@ -9,7 +9,7 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -106,6 +106,10 @@ class AgentRuntime:
         subscription_client: SubscriptionClient | None = None
         connections: list[ServerConnection] = []
 
+        # 핫리로드 대상 컴포넌트 참조
+        self._exec_handlers: list = []
+        self._schedulers: list = []
+
         try:
             # 2. Load .env + config
             load_dotenv(self._base_dir / ".env")
@@ -172,6 +176,7 @@ class AgentRuntime:
                 extensions=monitoring_cfg.ls("watch_extensions", [".log"]),
                 on_new_line=_send_log,
             )
+            self._watcher_ref = watcher
 
             # 6. Process Managers (multi-process)
             process_mgrs: dict[str, ProcessManager] = {}
@@ -414,6 +419,7 @@ class AgentRuntime:
                         process_args=pcfg["args"] or None,
                         on_notify=_notify,
                     )
+                    self._schedulers.append(scheduler)
                     scheduler_tasks.append(asyncio.create_task(scheduler.run()))
 
             # 21. Per-server connection-lost callback
@@ -700,6 +706,7 @@ class AgentRuntime:
         config_handler = ConfigHandler(
             base_dir=self._base_dir,
             tcp_client=tcp_client,
+            on_reload=self._on_config_reload,
         )
         tcp_client.on_cmd_config = config_handler.handle_cmd_config
 
@@ -709,6 +716,7 @@ class AgentRuntime:
             config_path=self._base_dir / "config.yaml",
         )
         tcp_client.on_cmd_exec = exec_handler.handle_cmd_exec
+        self._exec_handlers.append(exec_handler)
 
         _ = deploy_lock
         return ServerConnection(
@@ -718,6 +726,46 @@ class AgentRuntime:
             deploy_handler=deploy_handler,
             rec_controller=rec_controller,
         )
+
+    # ──────────────────────────────────────────────
+    # Config hot-reload dispatcher
+    # ──────────────────────────────────────────────
+
+    async def _on_config_reload(
+        self, changed_sections: list[str], config: dict[str, Any],
+    ) -> None:
+        """설정 변경 시 실행 중인 컴포넌트에 반영합니다."""
+        logger = self._logger
+        reloaded: list[str] = []
+
+        if "remote_commands" in changed_sections:
+            cmds = config.get("remote_commands", [])
+            for eh in self._exec_handlers:
+                eh.reload(cmds if isinstance(cmds, list) else [])
+            reloaded.append("remote_commands")
+
+        if "schedule" in changed_sections:
+            schedule = config.get("schedule", {})
+            times = schedule.get("restart_times", []) if isinstance(schedule, dict) else []
+            for sched in self._schedulers:
+                sched.update_times(times)
+            reloaded.append("schedule")
+
+        if "monitoring" in changed_sections:
+            mon = config.get("monitoring", {})
+            if isinstance(mon, dict):
+                watcher = getattr(self, "_watcher_ref", None)
+                if watcher is not None:
+                    folders = mon.get("log_folders", [])
+                    exts = mon.get("watch_extensions", [".log", ".txt"])
+                    await watcher.update_config(folders, exts)
+                    reloaded.append("monitoring")
+
+        if "target_process" in changed_sections:
+            reloaded.append("target_process(needs_restart)")
+
+        if reloaded:
+            logger.info("config hot-reload applied: %s", reloaded)
 
     # ──────────────────────────────────────────────
     # Config loading

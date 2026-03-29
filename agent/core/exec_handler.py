@@ -49,8 +49,13 @@ class ExecHandler:
             if name:
                 self._commands[name] = cmd
 
+    def reload(self, remote_commands: list[dict[str, Any]]) -> None:
+        """핫리로드: remote_commands를 교체합니다."""
+        self._load_commands(remote_commands)
+        self._logger.info("remote commands hot-reloaded: %s", list(self._commands.keys()))
+
     def _reload_from_config(self) -> None:
-        """config.yaml에서 remote_commands를 다시 로드합니다."""
+        """config.yaml에서 remote_commands를 다시 로드합니다 (fallback)."""
         if self._config_path is None or not self._config_path.exists():
             return
         try:

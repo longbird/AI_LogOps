@@ -44,6 +44,19 @@ class ProcessScheduler:
             except (ValueError, IndexError):
                 logger.warning("invalid restart time format: '%s', skipping", t_str)
 
+    def update_times(self, restart_times: list[str]) -> None:
+        """핫리로드: 재시작 스케줄 시간을 교체합니다."""
+        new_times: list[time] = []
+        for t_str in restart_times:
+            try:
+                parts = t_str.strip().split(":")
+                new_times.append(time(int(parts[0]), int(parts[1])))
+            except (ValueError, IndexError):
+                logger.warning("invalid restart time format: '%s', skipping", t_str)
+        self._times = new_times
+        self._triggered_dates.clear()
+        logger.info("restart_times hot-reloaded: %s", [t.strftime("%H:%M") for t in self._times])
+
     def stop(self) -> None:
         self._running = False
 
