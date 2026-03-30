@@ -148,6 +148,40 @@ async def api_rec_list(
     return JSONResponse({"records": resp.records})
 
 
+@router.get("/api/rec/dir-list")
+async def api_rec_dir_list(
+    request: Request,
+    agent_id: str = "",
+    date: str = "",
+) -> JSONResponse:
+    """에이전트 watch_dir의 WAV 파일 목록 (DB 불필요, 파일시스템 직접 스캔)."""
+    state = _state(request)
+    tcp_server = state.tcp_server
+    session_mgr = state.session_mgr
+
+    if tcp_server is None or session_mgr is None:
+        return JSONResponse({"error": "server not configured"}, status_code=503)
+
+    if not agent_id:
+        sessions = session_mgr.get_all_sessions()
+        if not sessions:
+            return JSONResponse({"error": "no agent connected"}, status_code=503)
+        agent_id = sessions[0].agent_info.agent_id
+
+    resp = await tcp_server.send_rec_data_req(
+        agent_id=agent_id,
+        query_type="dir_list",
+        date_str=date,
+        timeout=60.0,
+    )
+    if resp is None:
+        return JSONResponse(
+            {"error": "agent timeout or not connected"}, status_code=504
+        )
+
+    return JSONResponse({"agent_id": agent_id, "count": len(resp.records), "records": resp.records})
+
+
 @router.get("/api/rec/files")
 async def api_rec_files(
     request: Request,

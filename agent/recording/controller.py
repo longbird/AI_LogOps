@@ -221,6 +221,11 @@ class RecordingController:
             self._logger.warning("invalid REC_DATA_REQ payload")
             return
 
+        # watch_dir 파일 목록 (DB 불필요, 파일시스템 직접 스캔)
+        if req.query_type == "dir_list":
+            await self._handle_dir_list(req)
+            return
+
         # WAV 파일 바이너리 전송 (base64)
         if req.query_type == "wav_file":
             await self._handle_wav_file_req(req)
@@ -261,6 +266,68 @@ class RecordingController:
             )
         except Exception:
             self._logger.exception("Failed to handle REC_DATA_REQ")
+
+    async def _handle_dir_list(self, req: RecDataReqPayload) -> None:
+        """watch_dir의 WAV 파일 목록을 반환 (DB 불필요, 파일시스템 직접 스캔)."""
+        watch_dir = self._cfg.s("watch_dir", "")
+        if not watch_dir:
+            self._logger.warning("watch_dir not configured for dir_list")
+            resp = RecDataRespPayload(query_type="dir_list", records=[])
+            with contextlib.suppress(ConnectionError, OSError):
+                await self._tcp_client.send_packet(
+                    PacketType.REC_DATA_RESP, resp.pack()
+                )
+            return
+
+        date_filter = req.date_str  # YYYYMMDD 또는 빈 문자열
+
+        records: list[dict[str, object]] = []
+        base = Path(watch_dir)
+        if not base.exists():
+            self._logger.warning("watch_dir does not exist: %s", watch_dir)
+            resp = RecDataRespPayload(query_type="dir_list", records=[])
+            with contextlib.suppress(ConnectionError, OSError):
+                await self._tcp_client.send_packet(
+                    PacketType.REC_DATA_RESP, resp.pack()
+                )
+            return
+
+        # date_filter가 있으면 해당 날짜 폴더만, 없으면 전체 스캔
+        scan_dirs = []
+        if date_filter:
+            # watch_dir/{date}/ 또는 watch_dir 직접
+            candidate = base / date_filter
+            if candidate.is_dir():
+                scan_dirs.append(candidate)
+            else:
+                scan_dirs.append(base)
+        else:
+            scan_dirs.append(base)
+
+        for scan_dir in scan_dirs:
+            for wav_file in scan_dir.rglob("*.wav"):
+                stat = wav_file.stat()
+                # 날짜 폴더에서 날짜 추출 시도
+                rel = wav_file.relative_to(base)
+                parts = rel.parts
+                file_date = parts[0] if len(parts) > 1 and parts[0].isdigit() else ""
+                if date_filter and file_date and file_date != date_filter:
+                    continue
+                records.append({
+                    "filename": wav_file.name,
+                    "size": stat.st_size,
+                    "date": file_date,
+                    "path": str(rel),
+                })
+                if len(records) >= 2000:  # 안전 제한
+                    break
+
+        resp = RecDataRespPayload(query_type="dir_list", records=records)
+        with contextlib.suppress(ConnectionError, OSError):
+            await self._tcp_client.send_packet(PacketType.REC_DATA_RESP, resp.pack())
+        self._logger.info(
+            "dir_list sent: date=%s records=%d", date_filter, len(records)
+        )
 
     async def _handle_wav_file_req(self, req: RecDataReqPayload) -> None:
         """WAV 파일 바이너리를 base64로 인코딩해서 전송."""
