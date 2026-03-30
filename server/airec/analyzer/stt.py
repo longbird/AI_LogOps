@@ -1499,7 +1499,8 @@ def transcribe(
                     transcribe_kwargs["vad_parameters"] = vad_params
             if hp:
                 for key in ("compression_ratio_threshold", "log_prob_threshold",
-                            "no_speech_threshold", "condition_on_previous_text"):
+                            "no_speech_threshold", "condition_on_previous_text",
+                            "repetition_penalty"):
                     if key in hp:
                         transcribe_kwargs[key] = hp[key]
                 temps = hp.get("temperature")

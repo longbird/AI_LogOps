@@ -90,6 +90,12 @@ RE_FILE_CLOSE_GRACE = re.compile(
     r"(?:\s+RTP:(\d+),(\d+))?"
 )
 
+# QUEUE SKIP I — IA/A already applied, this I:IN_END is a duplicate
+# Format: [SMDR] QUEUE SKIP I Key:01041647825 (IA/A was applied, HisId:648698)
+RE_QUEUE_SKIP_I = re.compile(
+    r"\[SMDR\]\s+QUEUE SKIP I\s+Key:(\S+)"
+)
+
 # DURATION-MISMATCH detail capture
 RE_DURATION_MISMATCH_DETAIL = re.compile(
     r"\[DURATION-MISMATCH\]"
@@ -316,6 +322,8 @@ class LogAnalyzer:
         # --- SMDR vs Recording matching ---
         self._smdr_calls: list[SmdrCall] = []
         self._file_closes: list[RecordingClose] = []
+        # QUEUE SKIP I callers — IA already applied, I:IN_END는 중복
+        self._queue_skip_callers: set[str] = set()
         self._grace_closes: list[GraceClose] = []
         self._pending_closes: dict[str, PendingClose] = {}  # channel -> PendingClose
         self._duration_mismatches_detail: list[DurationMismatch] = []
@@ -484,6 +492,12 @@ class LogAnalyzer:
                     duration=int(m_smdr.group(4)),
                     seq=self._smdr_seq,
                 ))
+            return
+
+        # --- QUEUE SKIP I (IA already applied → I:IN_END는 중복, 미녹취 아님) ---
+        m_skip = RE_QUEUE_SKIP_I.search(line)
+        if m_skip:
+            self._queue_skip_callers.add(m_skip.group(1))
             return
 
         # --- SMDR outbound (check trunk first, since trunk is a subset) ---
@@ -1200,6 +1214,9 @@ class LogAnalyzer:
         # Collect unrecorded
         for si, smdr in enumerate(normal_smdr):
             if si in matched_smdr and si not in partial_smdr:
+                continue
+            # QUEUE SKIP I: IA에서 이미 녹취됨 → 미녹취 아님
+            if smdr.caller and smdr.caller in self._queue_skip_callers:
                 continue
             if si in partial_smdr:
                 reason = "partial_recording"
