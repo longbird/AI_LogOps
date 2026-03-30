@@ -70,24 +70,39 @@ setlocal enabledelayedexpansion
 
 :: === AI-LogOps Agent Updater (Debug Mode) ===
 
-:: Step 1: 프로세스 종료 (동일 이름의 모든 프로세스)
-taskkill /IM {exe_name} /F >nul 2>&1
+:: Step 1: 프로세스 트리 전체 종료 (/T: 자식 포함, /F: 강제)
+taskkill /IM {exe_name} /T /F >nul 2>&1
+:: 혹시 python으로 실행 중인 경우도 처리
+wmic process where "commandline like '%%AILogOps%%' and name='python.exe'" call terminate >nul 2>&1
+wmic process where "commandline like '%%AILogOps%%' and name='python3.13.exe'" call terminate >nul 2>&1
 
-:: Step 1b: 프로세스 종료 확인 (최대 30초 대기)
+:: Step 1b: 프로세스 종료 확인 (최대 30초 대기, 3회 재시도)
+set RETRY=0
+:RETRY_KILL
 set WAIT_COUNT=0
 :WAIT_KILL
 tasklist /FI "IMAGENAME eq {exe_name}" 2>nul | find /I "{exe_name}" >nul
 if errorlevel 1 goto KILL_DONE
 set /a WAIT_COUNT+=1
-if !WAIT_COUNT! GEQ 30 (
-    echo [WARN] Process still alive after 30s, retrying force kill...
-    taskkill /IM {exe_name} /F >nul 2>&1
-    timeout /t 3 >nul
-    goto KILL_DONE
+if !WAIT_COUNT! GEQ 10 (
+    set /a RETRY+=1
+    if !RETRY! GEQ 3 (
+        echo [WARN] Process still alive after 3 retries, forcing...
+        taskkill /IM {exe_name} /T /F >nul 2>&1
+        timeout /t 5 >nul
+        goto KILL_DONE
+    )
+    echo [RETRY !RETRY!] Retrying kill...
+    taskkill /IM {exe_name} /T /F >nul 2>&1
+    timeout /t 2 >nul
+    goto RETRY_KILL
 )
 timeout /t 1 >nul
 goto WAIT_KILL
 :KILL_DONE
+
+:: Step 1c: 파일 잠금 해제 대기
+timeout /t 3 >nul
 
 :: Step 2: 현재 폴더 백업
 if exist "{backup_dir}" rmdir /S /Q "{backup_dir}"
