@@ -47,7 +47,10 @@ for /d %%D in ("{update_dir}\*") do (
     xcopy "%%D" "{install_dir}\%%~nxD\" /E /H /Y /Q >nul
 )
 
-:: Step 4: 서비스 시작
+:: Step 4: 인스턴스 잠금 파일 삭제 (sys.exit 후 taskkill 경합 방지)
+if exist "{install_dir}\.agent.pid" del /F /Q "{install_dir}\.agent.pid"
+
+:: Step 5: 서비스 시작
 net start {service_name}
 
 :: Step 5: 시작 검증
@@ -117,7 +120,10 @@ for /d %%D in ("{update_dir}\*") do (
     xcopy "%%D" "{install_dir}\%%~nxD\" /E /H /Y /Q >nul
 )
 
-:: Step 4: 프로세스 시작
+:: Step 4: 인스턴스 잠금 파일 삭제 (sys.exit 후 taskkill 경합 방지)
+if exist "{install_dir}\.agent.pid" del /F /Q "{install_dir}\.agent.pid"
+
+:: Step 5: 프로세스 시작
 start "" "{exe_path}"
 
 :: Step 5: 시작 검증 (10초 대기)
@@ -376,6 +382,15 @@ class SelfUpdater:
         """bat 실행 후 프로세스 종료."""
         self._merge_config_version()
         _ = self.generate_updater_bat()
+
+        # 인스턴스 잠금 파일을 먼저 삭제 — taskkill이 프로세스를 강제 종료하면
+        # finally 블록의 release_instance_lock()이 실행되지 않아
+        # .agent.pid가 남아 새 exe가 "이미 실행 중"으로 판단하고 종료되는 문제 방지
+        pid_file = self.install_dir / ".agent.pid"
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
         command = ["cmd", "/c", str(self.updater_bat_path)]
         creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)

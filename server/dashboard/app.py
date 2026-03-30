@@ -147,12 +147,17 @@ def create_app(
             or request.url.path.startswith("/api/config/")
             or request.url.path.startswith("/api/test-deploy/")
             or request.url.path.startswith("/api/files/")
+            or request.url.path.startswith("/api/ctrl/")
         ):
             return await call_next(request)
 
         # JWT 검증
         token = request.cookies.get("access_token")
+        is_api = request.url.path.startswith("/api/") or request.url.path.startswith("/ws/")
+
         if not token:
+            if is_api:
+                return JSONResponse({"error": "인증 필요"}, status_code=401)
             return RedirectResponse(url="/login", status_code=303)
 
         from server.dashboard.auth import (
@@ -163,6 +168,8 @@ def create_app(
 
         payload = verify_token(token)
         if payload is None:
+            if is_api:
+                return JSONResponse({"error": "토큰 만료"}, status_code=401)
             return RedirectResponse(url="/login", status_code=303)
 
         # request.state에 사용자 정보 설정

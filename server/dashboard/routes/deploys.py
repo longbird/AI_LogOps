@@ -470,6 +470,7 @@ async def api_ctrl_restart(request: Request) -> JSONResponse:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
 
     agent_id: str = body.get("agent_id", "")
+    action_str: str = body.get("action", "restart")
     target: str = body.get("target", "agent")
     target_name: str = body.get("target_name", "")
 
@@ -486,6 +487,13 @@ async def api_ctrl_restart(request: Request) -> JSONResponse:
 
     from shared.protocol import CtrlAction, DeployTarget
 
+    action_map = {
+        "restart": CtrlAction.RESTART,
+        "stop": CtrlAction.STOP,
+        "start": CtrlAction.START,
+    }
+    ctrl_action = action_map.get(action_str, CtrlAction.RESTART)
+
     target_map = {
         "agent": DeployTarget.AGENT,
         "process": DeployTarget.PROCESS,
@@ -494,17 +502,18 @@ async def api_ctrl_restart(request: Request) -> JSONResponse:
     target_int = target_map.get(target, DeployTarget.PROCESS)
 
     success = await tcp_server.send_ctrl_command(
-        agent_id, CtrlAction.RESTART, target=target_int, target_name=target_name
+        agent_id, ctrl_action, target=target_int, target_name=target_name
     )
     if success:
         logger.info(
-            "restart command sent: agent=%s target=%s(%d) target_name=%s",
-            agent_id, target, target_int, target_name,
+            "ctrl command sent: agent=%s action=%s target=%s(%d) target_name=%s",
+            agent_id, ctrl_action.name, target, target_int, target_name,
         )
         return JSONResponse(
             {
                 "status": "ok",
                 "agent_id": agent_id,
+                "action": ctrl_action.name,
                 "target": target,
                 "target_name": target_name,
             }
