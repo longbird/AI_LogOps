@@ -51,10 +51,10 @@ def _resolve_agent(state: _AppState, agent_id: str) -> tuple[str, str | None]:
         return "", "서버가 실행 중이 아닙니다"
     if not agent_id:
         sessions = state.session_mgr.get_all_sessions()
-        connected = [s for s in sessions if s.state == "connected"]
+        connected = [s for s in sessions if s.agent_info.state.value == "CONNECTED"]
         if not connected:
             return "", "연결된 에이전트가 없습니다"
-        agent_id = connected[0].agent_id
+        agent_id = connected[0].agent_info.agent_id
     elif state.session_mgr.get_session(agent_id) is None:
         return "", f"에이전트 '{agent_id}'를 찾을 수 없습니다"
     return agent_id, None
