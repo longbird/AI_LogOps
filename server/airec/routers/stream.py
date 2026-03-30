@@ -392,7 +392,7 @@ def _transcode_ulaw_to_pcm(src_path: str) -> bytes:
 
 
 async def _fetch_wav_from_agent(
-    request: Request, filename: str, storage: RecordingStorage
+    request: Request, filename: str, storage: RecordingStorage, agent_id: str = ""
 ) -> str | None:
     """Fetch WAV file from agent via TCP and cache locally. Returns local path or None."""
     tcp_server = getattr(request.app.state, "tcp_server", None)
@@ -400,18 +400,19 @@ async def _fetch_wav_from_agent(
     if tcp_server is None or session_mgr is None:
         return None
 
-    # 접속된 에이전트 중 첫 번째 사용
-    sessions = session_mgr.get_all_sessions()
-    if not sessions:
-        return None
-    agent_id = sessions[0].agent_info.agent_id
+    # agent_id 지정 시 해당 에이전트, 없으면 첫 번째 사용
+    if not agent_id:
+        sessions = session_mgr.get_all_sessions()
+        if not sessions:
+            return None
+        agent_id = sessions[0].agent_info.agent_id
 
     try:
         resp = await tcp_server.send_rec_data_req(
             agent_id=agent_id,
             query_type="wav_file",
             filename=filename,
-            timeout=30.0,
+            timeout=120.0,
         )
     except Exception:
         _logger.exception("TCP wav_file request failed: %s", filename)
@@ -454,7 +455,8 @@ def create_stream_router(storage: RecordingStorage) -> APIRouter:
 
         # 로컬에 없으면 에이전트에서 TCP로 가져와 캐시
         if file_path is None:
-            cached = await _fetch_wav_from_agent(request, filename, storage)
+            req_agent_id = request.query_params.get("agent_id", "")
+            cached = await _fetch_wav_from_agent(request, filename, storage, agent_id=req_agent_id)
             if cached is not None:
                 file_path = storage.find_by_filename(filename)
 
