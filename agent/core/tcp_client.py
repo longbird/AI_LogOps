@@ -175,12 +175,17 @@ class TCPClient:
         cpu = max(0, min(100, int(psutil.cpu_percent(interval=None))))
         mem_percent = cast(float, psutil.virtual_memory().percent)
         mem = max(0, min(100, int(mem_percent)))
+        try:
+            disk = max(0, min(100, int(psutil.disk_usage("/").percent)))
+        except Exception:
+            disk = 0
         payload = HeartbeatPayload(
             timestamp=int(time.time()),
             cpu_percent=cpu,
             mem_percent=mem,
             process_status=process_status,
             process_statuses=process_statuses or {},
+            disk_percent=disk,
         ).pack()
         await self.send_packet(PacketType.HEARTBEAT, payload)
 

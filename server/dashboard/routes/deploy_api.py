@@ -215,6 +215,9 @@ async def deploy_status(
                 "connected": True,
                 "last_heartbeat_ago": (f"{hb_ago}s ago" if hb_ago < 300 else "offline"),
                 "process_status": s.process_status,
+                "cpu_percent": s.cpu_percent,
+                "mem_percent": s.mem_percent,
+                "disk_percent": s.disk_percent,
             }
         )
 

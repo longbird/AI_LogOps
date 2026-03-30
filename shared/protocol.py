@@ -828,6 +828,7 @@ class HeartbeatPayload:
     mem_percent: int
     process_status: int = 0  # ProcessStatus aggregate (0=미설정, 1=실행중, 2=다운)
     process_statuses: dict[str, int] = field(default_factory=dict)  # name -> ProcessStatus
+    disk_percent: int = 0  # 0-100, 디스크 사용률
 
     _STRUCT_V1: ClassVar[struct.Struct] = struct.Struct("!QBB")
     _STRUCT_V2: ClassVar[struct.Struct] = struct.Struct("!QBBB")
@@ -840,25 +841,22 @@ class HeartbeatPayload:
             raise ValueError("cpu_percent must be between 0 and 100")
         if not 0 <= self.mem_percent <= 100:
             raise ValueError("mem_percent must be between 0 and 100")
-        if self.process_statuses:
-            # V3: variable length — [timestamp(8B)][cpu(1B)][mem(1B)][count(1B)] + per-process entries
-            header = self._STRUCT_V3_HEADER.pack(
-                self.timestamp,
-                self.cpu_percent,
-                self.mem_percent,
-                len(self.process_statuses),
-            )
-            parts: list[bytes] = [header]
-            for name, status in self.process_statuses.items():
-                name_bytes = name.encode("utf-8")
-                parts.append(struct.pack("!B", len(name_bytes)))
-                parts.append(name_bytes)
-                parts.append(struct.pack("!B", status))
-            return b"".join(parts)
-        # V2: backward compat
-        return self._STRUCT_V2.pack(
-            self.timestamp, self.cpu_percent, self.mem_percent, self.process_status
+        # V4: always use V3 header + entries + disk_percent trailer (1B)
+        header = self._STRUCT_V3_HEADER.pack(
+            self.timestamp,
+            self.cpu_percent,
+            self.mem_percent,
+            len(self.process_statuses),
         )
+        parts: list[bytes] = [header]
+        for name, status in self.process_statuses.items():
+            name_bytes = name.encode("utf-8")
+            parts.append(struct.pack("!B", len(name_bytes)))
+            parts.append(name_bytes)
+            parts.append(struct.pack("!B", status))
+        disk = max(0, min(100, self.disk_percent))
+        parts.append(struct.pack("!B", disk))
+        return b"".join(parts)
 
     @classmethod
     def unpack(cls, data: bytes) -> HeartbeatPayload:
@@ -905,12 +903,17 @@ class HeartbeatPayload:
                 agg = ProcessStatus.DOWN
             elif any(v == ProcessStatus.RUNNING for v in process_statuses.values()):
                 agg = ProcessStatus.RUNNING
+            # V4: disk_percent trailer (1 byte after process entries)
+            disk_percent = 0
+            if offset < len(data):
+                disk_percent = data[offset]
             return cls(
                 timestamp=timestamp,
                 cpu_percent=cpu_percent,
                 mem_percent=mem_percent,
                 process_status=agg,
                 process_statuses=process_statuses,
+                disk_percent=disk_percent,
             )
         raise ValueError(
             f"heartbeat payload must be >= {cls._SIZE_V1} bytes, got {len(data)}"

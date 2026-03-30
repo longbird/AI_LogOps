@@ -415,6 +415,9 @@ class TCPServer:
                     agent_id,
                     process_status=hb.process_status,
                     process_statuses=hb.process_statuses,
+                    cpu_percent=hb.cpu_percent,
+                    mem_percent=hb.mem_percent,
+                    disk_percent=hb.disk_percent,
                 )
                 writer.write(Packet.build(PacketType.HEARTBEAT, payload))
                 await writer.drain()

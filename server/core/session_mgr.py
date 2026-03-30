@@ -78,6 +78,7 @@ class SessionManager:
     def update_heartbeat(
         self, agent_id: str, process_status: int = 0,
         process_statuses: dict[str, int] | None = None,
+        cpu_percent: int = 0, mem_percent: int = 0, disk_percent: int = 0,
     ) -> None:
         session = self._sessions.get(agent_id)
         if session is None:
@@ -86,6 +87,9 @@ class SessionManager:
         session.process_status = process_status
         if process_statuses is not None:
             session.process_statuses = process_statuses
+        session.cpu_percent = cpu_percent
+        session.mem_percent = mem_percent
+        session.disk_percent = disk_percent
 
     def get_all_sessions(self) -> list[AgentSession]:
         return list(self._sessions.values())

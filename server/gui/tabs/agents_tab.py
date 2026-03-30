@@ -123,7 +123,7 @@ class AgentsTab(tk.Frame):
         )
         style.map("Agent.Treeview", background=[("selected", "#264f78")])
 
-        columns = ("agent_id", "version", "state", "process", "target_ver", "heartbeat")
+        columns = ("agent_id", "version", "state", "process", "cpu", "mem", "hdd", "target_ver", "heartbeat")
         self._tree = ttk.Treeview(
             list_frame,
             columns=columns,
@@ -135,6 +135,9 @@ class AgentsTab(tk.Frame):
         self._tree.heading("version", text="Version")
         self._tree.heading("state", text="State")
         self._tree.heading("process", text="Process")
+        self._tree.heading("cpu", text="CPU")
+        self._tree.heading("mem", text="MEM")
+        self._tree.heading("hdd", text="HDD")
         self._tree.heading("target_ver", text="Target Version")
         self._tree.heading("heartbeat", text="Heartbeat")
 
@@ -142,7 +145,10 @@ class AgentsTab(tk.Frame):
         self._tree.column("version", width=50, minwidth=40)
         self._tree.column("state", width=80, minwidth=60)
         self._tree.column("process", width=60, minwidth=50)
-        self._tree.column("target_ver", width=280, minwidth=150)
+        self._tree.column("cpu", width=50, minwidth=40, anchor=tk.CENTER)
+        self._tree.column("mem", width=50, minwidth=40, anchor=tk.CENTER)
+        self._tree.column("hdd", width=50, minwidth=40, anchor=tk.CENTER)
+        self._tree.column("target_ver", width=230, minwidth=150)
         self._tree.column("heartbeat", width=80, minwidth=60)
 
         tree_scroll = ttk.Scrollbar(
@@ -659,14 +665,28 @@ class AgentsTab(tk.Frame):
                 state = "CONNECTED"
             ps = agent.get("process_status", 0)
             process_text = _PROCESS_LABELS.get(ps, "-")
+            cpu_val = agent.get("cpu_percent", 0)
+            mem_val = agent.get("mem_percent", 0)
+            hdd_val = agent.get("disk_percent", 0)
+            cpu_text = f"{cpu_val}%" if cpu_val > 0 else "-"
+            mem_text = f"{mem_val}%" if mem_val > 0 else "-"
+            hdd_text = f"{hdd_val}%" if hdd_val > 0 else "-"
             target_ver = tp_map.get(agent_id, "-")
             heartbeat = agent.get("last_heartbeat_ago", "-")
+            iid = agent_id
             self._tree.insert(
                 "",
                 tk.END,
-                iid=agent_id,
-                values=(agent_id, version, state, process_text, target_ver, heartbeat),
+                iid=iid,
+                values=(agent_id, version, state, process_text, cpu_text, mem_text, hdd_text, target_ver, heartbeat),
             )
+            # 80% 이상 시 빨간색 태그
+            tags: list[str] = []
+            if cpu_val >= 80 or mem_val >= 80 or hdd_val >= 80:
+                tags.append("high_usage")
+            if tags:
+                self._tree.item(iid, tags=tags)
+        self._tree.tag_configure("high_usage", foreground="#ff6b6b")
 
         # 이전 선택 복원
         if sel and self._tree.exists(sel):

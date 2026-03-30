@@ -31,6 +31,9 @@ class AgentSession:
     last_heartbeat: float = field(default_factory=time.time)
     process_status: int = 0  # 0=미설정, 1=실행중, 2=다운 (aggregate)
     process_statuses: dict[str, int] = field(default_factory=dict)  # name -> ProcessStatus
+    cpu_percent: int = 0
+    mem_percent: int = 0
+    disk_percent: int = 0
     log_buffer: list[str] = field(default_factory=list)
     rec_log_buffer: list[str] = field(default_factory=list)
     deploy_history: list[dict[str, object]] = field(default_factory=list)
