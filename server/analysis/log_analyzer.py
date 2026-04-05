@@ -34,9 +34,9 @@ RE_INBOUND = re.compile(r"\bI:IN_END\b")
 RE_OUTBOUND = re.compile(r"\bO:OUT_END\b")
 RE_TRUNK_OUTBOUND = re.compile(r"O:OUT_END.*Dnis:850[1-9]")
 
-# DB failures
-RE_DB_FAIL = re.compile(r"DB_UPDATE FAIL")
-RE_DB_FAIL_3301 = re.compile(r"DB_UPDATE FAIL.*3301")
+# DB failures (v2 format: [DB_FAIL] cid=... error=..., legacy: DB_UPDATE FAIL)
+RE_DB_FAIL = re.compile(r"\[DB_FAIL\]|DB_UPDATE FAIL")
+RE_DB_FAIL_3301 = re.compile(r"(?:\[DB_FAIL\]|DB_UPDATE FAIL).*3301")
 
 # Direction filter: DirFilter:N
 RE_DIR_FILTER = re.compile(r"DirFilter:(\d)")
@@ -44,8 +44,8 @@ RE_DIR_FILTER = re.compile(r"DirFilter:(\d)")
 # OUTBOUND-RESET
 RE_OUTBOUND_RESET = re.compile(r"OUTBOUND-RESET")
 
-# Duration mismatch
-RE_DURATION_MISMATCH = re.compile(r"\[DURATION-MISMATCH\]")
+# Duration mismatch (v2: [DURATION_GAP], legacy: [DURATION-MISMATCH])
+RE_DURATION_MISMATCH = re.compile(r"\[DURATION_GAP\]|\[DURATION-MISMATCH\]")
 
 # Session invalidation
 RE_SESSION_INVALIDATED = re.compile(r"Session invalidated|Aborted.*session")
@@ -64,27 +64,27 @@ RE_SMDR_EVENT = re.compile(
     r"\[SMDR\]\s+\[\d+\]\s+(\w+):(\w+)\s+Ext:(\S+).*?Duration:(\d+)"
 )
 
-# FILE CLOSE (recording completion) — Channel, CID, Filename, Size, Time, RTP
+# FILE CLOSE (recording completion)
+# v2 format: [FILE_CLOSE] [C:N] cid=X->Y file=Z.wav size=N time=N pkts=N,N
+RE_FILE_CLOSE_V2 = re.compile(
+    r"\[FILE_CLOSE\]\s+\[C:(\d+)\]\s+cid=(\S+)\s+file=(\S+\.wav)\s+size=(\d+)\s+time=(\d+)"
+    r"(?:\s+pkts=(\d+),(\d+))?"
+)
+# Legacy format: [FILE] [C:N] CLOSE CID filename.wav Size:N Time:N RTP:N,N
 RE_FILE_CLOSE = re.compile(
     r"\[FILE\]\s+\[C:(\d+)\]\s+CLOSE\s+(\S+)\s+(\S+\.wav)\s+Size:(\d+)\s+Time:(\d+)"
     r"(?:\s+RTP:(\d+),(\d+))?"
 )
-
-# FILE CLOSE path-only line (1st of 2-line pair) — has full path but no Size/Time
-# Format: [FILE] [C:10] CLOSE 01088943936->02214945 D:\path\filename.wav
+# Legacy: FILE CLOSE path-only line (1st of 2-line pair)
 RE_FILE_CLOSE_PATH = re.compile(
     r"\[FILE\]\s+\[C:(\d+)\]\s+CLOSE\s+(\S+)\s+\S+[/\\](\S+\.wav)\s*$"
 )
-
-# FILE CLOSE with CID-polluted metadata (no .wav filename, but has Size/Time)
-# Format: [FILE] [C:10] CLOSE 01022264436->  Size:1213486 Time:37 RTP:1892,1895
+# Legacy: FILE CLOSE with CID-polluted metadata
 RE_FILE_CLOSE_POLLUTED = re.compile(
     r"\[FILE\]\s+\[C:(\d+)\]\s+CLOSE\s+(\S+?->)\S*\s+Size:(\d+)\s+Time:(\d+)"
     r"(?:\s+RTP:(\d+),(\d+))?"
 )
-
-# FILE CLOSE corrupted by RTP-INFO-GRACE — empty CID, no filename, RTP:0,0
-# Format: [FILE] [C:93] CLOSE ->  Size:1973166 Time:61 RTP:0,0
+# Legacy: FILE CLOSE corrupted by RTP-INFO-GRACE
 RE_FILE_CLOSE_GRACE = re.compile(
     r"\[FILE\]\s+\[C:(\d+)\]\s+CLOSE\s+->\s+Size:(\d+)\s+Time:(\d+)"
     r"(?:\s+RTP:(\d+),(\d+))?"
@@ -96,14 +96,14 @@ RE_QUEUE_SKIP_I = re.compile(
     r"\[SMDR\]\s+QUEUE SKIP I\s+Key:(\S+)"
 )
 
-# DURATION-MISMATCH detail capture
+# DURATION_GAP detail capture (v2 + legacy)
 RE_DURATION_MISMATCH_DETAIL = re.compile(
-    r"\[DURATION-MISMATCH\]"
-    r".*?SMDR:(\d+)s"
-    r".*?Rec:(\d+)s"
-    r".*?Diff:([+-]?\d+)s"
-    r".*?Ext:(\S+)"
-    r".*?Cause:(\S+)"
+    r"(?:\[DURATION_GAP\]|\[DURATION-MISMATCH\])"
+    r".*?(?:smdr|SMDR)[:=](\d+)s"
+    r".*?(?:rec|Rec)[:=](\d+)s"
+    r".*?(?:diff|Diff)[:=]([+-]?\d+)s"
+    r".*?(?:ext|Ext)[:=](\S+)"
+    r".*?(?:cause|Cause)[:=](\S+)"
 )
 
 # Extension / number extraction helpers
@@ -545,6 +545,26 @@ class LogAnalyzer:
             return
 
         # --- FILE CLOSE (recording complete) ---
+        # v2 format first: [FILE_CLOSE] [C:N] cid=X->Y file=Z.wav size=N time=N pkts=N,N
+        m_fc2 = RE_FILE_CLOSE_V2.search(line)
+        if m_fc2:
+            size = int(m_fc2.group(4))
+            if size > 0:
+                channel = m_fc2.group(1)
+                self._pending_closes.pop(channel, None)
+                self._file_closes.append(RecordingClose(
+                    timestamp=self._current_ts or "",
+                    channel=channel,
+                    cid=m_fc2.group(2),
+                    filename=m_fc2.group(3),
+                    size=size,
+                    duration=int(m_fc2.group(5)),
+                    rtp_server=int(m_fc2.group(6)) if m_fc2.group(6) else 0,
+                    rtp_client=int(m_fc2.group(7)) if m_fc2.group(7) else 0,
+                ))
+            return
+
+        # Legacy format
         m_fc = RE_FILE_CLOSE.search(line)
         if m_fc:
             size = int(m_fc.group(4))
@@ -988,8 +1008,13 @@ class LogAnalyzer:
             smdr_sec: int,
             norm_caller: str,
             norm_called: str,
+            smdr_dur: int = 0,
         ) -> list[tuple[int, int]]:
             """Return [(fc_index, fc_duration)] matching by phone number.
+
+            Uses start-time overlap verification to prevent cross-matching
+            when the same CID is reused for multiple calls. Two calls overlap
+            if their [start, end] ranges intersect within a tolerance.
 
             Direction-aware: prefers FC where the matching number is on the
             same side (caller→caller, called→called). Cross-direction matches
@@ -1004,6 +1029,11 @@ class LogAnalyzer:
                 key = norm_called[-_SUFFIX_LEN:] if len(norm_called) >= _SUFFIX_LEN else norm_called
                 candidate_set.update(fc_by_suffix.get(key, ()))
 
+            # SMDR time range: [start, end] with tolerance
+            _OVERLAP_TOL = 30  # seconds tolerance for start-time approximation
+            smdr_start = smdr_sec - smdr_dur - _OVERLAP_TOL
+            smdr_end = smdr_sec + _OVERLAP_TOL
+
             hits: list[tuple[int, int]] = []
             for fi in candidate_set:
                 if fi in used_indices:
@@ -1011,8 +1041,11 @@ class LogAnalyzer:
                 fc_sec, fc_dur, fc_ca_nums, fc_cd_nums, fc_all, _ = fc_parsed[fi]
                 if fc_sec < 0:
                     continue
-                if abs(smdr_sec - fc_sec) > self.MATCH_WINDOW_SECONDS:
-                    continue
+                # Time overlap check: FC range [fc_start, fc_end] must overlap SMDR range
+                fc_start = fc_sec - fc_dur - _OVERLAP_TOL
+                fc_end = fc_sec + _OVERLAP_TOL
+                if fc_end < smdr_start or fc_start > smdr_end:
+                    continue  # no overlap → different call
                 # Verify full number match + direction check
                 if norm_caller:
                     # Inbound SMDR: prefer FC with caller on caller side
@@ -1042,8 +1075,12 @@ class LogAnalyzer:
         def _get_candidates_by_ext(
             smdr_sec: int,
             ext: str,
+            smdr_dur: int = 0,
         ) -> list[tuple[int, int]]:
             """Return [(fc_index, fc_duration)] matching by extension only."""
+            _OVERLAP_TOL = 30
+            smdr_start = smdr_sec - smdr_dur - _OVERLAP_TOL
+            smdr_end = smdr_sec + _OVERLAP_TOL
             hits: list[tuple[int, int]] = []
             for fi in fc_by_ext.get(ext, ()):
                 if fi in used_indices:
@@ -1051,7 +1088,9 @@ class LogAnalyzer:
                 fc_sec, fc_dur = fc_parsed[fi][0], fc_parsed[fi][1]
                 if fc_sec < 0:
                     continue
-                if abs(smdr_sec - fc_sec) > self.MATCH_WINDOW_SECONDS:
+                fc_start = fc_sec - fc_dur - _OVERLAP_TOL
+                fc_end = fc_sec + _OVERLAP_TOL
+                if fc_end < smdr_start or fc_start > smdr_end:
                     continue
                 hits.append((fi, fc_dur))
             return hits
@@ -1075,7 +1114,7 @@ class LogAnalyzer:
             sec, nc, nd = smdr_data[si]
             if sec < 0:
                 continue
-            candidates = _get_candidates_by_number(sec, nc, nd)
+            candidates = _get_candidates_by_number(sec, nc, nd, smdr.duration)
             if not candidates:
                 continue
             best_fi, best_dur = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
@@ -1091,7 +1130,7 @@ class LogAnalyzer:
             sec, nc, nd = smdr_data[si]
             if sec < 0:
                 continue
-            candidates = _get_candidates_by_number(sec, nc, nd)
+            candidates = _get_candidates_by_number(sec, nc, nd, smdr.duration)
             if not candidates:
                 continue
             best_fi, _ = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
@@ -1106,7 +1145,7 @@ class LogAnalyzer:
             sec = smdr_data[si][0]
             if sec < 0 or not smdr.ext:
                 continue
-            candidates = _get_candidates_by_ext(sec, smdr.ext)
+            candidates = _get_candidates_by_ext(sec, smdr.ext, smdr.duration)
             if not candidates:
                 continue
             best_fi, _ = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
