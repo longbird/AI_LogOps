@@ -59,9 +59,9 @@ RE_NORM_FAILURE_DETAIL = re.compile(
     r"Normalized callee:\s+(\S+)\s+->\s+(\S+)\s+\(no match,\s+(\d+)\s+candidates"
 )
 
-# SMDR event with details (flag:action Ext: ... Duration:)
+# SMDR event with details (flag:action Ext: ... Dnis: ... Duration:)
 RE_SMDR_EVENT = re.compile(
-    r"\[SMDR\]\s+\[\d+\]\s+(\w+):(\w+)\s+Ext:(\S+).*?Duration:(\d+)"
+    r"\[SMDR\]\s+\[\d+\]\s+(\w+):(\w+)\s+Ext:(\S+)\s+Dnis:(\S+).*?Duration:(\d+)"
 )
 
 # FILE CLOSE (recording completion)
@@ -149,6 +149,7 @@ class SmdrCall:
     called: str
     duration: int    # seconds
     seq: int         # SMDR 순번 (1-based)
+    dnis: str = ""   # 국선번호 (Dnis:NNNN)
 
 
 @dataclass
@@ -478,7 +479,7 @@ class LogAnalyzer:
                 self._hourly_inbound[hour] = self._hourly_inbound.get(hour, 0) + 1
             # Collect for SMDR matching
             m_smdr = RE_SMDR_EVENT.search(line)
-            if m_smdr and int(m_smdr.group(4)) > 0:
+            if m_smdr and int(m_smdr.group(5)) > 0:
                 self._smdr_seq += 1
                 m_caller = RE_CALLER.search(line)
                 m_called = RE_CALLED.search(line)
@@ -489,8 +490,9 @@ class LogAnalyzer:
                     ext=m_smdr.group(3),
                     caller=m_caller.group(1) if m_caller else "",
                     called=m_called.group(1) if m_called else "",
-                    duration=int(m_smdr.group(4)),
+                    duration=int(m_smdr.group(5)),
                     seq=self._smdr_seq,
+                    dnis=m_smdr.group(4),
                 ))
             return
 
@@ -511,7 +513,7 @@ class LogAnalyzer:
                 self._hourly_outbound[hour] = self._hourly_outbound.get(hour, 0) + 1
             # Collect for SMDR matching
             m_smdr = RE_SMDR_EVENT.search(line)
-            if m_smdr and int(m_smdr.group(4)) > 0:
+            if m_smdr and int(m_smdr.group(5)) > 0:
                 self._smdr_seq += 1
                 m_caller = RE_CALLER.search(line)
                 m_called = RE_CALLED.search(line)
@@ -522,8 +524,9 @@ class LogAnalyzer:
                     ext=m_smdr.group(3),
                     caller=m_caller.group(1) if m_caller else "",
                     called=m_called.group(1) if m_called else "",
-                    duration=int(m_smdr.group(4)),
+                    duration=int(m_smdr.group(5)),
                     seq=self._smdr_seq,
+                    dnis=m_smdr.group(4),
                 ))
             return
 
@@ -947,14 +950,21 @@ class LogAnalyzer:
             except (IndexError, ValueError):
                 return None
 
-        def _parse_filename_fields(filename: str) -> tuple[str, str, str]:
+        def _parse_filename_fields(filename: str) -> tuple[str, str, str, str]:
+            """Returns (caller, called, ext, dnis) from filename."""
             parts = filename.rsplit(".wav", 1)[0].split(".")
+            if len(parts) >= 7:
+                fn_caller = parts[2] if parts[2] != "_" else ""
+                fn_called = parts[3] if parts[3] != "_" else ""
+                fn_ext = parts[4]
+                fn_dnis = parts[6] if parts[6] != "_" else ""
+                return fn_caller, fn_called, fn_ext, fn_dnis
             if len(parts) >= 5:
                 fn_caller = parts[2] if parts[2] != "_" else ""
                 fn_called = parts[3] if parts[3] != "_" else ""
                 fn_ext = parts[4]
-                return fn_caller, fn_called, fn_ext
-            return "", "", ""
+                return fn_caller, fn_called, fn_ext, ""
+            return "", "", "", ""
 
         def _num_match(a: str, b: str) -> bool:
             if not a or not b:
@@ -965,9 +975,9 @@ class LogAnalyzer:
             return long.endswith(short)
 
         # Pre-parsed FC data:
-        #   (seconds, duration, caller_nums, called_nums, all_nums, fn_ext)
+        #   (seconds, duration, caller_nums, called_nums, all_nums, fn_ext, fn_dnis)
         # caller_nums/called_nums for direction-aware matching.
-        fc_parsed: list[tuple[int, int, list[str], list[str], list[str], str]] = []
+        fc_parsed: list[tuple[int, int, list[str], list[str], list[str], str, str]] = []
         # Indexes: suffix → list of fc indices
         fc_by_suffix: dict[str, list[int]] = defaultdict(list)
         fc_by_ext: dict[str, list[int]] = defaultdict(list)
@@ -975,17 +985,17 @@ class LogAnalyzer:
         for i, fc in enumerate(self._file_closes):
             sec = _ts_to_seconds(fc.timestamp)
             if sec is None:
-                fc_parsed.append((-1, fc.duration, [], [], [], ""))
+                fc_parsed.append((-1, fc.duration, [], [], [], "", ""))
                 continue
             cid_parts = fc.cid.split("->")
             fc_caller = cid_parts[0] if len(cid_parts) >= 1 else ""
             fc_called = cid_parts[1] if len(cid_parts) >= 2 else ""
-            fn_caller, fn_called, fn_ext = _parse_filename_fields(fc.filename)
+            fn_caller, fn_called, fn_ext, fn_dnis = _parse_filename_fields(fc.filename)
 
             caller_nums = list({fc_caller, fn_caller} - {""})
             called_nums = list({fc_called, fn_called} - {""})
             all_nums = list({fc_caller, fc_called, fn_caller, fn_called} - {""})
-            fc_parsed.append((sec, fc.duration, caller_nums, called_nums, all_nums, fn_ext))
+            fc_parsed.append((sec, fc.duration, caller_nums, called_nums, all_nums, fn_ext, fn_dnis))
 
             # Index by number suffixes (for fast lookup)
             for n in all_nums:
@@ -1010,6 +1020,7 @@ class LogAnalyzer:
             norm_called: str,
             smdr_dur: int = 0,
             smdr_ext: str = "",
+            smdr_dnis: str = "",
         ) -> list[tuple[int, int]]:
             """Return [(fc_index, fc_duration)] matching by phone number + ext.
 
@@ -1046,7 +1057,7 @@ class LogAnalyzer:
             for fi in candidate_set:
                 if fi in used_indices:
                     continue
-                fc_sec, fc_dur, fc_ca_nums, fc_cd_nums, fc_all, fc_ext = fc_parsed[fi]
+                fc_sec, fc_dur, fc_ca_nums, fc_cd_nums, fc_all, fc_ext, fc_dnis = fc_parsed[fi]
                 if fc_sec < 0:
                     continue
                 # Time overlap check: FC range [fc_start, fc_end] must overlap SMDR range
@@ -1057,6 +1068,9 @@ class LogAnalyzer:
                 # Ext verification: if both known, must match
                 if smdr_ext and fc_ext and smdr_ext != fc_ext:
                     continue  # different extension → different call
+                # Dnis (trunk) verification: inbound calls have dnis in both SMDR and filename
+                if smdr_dnis and fc_dnis and smdr_dnis != fc_dnis:
+                    continue  # different trunk line → different call
                 # Verify full number match + direction check
                 if norm_caller:
                     # Inbound SMDR: prefer FC with caller on caller side
@@ -1125,7 +1139,7 @@ class LogAnalyzer:
             sec, nc, nd = smdr_data[si]
             if sec < 0:
                 continue
-            candidates = _get_candidates_by_number(sec, nc, nd, smdr.duration, smdr.ext)
+            candidates = _get_candidates_by_number(sec, nc, nd, smdr.duration, smdr.ext, smdr.dnis)
             if not candidates:
                 continue
             best_fi, best_dur = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
@@ -1141,7 +1155,7 @@ class LogAnalyzer:
             sec, nc, nd = smdr_data[si]
             if sec < 0:
                 continue
-            candidates = _get_candidates_by_number(sec, nc, nd, smdr.duration, smdr.ext)
+            candidates = _get_candidates_by_number(sec, nc, nd, smdr.duration, smdr.ext, smdr.dnis)
             if not candidates:
                 continue
             best_fi, _ = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
@@ -1221,7 +1235,7 @@ class LogAnalyzer:
             for fi in candidate_set:
                 if fi in used_indices:
                     continue
-                fc_sec, fc_dur, fc_ca_nums, fc_cd_nums, fc_all, _ = fc_parsed[fi]
+                fc_sec, fc_dur, fc_ca_nums, fc_cd_nums, fc_all, _, _ = fc_parsed[fi]
                 if fc_sec < 0 or fc_dur <= 0:
                     continue
                 # Start-time approximation window
