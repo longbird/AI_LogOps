@@ -1009,12 +1009,17 @@ class LogAnalyzer:
             norm_caller: str,
             norm_called: str,
             smdr_dur: int = 0,
+            smdr_ext: str = "",
         ) -> list[tuple[int, int]]:
-            """Return [(fc_index, fc_duration)] matching by phone number.
+            """Return [(fc_index, fc_duration)] matching by phone number + ext.
 
             Uses start-time overlap verification to prevent cross-matching
             when the same CID is reused for multiple calls. Two calls overlap
             if their [start, end] ranges intersect within a tolerance.
+
+            Ext verification: when SMDR ext and FC filename ext are both known,
+            they must match. This prevents cross-matching when the same number
+            calls different extensions simultaneously.
 
             Direction-aware: prefers FC where the matching number is on the
             same side (caller→caller, called→called). Cross-direction matches
@@ -1028,6 +1033,9 @@ class LogAnalyzer:
             if not norm_caller and norm_called:
                 key = norm_called[-_SUFFIX_LEN:] if len(norm_called) >= _SUFFIX_LEN else norm_called
                 candidate_set.update(fc_by_suffix.get(key, ()))
+            # Also add ext-based candidates for wider coverage
+            if smdr_ext:
+                candidate_set.update(fc_by_ext.get(smdr_ext, ()))
 
             # SMDR time range: [start, end] with tolerance
             _OVERLAP_TOL = 30  # seconds tolerance for start-time approximation
@@ -1038,7 +1046,7 @@ class LogAnalyzer:
             for fi in candidate_set:
                 if fi in used_indices:
                     continue
-                fc_sec, fc_dur, fc_ca_nums, fc_cd_nums, fc_all, _ = fc_parsed[fi]
+                fc_sec, fc_dur, fc_ca_nums, fc_cd_nums, fc_all, fc_ext = fc_parsed[fi]
                 if fc_sec < 0:
                     continue
                 # Time overlap check: FC range [fc_start, fc_end] must overlap SMDR range
@@ -1046,6 +1054,9 @@ class LogAnalyzer:
                 fc_end = fc_sec + _OVERLAP_TOL
                 if fc_end < smdr_start or fc_start > smdr_end:
                     continue  # no overlap → different call
+                # Ext verification: if both known, must match
+                if smdr_ext and fc_ext and smdr_ext != fc_ext:
+                    continue  # different extension → different call
                 # Verify full number match + direction check
                 if norm_caller:
                     # Inbound SMDR: prefer FC with caller on caller side
@@ -1114,7 +1125,7 @@ class LogAnalyzer:
             sec, nc, nd = smdr_data[si]
             if sec < 0:
                 continue
-            candidates = _get_candidates_by_number(sec, nc, nd, smdr.duration)
+            candidates = _get_candidates_by_number(sec, nc, nd, smdr.duration, smdr.ext)
             if not candidates:
                 continue
             best_fi, best_dur = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
@@ -1130,7 +1141,7 @@ class LogAnalyzer:
             sec, nc, nd = smdr_data[si]
             if sec < 0:
                 continue
-            candidates = _get_candidates_by_number(sec, nc, nd, smdr.duration)
+            candidates = _get_candidates_by_number(sec, nc, nd, smdr.duration, smdr.ext)
             if not candidates:
                 continue
             best_fi, _ = min(candidates, key=lambda t: abs(smdr.duration - t[1]))
