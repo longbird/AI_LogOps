@@ -208,6 +208,12 @@ class ProcessManager:
                 if self._autostart_exists():
                     return self._start_via_autostart()
                 return self._start_elevated(args, cwd)
+            elif sys.platform.startswith("linux"):
+                # Linux: permission denied → try sudo
+                self._logger.info("elevation required for '%s'", self.process_name)
+                if self._autostart_exists():
+                    return self._start_via_autostart()
+                return self._start_elevated(args, cwd)
             raise
 
     def _start_elevated(self, args: list[str] | None, cwd: str) -> int:

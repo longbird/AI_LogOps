@@ -17,5 +17,9 @@ def get_platform() -> PlatformHelper:
         from agent.platform.darwin import DarwinPlatform
 
         return DarwinPlatform()
+    elif sys.platform.startswith("linux"):
+        from agent.platform.linux import LinuxPlatform
+
+        return LinuxPlatform()
     else:
         raise NotImplementedError(f"Unsupported platform: {sys.platform}")

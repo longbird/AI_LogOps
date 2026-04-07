@@ -20,6 +20,10 @@ def main(argv: list[str] | None = None) -> None:
         from agent.service.mac_daemon import main as mac_main
 
         mac_main(args)
+    elif sys.platform.startswith("linux"):
+        from agent.service.linux_daemon import main as linux_main
+
+        linux_main(args)
     else:
         raise NotImplementedError(f"Unsupported platform: {sys.platform}")
 
