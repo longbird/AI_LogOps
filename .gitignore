@@ -11,3 +11,17 @@ build/
 venv/
 nul
 %TEMP%/
+
+# Runtime
+.gui.pid
+*.stackdump
+tail.txt
+
+# Large model / serialized files
+*.bin
+*.onnx
+*.pkl
+server/storage/stt/models/
+
+# Temp analysis
+.omc/
