@@ -16,6 +16,7 @@ from shared.utils import setup_logging
 
 if TYPE_CHECKING:
     from agent.core.process_mgr import ProcessManager
+    from agent.core.process_monitor import ProcessMonitorLoop
     from agent.core.tcp_client import TCPClient
     from agent.updater.process_deploy import ProcessDeployer
 
@@ -33,6 +34,7 @@ class CtrlHandler:
         rec_client_mgr: ProcessManager | None = None,
         rec_client_args: list[str] | None = None,
         process_deployers: dict[str, ProcessDeployer] | None = None,
+        process_monitors: dict[str, ProcessMonitorLoop] | None = None,
     ) -> None:
         self._client = tcp_client
         self._process_mgrs = process_mgrs
@@ -40,6 +42,7 @@ class CtrlHandler:
         self._rec_client_mgr = rec_client_mgr
         self._rec_client_args = rec_client_args
         self._process_deployers = process_deployers or {}
+        self._process_monitors = process_monitors or {}
 
     def _resolve_mgr(
         self, target: int, target_name: str = "",
@@ -144,7 +147,10 @@ class CtrlHandler:
             await self._send_ack(action, CtrlAckStatus.FAILED, 0)
 
     async def _handle_stop(self, mgr: ProcessManager, action: CtrlAction) -> None:
-        """대상 프로세스 정지."""
+        """대상 프로세스 정지. auto_restart를 일시정지하여 재시작 방지."""
+        monitor = self._process_monitors.get(mgr.process_name)
+        if monitor:
+            monitor.pause_auto_restart()
         killed = mgr.kill_all()
         status = CtrlAckStatus.SUCCESS if killed else CtrlAckStatus.FAILED
         await self._send_ack(action, status, 0)
@@ -152,10 +158,13 @@ class CtrlHandler:
     async def _handle_start(
         self, mgr: ProcessManager, args: list[str] | None, action: CtrlAction,
     ) -> None:
-        """대상 프로세스 시작."""
+        """대상 프로세스 시작. STOP으로 일시정지된 auto_restart를 재개."""
         try:
             pid = mgr.start(args=args)
             logger.info("process started: pid=%d", pid)
+            monitor = self._process_monitors.get(mgr.process_name)
+            if monitor:
+                monitor.resume_auto_restart()
             await self._send_ack(action, CtrlAckStatus.SUCCESS, pid)
         except Exception:
             logger.exception("failed to start process")

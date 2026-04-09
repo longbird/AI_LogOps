@@ -38,6 +38,8 @@ class AnalysisRecord:
 class RecHandler:
     """Handle recording-related TCP messages on the server side."""
 
+    _MAX_RECORDS = 5000
+
     def __init__(self, upload_base_url: str = "http://localhost:8000") -> None:
         self._upload_base_url = upload_base_url.rstrip("/")
         self._records: dict[tuple[str, str], AnalysisRecord] = {}
@@ -79,6 +81,13 @@ class RecHandler:
         )
         key = (agent_id, payload.filename)
         self._records[key] = record
+        if len(self._records) > self._MAX_RECORDS:
+            sorted_keys = sorted(
+                self._records, key=lambda k: self._records[k].received_at
+            )
+            for k in sorted_keys[: len(sorted_keys) // 2]:
+                del self._records[k]
+            _logger.info("records pruned: %d -> %d", len(sorted_keys), len(self._records))
 
         _logger.info(
             "analysis result stored: agent_id=%s filename=%s status=%s",

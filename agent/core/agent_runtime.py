@@ -685,6 +685,7 @@ class AgentRuntime:
             rec_client_mgr=rec_client_mgr,
             rec_client_args=rec_client_args,
             process_deployers=process_deployers,
+            process_monitors=self._process_monitors,
         )
         tcp_client.on_cmd_ctrl = ctrl_handler.handle_cmd_ctrl
 
@@ -762,7 +763,20 @@ class AgentRuntime:
                     reloaded.append("monitoring")
 
         if "target_process" in changed_sections:
-            reloaded.append("target_process(needs_restart)")
+            proc_list = config.get("target_process", [])
+            if isinstance(proc_list, dict):
+                proc_list = [proc_list]
+            for proc in proc_list:
+                pname = proc.get("name", "")
+                monitor = self._process_monitors.get(pname)
+                if monitor:
+                    new_auto = proc.get("auto_restart", True)
+                    if new_auto != monitor.auto_restart:
+                        if new_auto:
+                            monitor.resume_auto_restart()
+                        else:
+                            monitor.pause_auto_restart()
+            reloaded.append("target_process")
 
         if reloaded:
             logger.info("config hot-reload applied: %s", reloaded)

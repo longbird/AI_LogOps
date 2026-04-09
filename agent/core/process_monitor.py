@@ -44,6 +44,20 @@ class ProcessMonitorLoop:
             return 0
         return 1 if self._prev_alive else 2
 
+    @property
+    def auto_restart(self) -> bool:
+        return self._auto_restart
+
+    def pause_auto_restart(self) -> None:
+        """배포 중 자동 재시작 일시정지."""
+        self._auto_restart = False
+        logger.info("auto_restart paused for '%s'", self._mgr.process_name)
+
+    def resume_auto_restart(self) -> None:
+        """배포 완료 후 자동 재시작 재개."""
+        self._auto_restart = True
+        logger.info("auto_restart resumed for '%s'", self._mgr.process_name)
+
     def stop(self) -> None:
         """루프 중지 요청."""
         self._running = False

@@ -124,6 +124,29 @@ class TCPServer:
         # agent_id -> {"total": int, "received": int, "total_bytes": int}
         self._hist_progress: dict[str, dict[str, int]] = {}
 
+    def _cleanup_agent_state(self, agent_id: str) -> None:
+        """에이전트 연결 해제 시 모든 관련 in-memory 상태 정리."""
+        self._monitor_states.pop(agent_id, None)
+        self._hist_progress.pop(agent_id, None)
+        self._deploy_results.pop(agent_id, None)
+        self._file_receivers.pop(agent_id, None)
+        self._file_transfer_locks.pop(agent_id, None)
+        # request_id 기반 딕셔너리: agent_id 접두사로 매칭하여 제거
+        for d in (
+            self._file_list_futures,
+            self._file_get_futures,
+            self._file_put_futures,
+            self._file_run_futures,
+            self._file_get_save_paths,
+            self._ctrl_ack_futures,
+            self._exec_futures,
+            self._config_futures,
+        ):
+            stale = [k for k in d if k.startswith(agent_id)]
+            for k in stale:
+                d.pop(k, None)
+        self._logger.debug("agent state cleaned up: %s", agent_id)
+
     @property
     def rec_max_concurrent(self) -> int:
         """최대 동시 녹취 분석 건수."""
@@ -287,6 +310,7 @@ class TCPServer:
                     session_id is None or cur.session_id == session_id
                 ):
                     self.session_mgr.remove_session(agent_id)
+                    self._cleanup_agent_state(agent_id)
                     # ── Flow control cleanup: 끊어진 에이전트 정리 ──
                     if agent_id in self._rec_waiting_agents:
                         self._rec_waiting_agents.remove(agent_id)
