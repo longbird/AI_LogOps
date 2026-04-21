@@ -80,18 +80,21 @@ async def transfer_file(request: Request) -> JSONResponse:
     if tcp is None:
         return JSONResponse({"success": False, "error": "서버가 실행 중이 아닙니다"})
 
-    body = await request.json()
-    direction = body.get("direction")
-    agent_id = body.get("agent_id")
-    local_path = body.get("local_path")
-    remote_path = body.get("remote_path")
+    try:
+        body = await request.json()
+        direction = body.get("direction")
+        agent_id = body.get("agent_id")
+        local_path = body.get("local_path")
+        remote_path = body.get("remote_path")
 
-    if direction == "to_agent":
-        result = await tcp.send_file_put(agent_id, local_path, remote_path)
-    elif direction == "to_server":
-        result = await tcp.send_file_get(agent_id, remote_path, local_path)
-    else:
-        result = {"success": False, "error": f"잘못된 direction: {direction}"}
+        if direction == "to_agent":
+            result = await tcp.send_file_put(agent_id, local_path, remote_path)
+        elif direction == "to_server":
+            result = await tcp.send_file_get(agent_id, remote_path, local_path)
+        else:
+            result = {"success": False, "error": f"잘못된 direction: {direction}"}
+    except Exception as exc:
+        result = {"success": False, "error": f"전송 오류: {type(exc).__name__}: {exc}"}
 
     return JSONResponse(result)
 

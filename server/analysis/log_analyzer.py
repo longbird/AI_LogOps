@@ -1279,11 +1279,12 @@ class LogAnalyzer:
         for si, smdr in enumerate(normal_smdr):
             if si in matched_smdr and si not in partial_smdr:
                 continue
-            # QUEUE SKIP I: IA에서 이미 녹취됨 → 미녹취 아님
-            if smdr.caller and smdr.caller in self._queue_skip_callers:
-                continue
             if si in partial_smdr:
+                # partial takes priority: QUEUE SKIP doesn't hide short recordings
                 reason = "partial_recording"
+            elif smdr.caller and smdr.caller in self._queue_skip_callers:
+                # QUEUE SKIP I: IA에서 이미 녹취됨 → 미녹취 아님 (partial 아닌 경우만)
+                continue
             else:
                 # Determine reason (priority order)
                 smdr_minute = smdr.timestamp[:16] if smdr.timestamp else ""

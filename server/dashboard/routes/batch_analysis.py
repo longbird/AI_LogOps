@@ -157,7 +157,7 @@ async def api_run_analysis(request: Request) -> JSONResponse:
             "total_lines": result.total_lines,
             "inbound": result.inbound_count,
             "outbound": result.outbound_count,
-            "file_close_count": len(result.file_closes),
+            "file_close_count": result.file_close_count,
             "db_fail_count": result.db_fail_count,
             "unrecorded_count": len(result.unrecorded_calls),
             "duration_mismatch_count": len(result.duration_mismatches),
