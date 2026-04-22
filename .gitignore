@@ -25,3 +25,4 @@ server/storage/stt/models/
 
 # Temp analysis
 .omc/
+.worktrees/
