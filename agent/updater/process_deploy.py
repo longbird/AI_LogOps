@@ -44,6 +44,7 @@ class ProcessDeployer:
         self.update_dir: Path = update_dir  # SelfUpdater.update_dir 과 동일
         self.log_folders: list[str] = log_folders or []
         self._logger: Logger = setup_logging("process_deploy")
+        self._control_filenames: set[str] = {"update-ready.flag"}
 
     @property
     def has_staged_files(self) -> bool:
@@ -257,7 +258,24 @@ class ProcessDeployer:
         target_dir.mkdir(parents=True, exist_ok=True)
         replaced: list[str] = []
 
+        # Staging control files are only for the updater flow and must not leak
+        # into the live process directory.
+        for name in self._control_filenames:
+            control_path = target_dir / name
+            if control_path.exists():
+                try:
+                    control_path.unlink()
+                except OSError as exc:
+                    self._logger.warning(
+                        "failed to remove stale control file %s: %s",
+                        control_path,
+                        exc,
+                    )
+
         for item in self.update_dir.iterdir():
+            if item.name in self._control_filenames:
+                self._logger.info("skip staging control file: %s", item.name)
+                continue
             dest = target_dir / item.name
             if item.is_dir():
                 if dest.exists():
